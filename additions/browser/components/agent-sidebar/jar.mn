@@ -1,0 +1,21 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+browser.jar:
+    content/browser/agent-sidebar/panel.html (content/panel.html)
+    content/browser/agent-sidebar/agent-panel.css (content/agent-panel.css)
+    content/browser/agent-sidebar/agent-sidebar.bundle.js (content/agent-sidebar.bundle.js)
+    content/browser/agent-sidebar/agent-logo.png (content/agent-logo.png)
+    content/browser/agent-sidebar/skill-reverse.md (content/skill-reverse.md)
+    content/browser/agent-sidebar/tools/dispatcher_split.cjs (content/tools/dispatcher_split.cjs)
+    content/browser/agent-sidebar/tools/disassemble.cjs (content/tools/disassemble.cjs)
+    content/browser/agent-sidebar/tools/wasm_probe.cjs (content/tools/wasm_probe.cjs)
+    content/browser/agent-sidebar/tools/wasm_disasm.cjs (content/tools/wasm_disasm.cjs)
+    content/browser/agent-sidebar/tools/js_trace.cjs (content/tools/js_trace.cjs)
+    content/browser/agent-sidebar/tools/whitebox_node_trace.cjs (content/tools/whitebox_node_trace.cjs)
+    content/browser/agent-sidebar/tools/whitebox_diff.cjs (content/tools/whitebox_diff.cjs)
+    content/browser/agent-sidebar/tools/whitebox_wasm_trace.cjs (content/tools/whitebox_wasm_trace.cjs)
+    content/browser/agent-sidebar/templates/node-env-loader.js (content/templates/node-env-loader.js)
+    content/browser/agent-sidebar/templates/wasm-signer-loader.js (content/templates/wasm-signer-loader.js)
+    content/browser/agent-sidebar/templates/request-template.js (content/templates/request-template.js)

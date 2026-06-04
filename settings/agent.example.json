@@ -1,0 +1,70 @@
+{
+  "_comment": "示例配置：复制为 agent.json 并填入 api_key（agent.json 不入库，已在 .gitignore）。Agent 侧边栏读取此文件初始化 provider 列表。A1 阶段只实现 protocol=openai 路径（覆盖 deepseek / openai / custom）；anthropic / gemini 标记为 A2 实现。",
+
+  "active_provider": "deepseek",
+
+  "providers": {
+    "deepseek": {
+      "label": "DeepSeek",
+      "protocol": "openai",
+      "base_url": "https://api.deepseek.com",
+      "chat_path": "/v1/chat/completions",
+      "api_key": "",
+      "_api_key_comment": "在 https://platform.deepseek.com 申请；留空时 LlmClient 回退读环境变量 DEEPSEEK_API_KEY（仅 Node 自测用）",
+      "default_model": "deepseek-chat",
+      "_default_model_comment": "deepseek-chat 始终指向最新对话模型（即口语所说的 V3/V4 线）；deepseek-reasoner 为推理模型",
+      "models": ["deepseek-chat", "deepseek-reasoner"]
+    },
+
+    "openai": {
+      "label": "OpenAI",
+      "protocol": "openai",
+      "base_url": "https://api.openai.com",
+      "chat_path": "/v1/chat/completions",
+      "api_key": "",
+      "default_model": "gpt-4o",
+      "models": ["gpt-4o", "gpt-4o-mini", "o1"]
+    },
+
+    "anthropic": {
+      "label": "Anthropic Claude",
+      "protocol": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "chat_path": "/v1/messages",
+      "api_key": "",
+      "default_model": "",
+      "_status": "A2 实现：anthropic 的 /v1/messages 协议与 OpenAI 不同（system 单列、max_tokens 必填、auth 用 x-api-key + anthropic-version 头）。default_model 待 A2 落地时确认当时最新 model id。",
+      "models": []
+    },
+
+    "gemini": {
+      "label": "Google Gemini",
+      "protocol": "gemini",
+      "base_url": "https://generativelanguage.googleapis.com",
+      "chat_path": "/v1beta/models/{model}:generateContent",
+      "api_key": "",
+      "default_model": "",
+      "_status": "A2 实现：Gemini 协议独立（generateContent + contents 数组）。default_model 待 A2 落地时确认。",
+      "models": []
+    },
+
+    "custom": {
+      "label": "自定义 OpenAI 兼容端点",
+      "protocol": "openai",
+      "base_url": "",
+      "_base_url_comment": "任意 OpenAI 兼容端点：vLLM / Ollama / 各类国内厂商代理。例：http://127.0.0.1:11434",
+      "chat_path": "/v1/chat/completions",
+      "api_key": "",
+      "default_model": "",
+      "models": []
+    }
+  },
+
+  "request": {
+    "timeout_ms": 60000,
+    "max_tokens": 4096,
+    "temperature": 0.7,
+    "stream": false,
+    "_stream_comment": "A1 先用 non-streaming；A2 实现 SSE 流式打字机效果"
+  }
+}

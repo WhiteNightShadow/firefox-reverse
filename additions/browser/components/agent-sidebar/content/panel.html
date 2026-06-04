@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <!-- chrome 特权页：允许 chrome: 资源 + 对 https LLM 端点的 connect -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src chrome:; script-src chrome:; style-src chrome: 'unsafe-inline'; connect-src https: http://localhost:* http://127.0.0.1:*;"
+    />
+    <link rel="stylesheet" href="chrome://browser/content/agent-sidebar/agent-panel.css" />
+    <title>Agent</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- esbuild 产物（npm run build 生成，不入库；由 jar.mn 打进 omni.ja） -->
+    <script src="chrome://browser/content/agent-sidebar/agent-sidebar.bundle.js"></script>
+  </body>
+</html>

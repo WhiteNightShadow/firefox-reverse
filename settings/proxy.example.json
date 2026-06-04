@@ -1,0 +1,28 @@
+{
+  "_comment": "示例配置：复制为 proxy.json 并按需修改。proxy.json 不入库。",
+
+  "enabled": false,
+
+  "default": {
+    "type": "http",
+    "_type_options": ["direct", "http", "https", "socks4", "socks5"],
+    "host": "127.0.0.1",
+    "port": 8080,
+    "username": null,
+    "password": null
+  },
+
+  "rules": [
+    {
+      "match": { "host": "*.example.com" },
+      "proxy": { "type": "socks5", "host": "127.0.0.1", "port": 1080 }
+    },
+    {
+      "match": { "url_regex": "^https://api\\.target\\.com/" },
+      "proxy": { "type": "direct" }
+    }
+  ],
+
+  "fallback_on_failure": true,
+  "no_proxy_for": ["localhost", "127.0.0.1", "::1"]
+}

@@ -1,0 +1,5 @@
+# 构建依赖与产物：不入库，构建时 `npm install && npm run build` 现生成。
+# apply-patches 前必须先 npm run build 生成 bundle，才能被 rsync 进 upstream / 打入 omni.ja。
+node_modules/
+content/agent-sidebar.bundle.js
+*.bundle.js.map
