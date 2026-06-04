@@ -1,0 +1,16 @@
+{
+  "name": "firefox-reverse-agent-sidebar-ui",
+  "private": true,
+  "version": "0.16.0",
+  "type": "module",
+  "description": "Agent 侧边栏 React UI 的 esbuild 打包（产物 content/agent-sidebar.bundle.js 注入 omni.ja）",
+  "scripts": {
+    "build": "esbuild content/index.jsx --bundle --minify --charset=utf8 --format=iife --outfile=content/agent-sidebar.bundle.js",
+    "watch": "esbuild content/index.jsx --bundle --charset=utf8 --format=iife --outfile=content/agent-sidebar.bundle.js --watch --sourcemap"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

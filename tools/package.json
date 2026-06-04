@@ -1,0 +1,13 @@
+{
+  "name": "firefox-reverse-tools",
+  "version": "0.1.0",
+  "description": "JSVMP dispatcher Babel-AST 拆解工具 + 反汇编器",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "@babel/parser": "^7.25.0",
+    "@babel/traverse": "^7.25.0",
+    "@babel/types": "^7.25.0",
+    "@babel/generator": "^7.25.0"
+  }
+}

@@ -1,0 +1,38 @@
+# 上游 Firefox 源码（由 scripts/bootstrap.sh 拉取，不入库）
+/upstream/
+/firefox-src/
+
+# 构建产物
+/build/
+/dist/
+/obj-*/
+
+# 本地配置（settings/*.example.json 入库，实际配置不入库）
+/settings/*.json
+!/settings/*.example.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# 临时
+*.log
+*.tmp
+/tmp/
+/.tmp/
+scripts/remote.sh
+
+# 本地站点/凭证脚本（含真实请求、个人路径，不入库）
+scripts/local/

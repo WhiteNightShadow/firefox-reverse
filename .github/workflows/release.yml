@@ -1,0 +1,140 @@
+# Firefox-Reverse · 自动编译 + 发布到 Releases
+#
+# 触发：打 tag（v* 形如 v0.17.0）自动跑；也可手动 workflow_dispatch。
+#
+# 主路径 = 自托管 runner（标签 self-hosted）：复用编译机上已有的 Firefox 源码树
+#   ~/firefox-reverse/upstream（带 mozconfig.mac + obj-aarch64-apple-darwin），
+#   只 rsync 侧栏改动后做「增量」mach build → package → 出 macOS(arm64) dmg → 传 Release。
+#   增量构建几十秒级，远比 GitHub 托管从零编译靠谱。
+#
+# 可选路径 = GitHub 托管的 Windows/Linux 从零编译：手动 workflow_dispatch 且勾 build_all=true 才跑，
+#   很重、且 Windows 的 C++ 补丁未在 MSVC 验证——属实验性，失败不阻塞 mac 发布。
+
+name: Build & Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      build_all:
+        description: "同时尝试 GitHub 托管的 Windows/Linux 从零编译（实验性、很慢）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 1. 建 Release（草稿）──
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - id: meta
+        run: echo "tag=${GITHUB_REF_NAME:-manual-$(date +%Y%m%d%H%M)}" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          draft: true
+          name: "Firefox-Reverse ${{ steps.meta.outputs.tag }}"
+          body: |
+            Firefox-Reverse ${{ steps.meta.outputs.tag }} —— 内置 AI 逆向 Agent 的 Firefox。
+            按系统下载安装包，使用说明见 README。
+
+  # ── 2. 自托管 runner：增量构建 macOS(arm64) dmg → 传 Release ──
+  build-mac:
+    needs: create-release
+    runs-on: self-hosted               # ← 编译机上注册的自托管 runner（标签 self-hosted）
+    timeout-minutes: 90
+    env:
+      UPSTREAM: /home/ubuntu/firefox-reverse/upstream     # 编译机上已有的 Firefox 源码树
+    steps:
+      - name: Checkout 补丁集
+        uses: actions/checkout@v4
+
+      - name: 构建侧栏前端 bundle（bundle 是构建产物、未入库，CI 现编）
+        working-directory: additions/browser/components/agent-sidebar
+        run: |
+          set -e
+          npm ci || npm install
+          npm run build
+          test -f content/agent-sidebar.bundle.js   # 确保产物存在，否则后面 jar 打包会失败
+
+      - name: 同步侧栏改动到源码树（复用已 bootstrap 的树，增量编）
+        run: |
+          set -e
+          rsync -a --delete \
+            --exclude node_modules --exclude dev --exclude README.md \
+            "$GITHUB_WORKSPACE/additions/browser/components/agent-sidebar/" \
+            "$UPSTREAM/browser/components/agent-sidebar/"
+
+      - name: mach build + package（增量）
+        working-directory: ${{ env.UPSTREAM }}
+        run: |
+          set -e
+          export MOZCONFIG=mozconfig.mac
+          ./mach build
+          ./mach package
+
+      - name: 找 dmg
+        id: dmg
+        run: |
+          f=$(ls "$UPSTREAM"/obj-*/dist/firefox-*.mac.dmg 2>/dev/null | head -1)
+          echo "path=$f" >> "$GITHUB_OUTPUT"
+          test -n "$f" && echo "dmg: $f"
+
+      - name: 上传 dmg 到 Release
+        if: steps.dmg.outputs.path != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag }}
+          files: ${{ steps.dmg.outputs.path }}
+
+  # ── 3.（可选·实验性）GitHub 托管：Windows / Linux 从零编译 ──
+  # 仅当手动触发且 build_all=true 才跑。很重、Windows 未验证，失败不影响 mac 发布。
+  build-others:
+    needs: create-release
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_all }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win64
+            pkg_glob: "obj-*/dist/install/**/firefox-*.zip"
+          - os: ubuntu-latest
+            target: linux-x86_64
+            pkg_glob: "obj-*/dist/firefox-*.tar.*"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 350
+    env:
+      GECKO_REMOTE: "https://github.com/mozilla/gecko-dev.git"
+      FIREFOX_REV: ${{ vars.FIREFOX_REV || 'main' }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: firefox-reverse }
+      - name: 取 Firefox 源码
+        shell: bash
+        run: git clone --depth 1 --branch "$FIREFOX_REV" "$GECKO_REMOTE" upstream || git clone --depth 1 "$GECKO_REMOTE" upstream
+      - name: 应用 additions
+        shell: bash
+        run: |
+          rsync -a --exclude node_modules --exclude README.md firefox-reverse/additions/ upstream/ || cp -R firefox-reverse/additions/* upstream/
+          [ -f firefox-reverse/scripts/apply-patches.sh ] && ( cd firefox-reverse && bash scripts/apply-patches.sh ) || true
+      - name: bootstrap + build + package
+        shell: bash
+        working-directory: upstream
+        run: |
+          ./mach --no-interactive bootstrap --application-choice browser
+          ./mach build
+          ./mach package
+      - name: 收集 + 上传
+        shell: bash
+        run: |
+          f=$(ls upstream/${{ matrix.pkg_glob }} 2>/dev/null | head -1)
+          [ -n "$f" ] && gh release upload "${{ needs.create-release.outputs.tag }}" "$f" --clobber || echo "no artifact"
+        env:
+          GH_TOKEN: ${{ github.token }}

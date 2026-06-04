@@ -1,0 +1,32 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# 注册到 resource:///modules/agentsidebar/<name>.sys.mjs
+EXTRA_JS_MODULES.agentsidebar += [
+    "modules/AgentEvalChild.sys.mjs",
+    "modules/AgentLoop.sys.mjs",
+    "modules/AgentSession.sys.mjs",
+    "modules/Backends.sys.mjs",
+    "modules/CodeBackend.sys.mjs",
+    "modules/ConfigStore.sys.mjs",
+    "modules/ConversationStore.sys.mjs",
+    "modules/JsvmpBackend.sys.mjs",
+    "modules/LedgerBackend.sys.mjs",
+    "modules/LlmClient.sys.mjs",
+    "modules/NetworkBackend.sys.mjs",
+    "modules/NotesBackend.sys.mjs",
+    "modules/PageBackend.sys.mjs",
+    "modules/providers.sys.mjs",
+    "modules/ScriptsBackend.sys.mjs",
+    "modules/SkillBackend.sys.mjs",
+    "modules/ToolRouter.sys.mjs",
+    "modules/Tools.sys.mjs",
+    "modules/WebApiBackend.sys.mjs",
+    "modules/WorkspaceBackend.sys.mjs",
+]
+
+JAR_MANIFESTS += ["jar.mn"]
+
+with Files("**"):
+    BUG_COMPONENT = ("Firefox", "Sidebar")

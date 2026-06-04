@@ -1,0 +1,81 @@
+{
+  "_comment": "示例配置：复制为 fingerprint.json 并按需修改。fingerprint.json 不入库。",
+
+  "enabled": true,
+  "seed_mode": "session",
+  "_seed_mode_options": ["session", "persistent", "rotate"],
+
+  "trace": {
+    "enabled": true,
+    "dir": "~/.firefox-reverse/traces",
+    "jsvmp_dir": "~/.firefox-reverse/traces/jsvmp",
+    "network_dir": "~/.firefox-reverse/traces/network",
+    "property_dir": "~/.firefox-reverse/traces/property",
+    "js_dir": "~/.firefox-reverse/traces/js"
+  },
+
+  "navigator": {
+    "userAgent": { "enabled": true, "value": null },
+    "platform": { "enabled": true, "value": null },
+    "language": { "enabled": true, "value": "en-US" },
+    "languages": { "enabled": true, "value": ["en-US", "en"] },
+    "hardwareConcurrency": { "enabled": true, "min": 4, "max": 16 },
+    "deviceMemory": { "enabled": true, "values": [4, 8, 16] },
+    "webdriver": { "enabled": true, "value": false },
+    "plugins": { "enabled": true, "strategy": "empty" },
+    "mimeTypes": { "enabled": true, "strategy": "empty" }
+  },
+
+  "screen": {
+    "enabled": true,
+    "presets": [
+      { "width": 1920, "height": 1080, "colorDepth": 24, "pixelDepth": 24 },
+      { "width": 2560, "height": 1440, "colorDepth": 24, "pixelDepth": 24 },
+      { "width": 1366, "height": 768, "colorDepth": 24, "pixelDepth": 24 }
+    ]
+  },
+
+  "window": {
+    "devicePixelRatio": { "enabled": true, "values": [1, 1.25, 1.5, 2] }
+  },
+
+  "canvas": {
+    "enabled": true,
+    "noise": "low",
+    "_noise_options": ["off", "low", "medium", "high"]
+  },
+
+  "webgl": {
+    "enabled": true,
+    "vendor": null,
+    "renderer": null,
+    "noise_on_getParameter": "low"
+  },
+
+  "audio": {
+    "enabled": true,
+    "noise": "low"
+  },
+
+  "webrtc": {
+    "block_local_ip": true
+  },
+
+  "timezone": {
+    "enabled": true,
+    "value": null,
+    "_value_example": "Asia/Shanghai"
+  },
+
+  "locale": {
+    "enabled": true,
+    "value": null,
+    "_value_example": "en-US"
+  },
+
+  "fonts": {
+    "enabled": true,
+    "strategy": "preset",
+    "preset": "common-windows"
+  }
+}
