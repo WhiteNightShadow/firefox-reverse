@@ -1005,6 +1005,61 @@ export class JsvmpBackend {
     return parsed;
   }
 
+  /**
+   * 通用密码学指纹扫描（站点无关、纯分析、无副作用）。给一段数据/源码 → 自动识别用了哪些加密原语：
+   * RC4/类RC4 256-排列 S-box、XXTEA/TEA delta 0x9e3779b9、MD5/SHA-1/SHA-256 IV+K、AES S-box/Te 表、
+   * 国密 SM4、自定义 base64 字母表（64 字符排列比对）。识别的全是**公开标准常量/结构**，对所有站点一视同仁，
+   * 绝不硬编码任何单站点逻辑/表/字段。省去人工暴力扫常量（实战痛点：为证伪「是不是 XXTEA」暴力扫了几千个常量；
+   * 一眼判型 = 省一整轮）。内部 run_node 跑随浏览器打包的 crypto_scan.cjs（零三方依赖）。
+   * @param {object} p { input?(内联：hex 串 / 字节数组 JSON / 源码文本) , inputFile?(工作目录内数据/源码文件) , out? }
+   */
+  async cryptoScan({ input, inputFile, out } = {}, ctx) {
+    if (!this._workspace || !this._workspace.runNode) {
+      throw new Error("workspace 后端不可用");
+    }
+    const tool = await this._ensureToolScript("crypto_scan.cjs", ctx);
+    let inFile = inputFile;
+    if (!inFile) {
+      if (input == null || !String(input).length) {
+        throw new Error("需要 input（内联 hex/字节数组/源码文本）或 inputFile（工作目录内数据/源码文件路径）之一");
+      }
+      inFile = ".agent-tools/_crypto_scan_input.txt";
+      await this._workspace.write({ path: inFile, content: String(input) }, ctx);
+    }
+    // crypto_scan.cjs：第一个非选项参数是文件路径（存在则读文件、按 hex/字节/源码多种解释并行扫）→ 直接传 inFile。
+    const run = await this._workspace.runNode({ file: tool, args: [inFile] }, ctx);
+    let parsed = null;
+    try {
+      parsed = JSON.parse((run.output || "").trim());
+    } catch {
+      // 输出可能含前置日志 → 取尾部最后一个完整 JSON 对象。
+      const m = (run.output || "").match(/\{[\s\S]*\}\s*$/);
+      if (m) { try { parsed = JSON.parse(m[0]); } catch {} }
+    }
+    if (!parsed) {
+      return {
+        ok: false,
+        exitCode: run.exitCode,
+        log: (run.output || "").slice(0, 2000),
+        note: "未解析到 crypto_scan 结果。确认 input/inputFile 有效（hex 串/字节数组 JSON/源码文本/字节码文件）。",
+      };
+    }
+    const findings = parsed.findings || [];
+    if (out) {
+      try { await this._workspace.write({ path: out, content: JSON.stringify(parsed, null, 2) }, ctx); } catch {}
+    }
+    return {
+      ok: !!parsed.ok,
+      findingCount: findings.length,
+      findings: findings.slice(0, 20),
+      interpretations: (parsed.interpretations || []).slice(0, 8),
+      ...(out ? { out } : {}),
+      note: findings.length
+        ? `识别到 ${findings.length} 个密码学原语特征（按置信度排序，全是公开标准常量/结构、站点无关）。据此一眼判型（RC4/XXTEA/MD5/SHA/AES/SM4/自定义base64），省去暴力扫常量。`
+        : "未命中已知原语特征——可能是自定义/非标准算法，或输入不是原始常量/字节。可换 inputFile 指向字节码/S-box 候选文件，或把签名器源码整段喂进来扫数字字面量。",
+    };
+  }
+
   /** trace 期间关 JIT 强制解释器（false）/ 恢复默认（true）。 */
   _setJit(on) {
     const keys = [

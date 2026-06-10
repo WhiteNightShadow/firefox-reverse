@@ -118,6 +118,32 @@ export class PageBackend {
       }
       return out;
     }
+    // ── saveTo 但结果**不是字符串**（对象/数组/数字——如 VM 状态/常量池/环境指纹对象）：把 cycle-safe 序列化后的值
+    //    落盘 JSON、只回摘要。治"saveTo 对非字符串结果静默失效（返回 null/空），还撞 JSON.stringify 循环引用抛错"——
+    //    res.value 已是内容侧 safeSerialize 的产物（循环引用已标 [Circular]、大数组/对象已截），JSON.stringify 必安全。──
+    if (saveTo && res && res.value !== undefined && typeof res.value !== "string") {
+      const root = ctx && ctx.workspaceRoot;
+      if (!root) {
+        throw new Error("saveTo 需要先设工作目录（侧栏「打开目录」）。");
+      }
+      const rel = String(saveTo).replace(/^[/\\]+/, "");
+      if (rel.includes("..") || /^[A-Za-z]:/.test(rel)) {
+        throw new Error("saveTo 必须是工作目录内的相对路径、不能含 ..。");
+      }
+      const abs = PathUtils.join(root, ...rel.split(/[/\\]+/));
+      await IOUtils.makeDirectory(PathUtils.parent(abs), { ignoreExisting: true, createAncestors: true });
+      const json = JSON.stringify(res.value, null, 2);
+      await IOUtils.writeUTF8(abs, json);
+      return {
+        ok: true,
+        saved: true,
+        savedPath: rel,
+        type: res.type,
+        length: json.length,
+        preview: json.slice(0, 300),
+        note: `非字符串结果（${res.type}）已 cycle-safe 序列化落盘 ${rel}——用 fs_read/code_search 分析。含循环引用的运行时对象已标 [Circular]、超大数组/对象按上限截断（要整段拿大数组建议在表达式里 JSON.stringify/Array.from 后配 saveTo 取字符串）。`,
+      };
+    }
     return res;
   }
 
@@ -230,6 +256,49 @@ export class PageBackend {
       }
       if (action === "stop") {
         return await this._q(a, "signer-trace-stop", undefined, ctx);
+      }
+      return { ok: false, error: "action 必须是 start / query / stop" };
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+  }
+
+  /**
+   * 闭包变量读取（引擎层 Debugger 观测：目标函数被调用时读 frame.environment 沿作用域链外走，拿任意闭包/局部
+   * 变量真值——治"dispatcher / 解码后字节码 / S-box / 常量池 是闭包变量，page_eval 的 window. 够不到"）。
+   * start→页内触发目标函数→query→stop。大闭包可 saveTo 落盘只回摘要。
+   * @param {object} p { action:"start"|"query"|"stop", scriptUrl?, fn?, line?, varNames?, maxCalls?, argMatch?, depth?, maxArr?, saveTo? }
+   */
+  async readClosure({ action = "start", scriptUrl, fn, line, varNames, maxCalls, argMatch, depth, maxArr, saveTo } = {}, ctx) {
+    const a = this._topActorOrNull(ctx);
+    if (!a) {
+      return { ok: false, error: "拿不到当前标签页 actor（页面没加载完？切到目标标签页再试）。" };
+    }
+    try {
+      if (action === "start") {
+        return await this._q(a, "closure-read-start", { scriptUrl, fn, line, varNames, maxCalls, argMatch, depth, maxArr }, ctx);
+      }
+      if (action === "query") {
+        const r = await this._q(a, "closure-read-query", undefined, ctx);
+        // 大闭包（深序列化的字节码/常量池可达几十 KB）→ 可落盘工作目录、只回摘要（同 page_eval saveTo 的治"被截"思路）。
+        if (saveTo && r && r.ok && ctx && ctx.workspaceRoot) {
+          try {
+            const rel = String(saveTo).replace(/^[/\\]+/, "");
+            if (!rel.includes("..") && !/^[A-Za-z]:/.test(rel)) {
+              const abs = PathUtils.join(ctx.workspaceRoot, ...rel.split(/[/\\]+/));
+              await IOUtils.makeDirectory(PathUtils.parent(abs), { ignoreExisting: true, createAncestors: true });
+              await IOUtils.writeUTF8(abs, JSON.stringify(r, null, 2));
+              return {
+                ok: true, saved: true, savedPath: rel, count: r.count, conf: r.conf,
+                note: `闭包捕获已落盘 ${rel}（用 fs_read/code_search 看全量；varNames 命中的**深序列化**值在 captures[].deep，含完整 S-box/字节码数组）。`,
+              };
+            }
+          } catch { /* 落盘失败 → 回原结果 */ }
+        }
+        return r;
+      }
+      if (action === "stop") {
+        return await this._q(a, "closure-read-stop", undefined, ctx);
       }
       return { ok: false, error: "action 必须是 start / query / stop" };
     } catch (e) {

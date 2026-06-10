@@ -6,7 +6,7 @@
  */
 const SKILL_URL = "chrome://browser/content/agent-sidebar/skill-reverse.md";
 // 内置脚手架：skill_get 时释放到 <工作目录>/.agent-tools/templates/，AI 一句 fs_copy 拿现成改。
-const TEMPLATES = ["node-env-loader.js", "wasm-signer-loader.js", "request-template.js"];
+const TEMPLATES = ["node-env-loader.js", "wasm-signer-loader.js", "request-template.js", "webpack-chunk-loader.js", "jsvmp-const-harvest.js", "wasm-call-logger.js"];
 
 export class SkillBackend {
   constructor({ workspace } = {}) {

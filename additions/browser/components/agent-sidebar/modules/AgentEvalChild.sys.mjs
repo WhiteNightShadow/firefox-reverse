@@ -140,6 +140,17 @@ const FRX_HOOK_PRESET = `(function(){
       XP.send = function(b){ try{ if(this.__frx){ this.__frx.body=(b!=null)?String(b):undefined; this.__frx.t=Date.now(); P(this.__frx); } }catch(e){} return os.apply(this,arguments); };
     }
   }catch(e){}
+  try{
+    // navigator.sendBeacon：分析/埋点/部分签名上报走 Beacon，fetch+XHR 包装抓不到（实战漏过）。透明包装：仅记录、原样透传、返回原返回值。
+    var nav = window.navigator;
+    if (nav && typeof nav.sendBeacon === "function"){
+      var ob = nav.sendBeacon.bind(nav);
+      nav.sendBeacon = function(url, data){
+        try{ P({api:"beacon", url:String(url), method:"POST", headers:{}, body:(data!=null)?String(data):undefined, t:Date.now()}); }catch(e){}
+        return ob(url, data);
+      };
+    }
+  }catch(e){}
 })();`;
 
 let _hookScript = null; // 要注入的片段（preset 或自定义）
@@ -189,7 +200,7 @@ function hookInjectStart(win, { script } = {}) {
     preset: !script,
     note:
       "已注册 **document-start 注入**：下次 page_navigate/刷新时 hook 会**早于页面 JS** 注入、首屏就触发的请求也能抓。" +
-      (script ? "（用的是你的自定义片段）" : "（内置 preset：包 fetch+XHR，记 url/method/headers/body 进 window.__frxhook）") +
+      (script ? "（用的是你的自定义片段）" : "（内置 preset：包 fetch+XHR+sendBeacon，记 url/method/headers/body 进 window.__frxhook）") +
       " 触发后用 hook_inject(action:query) 读回。",
   };
 }
@@ -574,6 +585,229 @@ function signerTraceStart(win, { scriptUrl = "", fn = "", line = null, maxCalls 
   };
 }
 
+// ── 引擎层「闭包变量读取」（Debugger：目标函数被调用时读 frame.environment 沿作用域链外走，拿任意闭包/局部
+//    变量真值——治「dispatcher / 解码后字节码 / S-box / 常量池 是闭包变量，page_eval 的 window. 够不到」这个
+//    反复撞到的根因）。与 signer_trace 同款机制（分离 compartment、页面测不到、跨导航存活、时间盒自愈），但读的是
+//    environment(闭包绑定)而非 arguments。start→页内触发目标函数→query→stop。站点无关：不认任何具体变量名/算法。
+let _clo = null;          // Debugger 实例
+let _cloCaps = [];        // 捕获结果（环形缓冲）
+let _cloConf = null;
+
+// 把 Debugger 值**深序列化**成可经 actor 回传的普通值（治"256 字节 S-box / 几千字节解码后字节码要整段拿"）。
+// 数组(含 TypedArray)逐元素取（上限 maxArr），对象逐属性取（上限 200），递归到 maxDepth。
+function describeDbgDeep(v, depth, maxDepth, maxArr) {
+  const t = typeof v;
+  if (v === null || t === "undefined" || t === "boolean" || t === "number") {
+    return v;
+  }
+  if (t === "string") {
+    return v.length > 20000 ? v.slice(0, 20000) + "…(截断 " + v.length + ")" : v;
+  }
+  if (t === "bigint" || t === "symbol") {
+    return String(v);
+  }
+  if (v && t === "object") {
+    // Debugger.Object
+    let cls = "Object";
+    try { cls = v.class || "Object"; } catch {}
+    if (cls === "Function") {
+      let nm = "";
+      try { nm = v.name || ""; } catch {}
+      return "[function " + (nm || "anonymous") + "]";
+    }
+    if (depth >= maxDepth) {
+      return "[" + cls + "]";
+    }
+    // 数组 / TypedArray：逐 index 深取（这是 S-box / 解码字节码 / 常量池的关键路径）。
+    const isArrayLike = cls === "Array" || /Array$/.test(cls); // Array / Uint8Array / Int32Array …
+    if (isArrayLike) {
+      let len = 0;
+      try {
+        const d = v.getOwnPropertyDescriptor("length");
+        len = (d && typeof d.value === "number") ? d.value : 0;
+      } catch {}
+      const n = Math.min(len, maxArr);
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        try {
+          const d = v.getOwnPropertyDescriptor(i);
+          out.push(d && "value" in d ? describeDbgDeep(d.value, depth + 1, maxDepth, maxArr) : null);
+        } catch { out.push(null); }
+      }
+      if (len > n) { out.push("…(+" + (len - n) + " more)"); }
+      return out;
+    }
+    // 普通对象：逐属性深取（上限 200）。
+    const out = {};
+    let names = [];
+    try { names = v.getOwnPropertyNames().slice(0, 200); } catch {}
+    for (const nm of names) {
+      let d;
+      try { d = v.getOwnPropertyDescriptor(nm); } catch { continue; }
+      if (d && "value" in d) {
+        out[nm] = describeDbgDeep(d.value, depth + 1, maxDepth, maxArr);
+      }
+    }
+    return out;
+  }
+  try { return String(v); } catch { return "[unserializable]"; }
+}
+
+// 浅预览（无 varNames 过滤时的"变量目录"用，避免整个模块作用域深序列化爆炸）。
+function previewDbg(v) {
+  const t = typeof v;
+  if (v === null) return null;
+  if (t === "undefined" || t === "boolean" || t === "number") return v;
+  if (t === "string") return v.length > 120 ? "str(" + v.length + "):" + v.slice(0, 120) + "…" : "str:" + v;
+  if (t === "bigint" || t === "symbol") return String(v);
+  if (v && t === "object") {
+    let cls = "Object";
+    try { cls = v.class || "Object"; } catch {}
+    if (cls === "Function") { let nm = ""; try { nm = v.name || ""; } catch {} return "[function " + (nm || "anon") + "]"; }
+    if (cls === "Array" || /Array$/.test(cls)) {
+      let len = 0;
+      try { const d = v.getOwnPropertyDescriptor("length"); len = (d && typeof d.value === "number") ? d.value : 0; } catch {}
+      return "[" + cls + " len=" + len + "]";
+    }
+    let kn = 0;
+    try { kn = v.getOwnPropertyNames().length; } catch {}
+    return "[" + cls + " keys=" + kn + "]";
+  }
+  return String(v);
+}
+
+function closureReadStop() {
+  try {
+    if (_clo) {
+      try { _clo.onEnterFrame = undefined; } catch {}
+      try { _clo.onNewGlobalObject = undefined; } catch {}
+      try { _clo.removeAllDebuggees(); } catch {}
+    }
+  } catch {}
+  const n = _cloCaps.length;
+  _clo = null; // 保留 _cloCaps，允许 stop 后再 query
+  return { ok: true, capturedBeforeStop: n };
+}
+
+function closureReadStart(win, { scriptUrl = "", fn = "", line = null, varNames = "", maxCalls = 4, argMatch = "", depth = 4, maxArr = 4096 } = {}) {
+  closureReadStop();
+  _cloCaps = [];
+  if (!win) {
+    return { ok: false, error: "no content window（页面没加载完？）" };
+  }
+  if (!scriptUrl && !fn && line == null) {
+    return { ok: false, error: "至少给 scriptUrl(脚本URL子串) / fn(函数名) / line(定义行) 之一锁定目标函数——全空会抓全页面每个函数=噪声爆炸、卡页面。" };
+  }
+  let DebuggerCtor;
+  try {
+    const { addDebuggerToGlobal } = ChromeUtils.importESModule("resource://gre/modules/jsdebugger.sys.mjs");
+    addDebuggerToGlobal(globalThis);
+    DebuggerCtor = globalThis.Debugger;
+  } catch (e) {
+    return { ok: false, error: "Debugger API 不可用: " + ((e && e.message) || e) };
+  }
+  let dbg;
+  try {
+    dbg = new DebuggerCtor(win);
+  } catch (e) {
+    return { ok: false, error: "attach Debugger 失败: " + ((e && e.message) || e) };
+  }
+  const targets = new Set();
+  let scanned = 0;
+  if (scriptUrl || line != null) {
+    try {
+      for (const scr of dbg.findScripts()) {
+        scanned++;
+        const u = scr.url || "";
+        if (scriptUrl && !u.includes(scriptUrl)) { continue; }
+        if (line != null) {
+          const sl = scr.startLine || 0, lc = scr.lineCount || 1;
+          if (!(line >= sl - 1 && line <= sl + lc + 1)) { continue; }
+        }
+        targets.add(scr);
+      }
+    } catch {}
+  }
+  dbg.onNewGlobalObject = g => { try { dbg.addDebuggee(g); } catch {} };
+  _clo = dbg;
+  const targetFiles = new Set();
+  for (const scr of targets) { targetFiles.add((scr && scr.url) || ""); }
+  const varNamesRe = varNames ? (() => { try { return new RegExp(varNames, "i"); } catch { return null; } })() : null;
+  const argMatchRe = argMatch ? (() => { try { return new RegExp(argMatch, "i"); } catch { return null; } })() : null;
+  _cloConf = { scriptUrl, fn, line, varNames: varNames || null, depth, maxArr, matchedFiles: targetFiles.size, matchedFunctions: targets.size, scannedFunctions: scanned };
+  let _frameTotal = 0;
+  const _armedAt = Date.now();
+  const FRAME_HARD_CAP = 8000000;
+  const TRACE_TTL_MS = 120000;
+  dbg.onEnterFrame = frame => {
+    // 安全阀：与 signer_trace 同款（总帧数 + 墙钟），匹配不到也强制自卸、自愈，绝不 wedge 页面。
+    if (++_frameTotal > FRAME_HARD_CAP || ((_frameTotal & 0x1fff) === 0 && Date.now() - _armedAt > TRACE_TTL_MS)) {
+      try { dbg.onEnterFrame = undefined; dbg.removeAllDebuggees(); } catch {}
+      return;
+    }
+    try {
+      const scr = frame.script;
+      if (scriptUrl) {
+        if (!(targets.has(scr) || (((scr && scr.url) || "").includes(scriptUrl)))) { return; }
+      } else if (line != null) {
+        if (!targets.has(scr)) { return; }
+      }
+      let name = "";
+      try { name = (frame.callee && frame.callee.name) || (scr && scr.displayName) || ""; } catch {}
+      if (fn && !(name === fn || String(name).includes(fn))) { return; }
+      if (argMatchRe) {
+        let hit = false, args = [];
+        try { args = (frame.arguments || []).map(a => describeDbgArg(a)); } catch {}
+        for (const a of args) { try { if (argMatchRe.test(typeof a === "string" ? a : JSON.stringify(a))) { hit = true; break; } } catch {} }
+        if (!hit) { return; }
+      }
+      // 沿环境链外走，收集每层绑定。varNames 命中的**深序列化**（拿全 S-box/字节码数组）；其余只给浅预览（变量目录）。
+      const scopes = [];
+      const deep = {};
+      let e = null;
+      try { e = frame.environment; } catch {}
+      let level = 0;
+      while (e && level < 8) {
+        let names = [];
+        try { names = e.names(); } catch {}
+        const levelVars = {};
+        for (const nm of names.slice(0, 400)) {
+          let val, has = true;
+          try { val = e.getVariable(nm); } catch { has = false; }
+          if (!has) { levelVars[nm] = "[unavailable]"; continue; }
+          if (varNamesRe) {
+            if (varNamesRe.test(nm)) {
+              if (deep[nm] === undefined) { deep[nm] = describeDbgDeep(val, 0, depth, maxArr); }
+              levelVars[nm] = "→deep";
+            } else {
+              levelVars[nm] = previewDbg(val);
+            }
+          } else {
+            levelVars[nm] = previewDbg(val);
+          }
+        }
+        scopes.push({ level, count: names.length, vars: levelVars });
+        e = e.parent;
+        level++;
+      }
+      _cloCaps.push({ fn: name || "(anonymous)", url: (scr && scr.url) || "", line: (scr && scr.startLine) || null, scopeLevels: level, scopes, ...(varNamesRe ? { deep } : {}) });
+      if (_cloCaps.length > maxCalls) { _cloCaps.shift(); }
+    } catch {
+      /* 单帧异常绝不影响页面执行 */
+    }
+  };
+  const huge = targets.size > 400;
+  return {
+    ok: true, armed: true,
+    matchedFiles: targetFiles.size, matchedFunctions: targets.size, scannedFunctions: scanned,
+    note:
+      `已装好闭包观测：scriptUrl 命中 ${targetFiles.size} 文件 / ${targets.size} 函数（findScripts 按函数计、大文件几千函数正常）。跨导航存活、120s 自愈。` +
+      `现在**触发一次目标函数执行**（page_click/page_scroll/page_navigate；首屏触发就重载），再 closure_read(action:query) 取闭包变量。` +
+      (varNames ? `（已设 varNames=「${varNames}」→ 只**深序列化**命中的变量、其余给目录，结果可控）` : `（未给 varNames → 先返回**变量目录**：每层作用域有哪些变量+浅预览；看到目标变量名后用 varNames 收窄再 query 深取全值，如 256 字节 S-box）`) +
+      (huge && !fn && !varNames ? ` ⚠ 命中整个大文件 ${targets.size} 函数且没收窄 → 建议加 fn(目标函数名子串) 或 line 精准锁 dispatcher/runner，别把每个函数的作用域都 dump。` : ""),
+  };
+}
+
 function whiteboxCovStop() {
   try {
     if (_wbDbg) {
@@ -709,6 +943,17 @@ export class AgentEvalChild extends JSWindowActorChild {
     }
     if (message.name === "signer-trace-stop") {
       return signerTraceStop();
+    }
+    // ── 闭包变量读取（引擎层 Debugger 读 frame.environment）──
+    if (message.name === "closure-read-start") {
+      return closureReadStart(this.contentWindow, message.data || {});
+    }
+    if (message.name === "closure-read-query") {
+      // 返回**最后** maxCalls 条捕获（目标函数常在 init 之后才以"完整态"被调到，取末尾）。
+      return { ok: true, armed: !!_clo, count: _cloCaps.length, captures: _cloCaps.slice(-4), conf: _cloConf };
+    }
+    if (message.name === "closure-read-stop") {
+      return closureReadStop();
     }
     // ── P5 白盒：浏览器侧分支覆盖真值（引擎层 Debugger collectCoverageInfo）──
     if (message.name === "whitebox-cov-start") {

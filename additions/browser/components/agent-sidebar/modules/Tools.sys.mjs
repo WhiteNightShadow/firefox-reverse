@@ -41,6 +41,7 @@ const CONFIRM_TOOLS = new Set([
   "jsvmp_trace",
   "webapi_trace",
   "signer_trace",
+  "closure_read",
   "hook_inject",
   "whitebox_diff",
 ]);
@@ -57,7 +58,7 @@ function toolTable() {
         properties: {
           expression: { type: "string", description: "要执行的 JS 表达式或 IIFE。取大输出（如 `window.someFn.toString()` 拿混淆源码）配 saveTo 落盘" },
           awaitPromise: { type: "boolean", description: "结果是 Promise 时是否等待，默认 true" },
-          saveTo: { type: "string", description: "**大输出救星**：给一个工作目录相对路径（如 `work/dispatcher.js`），把**完整字符串结果**落盘（不进上下文）、只回摘要+路径，再用 code_search/fs_read 分析。**取 fn.toString() 几十万字混淆源码必用它**——不给的话结果会被上下文上限截、你还不一定自知。" },
+          saveTo: { type: "string", description: "**大输出救星**：给一个工作目录相对路径（如 `work/dispatcher.js`），把**完整结果**落盘（不进上下文）、只回摘要+路径，再用 code_search/fs_read 分析。字符串结果原样落盘（**取 fn.toString() 几十万字混淆源码必用它**）；**非字符串结果（对象/数组/VM 状态/常量池）也会 cycle-safe 序列化成 JSON 落盘**（不再静默失效/撞循环引用）。不给的话结果会被上下文上限截、你还不一定自知。" },
         },
         required: ["expression"],
       },
@@ -193,14 +194,14 @@ function toolTable() {
     ),
     T(
       "net_get",
-      "取单条请求的完整信息（含 headers/body/initiator 调用栈）。",
+      "取单条请求的完整信息（含**请求头 reqHeaders**[含 X-S/签名头]、响应头、body、initiator 调用栈）。`requestId` = `net_list` 返回的那条记录的 `id`（原样传 id 即可，两个名都认）。",
       {
         type: "object",
         properties: {
-          requestId: { type: "string" },
+          requestId: { type: "string", description: "= net_list 返回的 id（把那个数字原样传进来）" },
+          id: { type: "integer", description: "requestId 的别名（直接传 net_list 的 id 字段也行）" },
           includeBody: { type: "boolean" },
         },
-        required: ["requestId"],
       },
       b => b.net && b.net.get,
       (b, a, ctx) => b.net.get(a, ctx)
@@ -356,8 +357,34 @@ function toolTable() {
       (b, a, ctx) => b.page.signerTrace(a, ctx)
     ),
     T(
+      "closure_read",
+      "**读取某函数闭包/局部变量的真值**（引擎层 Debugger 观测：目标函数被调用时读 frame.environment 沿作用域链外走，不注入页面）。" +
+        "专治『**dispatcher / 解码后字节码 / S-box / 常量池 是闭包变量，`window.` 取不到、page_eval 够不到**』——JSVMP 逆向反复撞的根因（如运行时解码出的字节码数组、RC4 的 256 字节 S-box）。" +
+        "与 signer_trace 互补：signer_trace 读**入参**(arguments)，closure_read 读**闭包绑定**(environment)。" +
+        "用法 start→触发→query→stop：① `closure_read(action:start, scriptUrl:'目标脚本子串', fn:'dispatcher/runner 函数名子串')` 装观测（跨导航存活、120s 自愈）；② 触发一次目标函数执行（page_click/page_scroll/**page_navigate 重载**）；③ `closure_read(action:query)` 取捕获；④ `action:stop` 关。" +
+        "**两步工作流**：先**不传 varNames** → 返回**变量目录**（每层作用域有哪些变量名+浅预览，从中认出目标变量）；再带 `varNames:'变量名正则'` 重来 → **深序列化**命中变量的完整值（256 字节 S-box、几千字节字节码数组整段拿）。大闭包加 `saveTo:'work/closure.json'` 落盘再 fs_read。",
+      {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["start", "query", "stop"], description: "start=装观测 / query=取捕获 / stop=关闭" },
+          scriptUrl: { type: "string", description: "目标函数所在脚本 URL 子串（**强烈建议给**，收窄到目标脚本避免噪声/卡顿）" },
+          fn: { type: "string", description: "目标函数名（dispatcher/runner，混淆短名填子串也行）；匿名函数改用 line 定位" },
+          line: { type: "integer", description: "目标函数定义行号（匿名函数/箭头函数用它锁定）" },
+          varNames: { type: "string", description: "**第二步用**：要深序列化的变量名正则（如 `'_0x30754b|bytecode|sbox|table'`）。不给=只回变量目录+浅预览（先发现变量名）" },
+          argMatch: { type: "string", description: "只在**实参匹配此正则**的那次调用读闭包（跳过 init 噪声、命中真正在跑的那次）" },
+          maxCalls: { type: "integer", description: "保留最后 N 条捕获（环形缓冲，默认 4）" },
+          depth: { type: "integer", description: "深序列化递归深度（默认 4）" },
+          maxArr: { type: "integer", description: "数组/TypedArray 逐元素上限（默认 4096，够整段 S-box/字节码）" },
+          saveTo: { type: "string", description: "大闭包落盘工作目录相对路径、只回摘要（深序列化的字节码可达几十 KB）" },
+        },
+        required: ["action"],
+      },
+      b => b.page && b.page.readClosure,
+      (b, a, ctx) => b.page.readClosure(a, ctx)
+    ),
+    T(
       "hook_inject",
-      "**document-start hook 注入**（治『首屏/导航时就触发的签名请求，page_eval 装 hook 来不及、`window.__log is undefined`』）：在**每个新页面、早于页面 JS** 注入你的 hook → 页面自己的 fetch/XHR 都走你的包装、**跨刷新存活**。用法 start→**page_navigate/刷新**→query→stop：① `hook_inject(action:start)` **不传 script＝用内置 preset**（包 fetch+XHR，把每次请求 url/method/headers/body 记进 `window.__frxhook`）；传 `script` 则注入你自己的 IIFE 片段（自带防重复 guard、往某全局数组 push）。② `page_navigate(目标URL)` 触发——注入在页面 JS 之前，首屏请求被记下。③ `hook_inject(action:query)` 读回记录（默认读 `window.__frxhook`；自定义片段换了变量名就传 `global`）。④ `hook_inject(action:stop)` 关。**只在『必须靠导航/首屏才触发』时用**；能交互触发不刷新的，直接 page_eval 装 hook 更轻（见 skill「hook 日志大法」）。注：同 net 观测，只在**当前内容进程**生效，跨进程导航可能漏。",
+      "**document-start hook 注入**（治『首屏/导航时就触发的签名请求，page_eval 装 hook 来不及、`window.__log is undefined`』）：在**每个新页面、早于页面 JS** 注入你的 hook → 页面自己的 fetch/XHR 都走你的包装、**跨刷新存活**。用法 start→**page_navigate/刷新**→query→stop：① `hook_inject(action:start)` **不传 script＝用内置 preset**（包 fetch+XHR+sendBeacon，把每次请求 url/method/headers/body 记进 `window.__frxhook`）；传 `script` 则注入你自己的 IIFE 片段（自带防重复 guard、往某全局数组 push）。② `page_navigate(目标URL)` 触发——注入在页面 JS 之前，首屏请求被记下。③ `hook_inject(action:query)` 读回记录（默认读 `window.__frxhook`；自定义片段换了变量名就传 `global`）。④ `hook_inject(action:stop)` 关。**只在『必须靠导航/首屏才触发』时用**；能交互触发不刷新的，直接 page_eval 装 hook 更轻（见 skill「hook 日志大法」）。注：同 net 观测，只在**当前内容进程**生效，跨进程导航可能漏。",
       {
         type: "object",
         properties: {
@@ -517,6 +544,25 @@ function toolTable() {
       },
       b => b.jsvmp && b.jsvmp.jsTrace,
       (b, a, ctx) => b.jsvmp.jsTrace(a, ctx)
+    ),
+    T(
+      "crypto_scan",
+      "**通用密码学指纹扫描**（站点无关、纯分析无副作用）：给一段数据/源码 → 一眼判出用了哪些加密原语，免去人工暴力扫常量。" +
+        "识别 **RC4/类RC4 256-字节排列 S-box**、**XXTEA/TEA delta 0x9e3779b9**、**MD5/SHA-1/SHA-256 IV+K 常量**、**AES S-box/Te 查表**、**国密 SM4**、**自定义 base64 字母表**（64 字符排列）。" +
+        "全是**公开标准常量/结构**特征，对所有站点一视同仁。" +
+        "用法：① 拿到一段疑似 S-box/密钥/字节码（hex 串或 `[1,2,3]` 字节数组）→ `crypto_scan(input:'56544b...')` 判是不是 RC4/AES；" +
+        "② 拿到 signer/dispatcher 源码 → `crypto_scan(inputFile:'work/dispatcher.js')` 扫数字字面量里的 IV/K/delta 一眼定 MD5/XXTEA；" +
+        "③ 一段 64 字符串 → 判是否自定义 base64 表。**判型分歧时先用它**（如「是 XXTEA 还是 RC4」），别上来就暴力扫几千个常量。",
+      {
+        type: "object",
+        properties: {
+          input: { type: "string", description: "内联待扫数据：hex 字符串 / 字节数组 JSON（`[108,71,200,...]`）/ 源码文本（扫其中的 0x.. 十六进制+十进制字面量）/ 64 字符 base64 表。与 inputFile 二选一" },
+          inputFile: { type: "string", description: "工作目录内的数据/源码文件路径（如 work/mnsv2_bytecode.hex / work/dispatcher.js）；大文件用它别塞 input。与 input 二选一" },
+          out: { type: "string", description: "可选：把完整扫描结果 JSON 落盘到该工作目录相对路径" },
+        },
+      },
+      b => b.jsvmp && b.jsvmp.cryptoScan,
+      (b, a, ctx) => b.jsvmp.cryptoScan(a, ctx)
     ),
 
     // ───────── 页面侦察 / 组合工具 ─────────

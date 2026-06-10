@@ -181,12 +181,19 @@ export class NetworkBackend {
     return { ok: true, count: out.length, requests: out };
   }
 
-  /** 取单条完整记录（含 headers + initiatorStack）。先 drain 内容侧发起者栈合并进来。 */
-  async get({ requestId } = {}, ctx) {
+  /** 取单条完整记录（含 headers + initiatorStack）。先 drain 内容侧发起者栈合并进来。
+   *  **id 兼容**：net_list 返回字段是 `id`，模型常按此原样回传 `id`（而 schema 名为 requestId）→ 旧版只认
+   *  requestId 时收到 undefined、报 "request not found: undefined"。这里同时接受 requestId / id，治这个反复踩的入参错配。 */
+  async get({ requestId, id } = {}, ctx) {
     await this._drainStacks(ctx);
-    const rec = this._buf.find(r => r.id === Number(requestId));
+    const want = requestId != null ? requestId : id;
+    if (want == null) {
+      return { ok: false, error: "需要 requestId（= net_list 返回的 id）。把 net_list 里那条记录的 id 原样传进来。" };
+    }
+    const rec = this._buf.find(r => r.id === Number(want));
     if (!rec) {
-      return { ok: false, error: "request not found: " + requestId };
+      const ids = this._buf.slice(-10).map(r => r.id);
+      return { ok: false, error: "request not found: " + want, hint: "最近可取的 id：" + JSON.stringify(ids) + "（先 net_list 拿 id 再 net_get）" };
     }
     return { ok: true, request: rec };
   }
