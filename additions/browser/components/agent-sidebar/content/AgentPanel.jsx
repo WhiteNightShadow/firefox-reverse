@@ -265,6 +265,11 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const stepsRef = useRef([]); // 过程步骤的可变副本（闭包里更新）
   const curTextRef = useRef(-1); // 当前正在流式追加的 text step 下标
   const curThinkRef = useRef(-1); // 当前正在流式追加的 think(思考) step 下标
+  const [extRunning, setExtRunning] = useState(null); // 外部(MCP)驱动、本面板没在显示的会话（忙时横幅提示用）
+  const openThreadRef = useRef(null); // 最新 openThread 闭包，供 listRunning 定时器自动跟随（避免 effect deps 抖动）
+  const followingRef = useRef(false); // 自动跟随进行中（防重入，避免一轮没切完下一轮又发起）
+  const triedFollowRef = useRef(null); // 上次尝试跟随的会话 id（切不成=被别窗口占用时不再每 1.5s 刷错横幅）
+  const uiStateRef = useRef({ msgs: 0, input: "" }); // 给自动跟随读最新 UI 状态（不进 effect deps，防每次按键重建定时器）
 
   const refreshThreads = useCallback(async () => {
     if (!conversations) {
@@ -409,6 +414,82 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       }
     };
   }, [session, currentId, busy, conversations, refreshThreads]);
+
+  // ── 外部 / MCP 驱动可见性（自愈续看 + 空闲自动跟随 + 忙时横幅）──
+  // ① 自愈：本面板已停在某条「引擎在跑」的会话（如 MCP 刚 createThread+run、挂载那刻 isRunning 还是
+  //    false 没进 busy）却没开流式 → 这里补开 busy（启「续看」轮询）+ 异步补绑工作目录（治"已在 MCP
+  //    会话上但界面静止、📁 没目录"——用户实测撞到的）。② 自动跟随：仅当面板「真正空闲中性」（没在跑/
+  //    没历史消息/没在输入）才自动切到别的在跑会话，否则只弹横幅——绝不把正在用 Agent / 想打字的人硬拽走。
+  //    ③ 横幅点击跟随。listRunning 是进程内 Map 遍历、开销极小；列表只在「在跑集合」变化时才刷。
+  useEffect(() => {
+    if (!session || !session.listRunning) {
+      return undefined;
+    }
+    let timer = null;
+    let stopped = false;
+    let lastRunKey = "";
+    const tick = async () => {
+      try {
+        const running = session.listRunning() || [];
+        // ① 自愈：停在一条在跑的会话却没 busy → 补绑目录 + 补开流式
+        if (currentId && !busy && running.some(r => r.id === currentId)) {
+          try {
+            const t = await conversations.getThread(currentId);
+            if (t) {
+              bindWorkspace(effectiveWorkspace(t));
+              setMode((t && t.mode) || null);
+            }
+          } catch (_e) { /* ignore */ }
+          setBusy(true); // 启「续看」流式轮询 useEffect（deps 含 busy）
+        }
+        const others = running.filter(r => r && r.id && r.id !== currentId);
+        const runKey = others.map(r => r.id).sort().join(",");
+        if (runKey !== lastRunKey) {
+          lastRunKey = runKey;
+          if (others.length) {
+            refreshThreads(); // 仅当「别的在跑会话集合」变了才刷列表，避免每 1.5s 无谓 setState
+          }
+        }
+        if (!others.length) {
+          triedFollowRef.current = null;
+          setExtRunning(null);
+        } else {
+          const target = others[0];
+          const ui = uiStateRef.current;
+          // ② 只在「真正空闲中性」才自动切：没在跑 + 没历史消息 + 没在输入，否则只弹横幅（不抢人）
+          // 空闲=没在跑自己的回合(!busy) + 没在打字(!input)。停在哪条会话(哪怕有历史)都算空闲，
+          // 自动切到新的在跑会话；triedFollowRef 保证只切一次、用户切回别处不会被每秒拽回（转横幅）。
+          const eligible =
+            !busy &&
+            !String(ui.input || "").trim() &&
+            !!openThreadRef.current &&
+            !followingRef.current;
+          if (eligible && triedFollowRef.current !== target.id) {
+            triedFollowRef.current = target.id; // 试过这条；若没切成（被别窗口占用）下轮转横幅、不再每秒刷错
+            followingRef.current = true;
+            setExtRunning(null);
+            try {
+              await openThreadRef.current(target.id);
+            } finally {
+              followingRef.current = false;
+            }
+          } else {
+            setExtRunning(target); // 不够格自动切 / 已试过没切成 → 横幅提示
+          }
+        }
+      } catch (_e) { /* 探测失败不影响面板 */ }
+      if (!stopped) {
+        timer = setTimeout(tick, 1500);
+      }
+    };
+    timer = setTimeout(tick, 1500);
+    return () => {
+      stopped = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [session, currentId, busy, refreshThreads, conversations]);
 
   // 自动跟随最新回复：仅当用户贴在底部时才滚到底（含流式 liveSteps 增长）；
   // 用户手动上滑离开底部 → 不再打扰；滑回底部 → 恢复跟随。
@@ -760,6 +841,9 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     setShowHistory(false);
   }
 
+  openThreadRef.current = openThread; // 每渲染更新，供「自动跟随」定时器调用最新闭包
+  uiStateRef.current = { msgs: messages.length, input }; // 每渲染更新，供自动跟随判定"面板是否真正空闲中性"
+
   async function deleteThread(id, ev) {
     ev.stopPropagation();
     await conversations.deleteThread(id);
@@ -796,6 +880,17 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           <button type="button" onClick={onOpenSettings} title="设置" aria-label="设置">{ICONS.gear}</button>
         </span>
       </header>
+
+      {extRunning && (
+        <button
+          type="button"
+          onClick={() => { setExtRunning(null); openThread(extRunning.id); }}
+          title="外部(MCP)正在驱动另一个会话——点击切过去实时查看进度"
+          style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderBottom: "1px solid rgba(106,140,255,0.3)", background: "rgba(106,140,255,0.15)", color: "#6a8cff", padding: "6px 12px", cursor: "pointer", fontSize: "12px" }}
+        >
+          ⚡ 外部(MCP)正在驱动另一个会话（{extRunning.nSteps} 步）· 点击实时跟随
+        </button>
+      )}
 
       <div className="agent-ws">
         <button

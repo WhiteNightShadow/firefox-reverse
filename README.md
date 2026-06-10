@@ -15,13 +15,13 @@
 ![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)
 
-![AI](https://img.shields.io/badge/AI-DeepSeek_·_GLM_·_Claude_·_OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white)
+![AI](https://img.shields.io/badge/AI-DeepSeek_·_GLM_·_Kimi_·_MiniMax_·_Qwen_·_Claude_·_OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white)
 ![Engine](https://img.shields.io/badge/hooks-SpiderMonkey_C++-8957E5?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MPL_2.0-2EA043?style=for-the-badge)
 
 <br>
 
-[**📥 下载安装（Releases）**](../../releases)　·　[快速开始](#-快速开始5-步)　·　[工具大全](#-工具大全40)　·　[从源码构建](#-从源码构建)
+[**📥 下载安装（Releases）**](../../releases)　·　[快速开始](#-快速开始5-步)　·　[工具大全](#-工具大全44)　·　[从源码构建](#-从源码构建)
 
 </div>
 
@@ -55,7 +55,7 @@
 
 **③ 配置一个大模型 Key**（用一次配一次，存本地）
 点面板右上角 ⚙️ 设置 → 选一个模型供应商，填上你的 API Key：
-- 支持 **DeepSeek**、**智谱 GLM**、**Claude**、**OpenAI**，或任何 **OpenAI / Anthropic 协议兼容**的自定义端点（填 baseUrl + token + 模型名即可）。
+- 支持 **DeepSeek**、**智谱 GLM**、**Kimi（Moonshot）**、**MiniMax**、**通义千问（Qwen）**、**Claude**、**OpenAI**，或任何 **OpenAI / Anthropic 协议兼容**的自定义端点（填 baseUrl + token + 模型名即可）。
 
 > 💡 **模型选型建议**：简单 / 小站点用便宜模型（如 DeepSeek）即可上手；遇到复杂 / 大站点，弱模型在长链路里容易走弯路——这类目标建议用「自定义模型」端点接入 **Opus 4.8 或最新旗舰模型**，逆向推进更稳、少绕路。
 
@@ -93,11 +93,11 @@
 
 ## ✨ 核心亮点
 
-- **🧠 内置自主 Agent** —— 不是聊天框，是能连续调用 40+ 工具、自己跑完「抓包→定位→验证→补环境→实打」全流程的逆向智能体。
+- **🧠 内置自主 Agent** —— 不是聊天框，是能连续调用 44+ 工具、自己跑完「抓包→定位→验证→补环境→实打」全流程的逆向智能体。
 - **🔬 引擎层「上帝视角」工具** —— 签名器入参、JSVMP 逐指令、WASM import 边界、浏览器真值 vs Node 复刻的分支差分，全部在 C++ 引擎里观测，**页面检测不到、反调试挡不住**。
 - **🎛 两种工作模式** —— 全自动一条龙 / AI辅助逐阶段（你领航），按会话持久化、随时切换。
 - **🌐 站点无关** —— 面向**通用** JS / JSVMP / WASM / 签名逆向，不为任何特定网站定制；案例只是测试样例。
-- **🔌 任意大模型** —— DeepSeek / 智谱GLM / Claude / OpenAI 及任意 OpenAI/Anthropic 协议兼容端点，Key 存本地、不外传。
+- **🔌 任意大模型** —— DeepSeek / 智谱GLM / Kimi / MiniMax / 通义千问 / Claude / OpenAI 及任意 OpenAI/Anthropic 协议兼容端点，Key 存本地、不外传。
 - **💾 跨会话记忆** —— 确认过的事实 / 踩过的坑沉淀进内置 SQLite，下次不再兜圈。
 - **🧩 常驻引擎** —— 对话引擎跑在父进程系统模块，切侧栏 / 关窗口都不中断，多窗口工作目录互相隔离。
 
@@ -114,6 +114,12 @@
 | **适合** | 放着跑、目标清晰、信任模型 | 复杂目标、想边看边学、想自己把控方向 |
 | **价值** | 省心 | 弱模型 + 人类领航 = 少走死路，复杂案例更稳 |
 
+> **🧭 AI辅助模式的「领航」可以是人，也可以是另一个强模型 —— 两种玩法：**
+>
+> - **① 人工领航** —— 你读它每个阶段的结论、给方向修正，手把手把它从弯路里带出来。
+> - **② MCP 自动领航（成本拆分）** —— 让一个**强模型 director**（Claude / GPT 等最新旗舰）通过 **MCP** 自动「**指挥**」浏览器里这个内置逆向 Agent：浏览器 Agent 由一个**便宜的 worker 模型**（如 DeepSeek / 通义千问 / GLM）在 **AI辅助模式**下实操、**磨所有工具活**；**director 只读阶段结论、做方向修正**，不亲自跑工具。贵模型的判断力 + 便宜模型不知疲倦地磨工具，按 token 成本拆分（贵模型每轮只花一点点，便宜模型付掉所有 grinding）。
+>   配套 MCP 仓库 → **[frx-director-mcp](https://github.com/WhiteNightShadow/frx-director-mcp)**（开箱即用：浏览器里配好便宜模型的 Key + 用 `-marionette` 启动，把 MCP 接进你的 director 客户端，它就能自动建目录 / 选 AI辅助 / 新建会话 / 下任务 / 读阶段结论 / 回怼方向，循环到出结果）。
+
 ---
 
 ## 🎯 二阶段：黑盒可用 → 白盒纯算
@@ -125,18 +131,19 @@ Agent 的推进遵循一条务实路线——**先拿到能用的，再追求吃
 
 ---
 
-## 🧰 工具大全（40+）
+## 🧰 工具大全（44+）
 
 Agent 可自主调用的工具，按用途分类：
 
 | 类别 | 工具 | 说明 |
 |---|---|---|
 | **页面自动化** | `page_navigate` `page_click` `page_scroll` `page_type` `page_eval` `page_screenshot` `page_elements` `page_info` | 导航 / 点击 / 滑动 / 填表 / 执行 JS / 截图 / 取元素 |
-| **网络** | `net_capture` `net_list` `net_get` `net_intercept` `find_param_entry` | 抓包、看请求详情（含**发起者调用栈**）、拦改、定位参数入口 |
-| **🔑 签名器追踪** | `signer_trace` | **引擎层 Debugger** 抓签名函数的**真实入参**（混淆/闭包也能抓，页面无感） |
+| **网络** | `net_capture` `net_list` `net_get` `net_intercept` `hook_inject` `find_param_entry` | 抓包、看请求详情（含**发起者调用栈**）、拦改、**document-start 注入 hook**（抓首屏/刷新就发的请求）、定位参数入口 |
+| **🔑 签名器 / 闭包追踪** | `signer_trace` `closure_read` | **引擎层 Debugger** 抓签名函数**真实入参** + 读**闭包变量真值**（dispatcher / 运行时解出的字节码 / RC4 S-box / 常量池——`page_eval` 够不到的，页面无感） |
 | **代码 / 脚本** | `code_search` `scripts_list` `scripts_save` `scripts_capture_all` | 在语料 + 工作目录里搜代码、落盘脚本 |
 | **WebAPI 指纹** | `webapi_trace` `webapi_query` | 记录页面读了哪些 `navigator`/`document`/`canvas`… 指纹 |
-| **🔒 JSVMP 白盒** | `jsvmp_trace` `jsvmp_split_dispatcher` `jsvmp_disassemble` `jsvmp_query` `jsvmp_status` | 逐 op trace → 识别派发器/解码 → 字节反汇编 → 还原算法 |
+| **🔒 JSVMP 白盒** | `jsvmp_trace` `jsvmp_split_dispatcher` `dispatcher_probe` `jsvmp_disassemble` `jsvmp_query` `jsvmp_status` | 逐 op trace → 识别派发器（结构无关 `dispatcher_probe` 兜底 switch/if-else/跳转表）/解码 → 字节反汇编 → 还原算法 |
+| **🔎 密码学识别** | `crypto_scan` | 一眼识别 RC4 的 S-box、XXTEA 的 delta、MD5/SHA 的 IV、AES 的 S-box/Te 表、SM4、自定义 base64 字母表——判型不再暴力扫常量 |
 | **🧬 WASM** | `wasm_probe` `wasm_disasm` | import-trace（探 WASM 读的 DOM/env 边界）、`.wasm`→可读 **WAT** |
 | **🩺 白盒诊断** | `whitebox_diff` | **浏览器真值 vs Node 复刻**的引擎级分支差分——把「黑盒兜圈试值」变成「白盒定位是哪条分支/哪个 env 带偏」，全程非侵入 |
 | **通用 JS trace** | `js_trace` | AST 插桩 + Node 执行，逐函数追踪（非 JSVMP 的普通 JS） |
@@ -204,7 +211,7 @@ cd upstream && ./mach build && ./mach package
 ## ❓ FAQ
 
 - **要不要懂编译 / 配环境？** 不用。下载 Releases 安装包即可，配个大模型 Key 就能用。
-- **支持哪些大模型？** DeepSeek / 智谱GLM / Claude / OpenAI，以及任何 OpenAI/Anthropic 协议兼容的自定义端点。Key 只存本地。
+- **支持哪些大模型？** DeepSeek / 智谱GLM / Kimi（Moonshot）/ MiniMax / 通义千问（Qwen）/ Claude / OpenAI，以及任何 OpenAI/Anthropic 协议兼容的自定义端点。Key 只存本地。
 - **我的 Key / 数据会上传吗？** 不会。Key 存在本地浏览器配置里，只用于直连你选的大模型端点。
 - **全自动和 AI辅助选哪个？** 目标清晰、信任模型 → 全自动；复杂 / 想把控方向 / 想学 → AI辅助。
 - **能保证破解任何站点吗？** 不能。强保护（深度 JSVMP / 自带密钥的 WASM）依然很难；本工具是把分析效率拉满，不是银弹。
@@ -218,6 +225,23 @@ cd upstream && ./mach build && ./mach package
 - **仅在你拥有合法授权的目标上使用**（你自己的平台、获得授权的测试对象、CTF / 教学等）。
 - **不得**用于未授权访问、绕过他人系统的安全机制、大规模抓取或任何违反目标方服务条款 / 当地法律的行为。
 - 作者与贡献者不对任何滥用行为负责。下载即表示你已理解并同意上述条款。
+
+---
+
+## 📝 版本更新记录
+
+### v0.19（2026-06-10）
+- **新增模型**：Kimi（Moonshot，`kimi-k2.6`）、MiniMax（`MiniMax-M3`）、通义千问（Qwen，`qwen3-max`）—— 连同原有 DeepSeek / 智谱 GLM / Claude / OpenAI，主流大模型基本覆盖。
+- **MCP 外部驱动可见性**：新增 `AgentSession.listRunning()` + 侧栏「空闲自动跟随 / 忙时横幅」——外部（如 MCP director）驱动的会话能在侧栏**自动切到、实时流式、并显示绑定的工作目录**（配套 [frx-director-mcp](https://github.com/WhiteNightShadow/frx-director-mcp) 成本拆分玩法，见「两种工作模式」）。
+- **「停止」即时生效（框架级修复）**：`run_node` / `run_python` 卡住时点停止会**立刻杀掉子进程**（之前要干等到超时才结束）；`run_node` 默认超时 **300s → 30s**（正常 JS 加载足够，hang 住能更快释放）。
+- **工具补齐**：`crypto_scan`（密码学常量识别）、`closure_read`（引擎层读闭包变量真值）、`hook_inject`（document-start 注入 hook）、`dispatcher_probe`（结构无关 JSVMP 派发器探测）—— 工具数 40+ → **44+**。
+- **方法论 / 健壮性**：简单站「快车道」判型（先 hook 对比标准算法、不硬扣混淆）、`page_eval` 全权 + 大输出 `saveTo` 落盘、SSR 站识别、长任务护栏对强模型软化（硬限制转软提示、随上下文窗口缩放）。
+
+### v0.17 – v0.18（2026-06-08 起）
+- 三端（Windows / macOS / Linux）正式构建并发布到 Releases；上下文窗口按所选模型自动缩放（`modelBudget`，长逆向不再轻易截断）；持续打磨 skill 方法论、工具稳定性与长任务健壮性。
+
+### 更早（v0.12 – v0.16）
+- JSVMP 离线工具链（派发器拆分 / 字节反汇编）封成一等工具；通用 **WebAPI 指纹 tracer**（C++ 引擎层、页面无感）；**WASM** 边界探测 `wasm_probe` + 反汇编 `wasm_disasm`；通用 JS 逐函数 trace `js_trace`；签名器入参追踪 `signer_trace`；白盒分支差分 `whitebox_diff`；内置逆向方法论 `skill_get` + 跨会话 **SQLite 记忆** + 反绕圈护栏；对话引擎挪到父进程**常驻**（切窗 / 关侧栏不中断）。
 
 ---
 

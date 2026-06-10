@@ -222,6 +222,17 @@ export const agentSession = {
     const s = sessions.get(threadId);
     return !!(s && s.running);
   },
+  /** 列出当前所有「正在跑」的线程（id + 进度），供面板发现被外部/MCP 驱动、但自己没在显示的会话 →
+   *  空闲时自动跟随、忙时横幅提示。只读，开销极小（遍历进程内 sessions Map）。 */
+  listRunning() {
+    const out = [];
+    for (const [id, s] of sessions) {
+      if (s && s.running) {
+        out.push({ id, nSteps: (s.steps || []).length, checkpointSeq: s.checkpointSeq || 0 });
+      }
+    }
+    return out;
+  },
   /** 多窗口隔离：从候选线程里认领一条**没被别的窗口占用**的（无活订阅者 且 未被预留），原子预留并返回其 id；
    *  都被占了返回 null（调用方应新建空线程给本窗口）。每个浏览器窗口的侧栏挂载时调，确保两窗口不绑同一条线程。 */
   acquireThread(candidateIds) {
