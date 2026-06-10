@@ -118,7 +118,7 @@
 >
 > - **① 人工领航** —— 你读它每个阶段的结论、给方向修正，手把手把它从弯路里带出来。
 > - **② MCP 自动领航（成本拆分）** —— 让一个**强模型 director**（Claude / GPT 等最新旗舰）通过 **MCP** 自动「**指挥**」浏览器里这个内置逆向 Agent：浏览器 Agent 由一个**便宜的 worker 模型**（如 DeepSeek / 通义千问 / GLM）在 **AI辅助模式**下实操、**磨所有工具活**；**director 只读阶段结论、做方向修正**，不亲自跑工具。贵模型的判断力 + 便宜模型不知疲倦地磨工具，按 token 成本拆分（贵模型每轮只花一点点，便宜模型付掉所有 grinding）。
->   配套 MCP 仓库 → **[frx-director-mcp](https://github.com/WhiteNightShadow/frx-director-mcp)**（开箱即用：浏览器里配好便宜模型的 Key + 用 `-marionette` 启动，把 MCP 接进你的 director 客户端，它就能自动建目录 / 选 AI辅助 / 新建会话 / 下任务 / 读阶段结论 / 回怼方向，循环到出结果）。
+>   配套 MCP 仓库 → **[frx-director-mcp](https://github.com/WhiteNightShadow/frx-director-mcp)**（**开箱即用**：接好 MCP 后，把它 README 里的「🟢 一键贴给你的 AI」那**一整段复制给你的 director**，它会自己自检环境、缺啥用一句话引导你补齐、然后自动建目录 / 选 AI辅助 / 新建会话 / 下任务 / 读结论 / 回怼方向、循环到出结果——你只需在它问的时候给**目标站**）。
 
 ---
 
