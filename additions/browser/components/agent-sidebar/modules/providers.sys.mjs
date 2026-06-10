@@ -44,6 +44,39 @@ export const BUILTIN_PROVIDERS = Object.freeze({
     defaultModel: "glm-5.1",
     models: ["glm-5.1", "glm-5", "glm-5-turbo", "glm-4.7", "glm-4.6", "glm-4.5-air"],
   },
+  // Kimi（Moonshot AI，OpenAI 协议）。kimi-k2.6 = 最新旗舰：1T MoE 多模态 agentic 模型、256k 上下文、
+  // 强工具调用 + 长程代码（适合驱动本 Agent）。★旧 kimi-k2-*(0711/turbo) 系列 2026-05-25 已下线 → 用 kimi-k2.6。
+  // China 直连用 api.moonshot.cn；国际版改 baseUrl 为 https://api.moonshot.ai。API key 直接作 Bearer。
+  kimi: {
+    label: "Kimi (Moonshot)",
+    protocol: "openai",
+    baseUrl: "https://api.moonshot.cn",
+    chatPath: "/v1/chat/completions",
+    defaultModel: "kimi-k2.6",
+    models: ["kimi-k2.6", "kimi-k2.5", "moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"],
+  },
+  // MiniMax（OpenAI 兼容）。MiniMax-M3 = 最新 M 系：1M 上下文、agentic 推理 + 工具调用 + 代码（支持 stream/tools）。
+  // ★端点按账号地区：国际版 https://api.minimax.io（已文档确认）；China 直连用 https://api.minimaxi.com。
+  // 若用中转站，改用 custom provider 填中转 baseUrl/模型名。
+  minimax: {
+    label: "MiniMax",
+    protocol: "openai",
+    baseUrl: "https://api.minimaxi.com",
+    chatPath: "/v1/chat/completions",
+    defaultModel: "MiniMax-M3",
+    models: ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
+  },
+  // 通义千问（阿里 DashScope，OpenAI 兼容；端点是 /compatible-mode/v1，不是 /v1）。qwen3-max = 最新旗舰
+  // （强工具调用，适合驱动 Agent）；qwen-plus 均衡、qwen-turbo / qwen3.5-flash 更快更省。API key 直接作 Bearer。
+  // China 直连用 dashscope.aliyuncs.com；国际版改 baseUrl 为 https://dashscope-intl.aliyuncs.com/compatible-mode/v1。
+  qwen: {
+    label: "通义千问 (Qwen)",
+    protocol: "openai",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    chatPath: "/chat/completions",
+    defaultModel: "qwen3-max",
+    models: ["qwen3-max", "qwen-max-latest", "qwen-plus", "qwen-turbo", "qwen3.5-flash"],
+  },
   // 自定义端点：URL/token/协议/模型全部在设置里填；协议支持 OpenAI(/v1/chat/completions) 与 Anthropic(/v1/messages)。
   // 视觉模型(gpt-4o 等)也通过自定义端点配置（OpenAI 协议 + 视觉模型名）。
   custom: {
@@ -96,7 +129,7 @@ export function isVisionModel(model) {
   if (VISION_MODELS.has(m)) {
     return true;
   }
-  return /(^|[-_/])(vl|vision)([-_/]|$)|gpt-4o|gpt-4\.1|qwen.*vl|claude-3|gemini-(1\.5|2)/.test(m);
+  return /(^|[-_/])(vl|vision)([-_/]|$)|gpt-4o|gpt-4\.1|qwen.*vl|claude-3|gemini-(1\.5|2)|kimi-k2/.test(m);
 }
 
 /** 给 SettingsPane 下拉用。 */

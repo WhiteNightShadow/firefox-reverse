@@ -463,7 +463,7 @@ export class WorkspaceBackend {
   }
 
   /** 派生子进程并捕获合并输出（node/python/npm 共用）。PATH 经 _mergedPath 补全。 */
-  async _spawn(command, argv, { root, timeoutMs = 120000 } = {}) {
+  async _spawn(command, argv, { root, timeoutMs = 120000, signal } = {}) {
     const SP = lazyESM("resource://gre/modules/Subprocess.sys.mjs");
     const Subprocess = SP && SP.Subprocess;
     if (!Subprocess) {
@@ -478,6 +478,24 @@ export class WorkspaceBackend {
       stderr: "stdout", // 合并 stderr 到 stdout 一并回传
     });
     _runningProcs.add(proc); // 登记，供关机/中止时统一 kill（防 Subprocess 关机阻塞器等待）
+    // ★中止即杀子进程：stop() 触发 ctx.signal abort 时立刻 kill，否则 hang 住的 run_node
+    //   会把整个回合卡到 timeoutMs(300s) 才 settle（用户撞到的"stop 不即时生效"根因）。
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      try {
+        proc.kill();
+      } catch {
+        /* ignore */
+      }
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
     const T = lazyESM("resource://gre/modules/Timer.sys.mjs");
     let timedOut = false;
     let timer = null;
@@ -520,10 +538,17 @@ export class WorkspaceBackend {
       /* killed */
     }
     _runningProcs.delete(proc); // 已退出 → 取消登记
-    return { exitCode, timedOut, capped, output };
+    if (signal) {
+      try {
+        signal.removeEventListener("abort", onAbort);
+      } catch {
+        /* ignore */
+      }
+    }
+    return { exitCode, timedOut, capped, output, aborted };
   }
 
-  async _run(kind, { code, file, args = [], timeoutMs = 300000 } = {}, ctx) {
+  async _run(kind, { code, file, args = [], timeoutMs = 30000 } = {}, ctx) {
     const root = this._assertRoot(ctx);
     await IOUtils.makeDirectory(root, { ignoreExisting: true, createAncestors: true });
     const exe = await this._resolveExe(kind);
@@ -552,13 +577,14 @@ export class WorkspaceBackend {
     for (const a of Array.isArray(args) ? args : []) {
       argv.push(String(a));
     }
-    const r = await this._spawn(exe, argv, { root, timeoutMs });
+    const r = await this._spawn(exe, argv, { root, timeoutMs, signal: ctx && ctx.signal });
     const out = {
-      ok: r.exitCode === 0 && !r.timedOut,
+      ok: r.exitCode === 0 && !r.timedOut && !r.aborted,
       kind,
       exe,
       exitCode: r.exitCode,
       timedOut: r.timedOut,
+      aborted: r.aborted,
       capped: r.capped,
       cwd: root,
       output: r.output,
@@ -645,7 +671,7 @@ export class WorkspaceBackend {
     const pkgs = (Array.isArray(packages) ? packages : [packages]).filter(Boolean).map(String);
     const extra = (Array.isArray(args) ? args : []).map(String);
     const argv = ["install", ...pkgs, ...extra];
-    const r = await this._spawn(npm, argv, { root, timeoutMs });
+    const r = await this._spawn(npm, argv, { root, timeoutMs, signal: ctx && ctx.signal });
     return {
       ok: r.exitCode === 0 && !r.timedOut,
       npm,
