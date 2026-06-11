@@ -44,9 +44,15 @@
 
 | 系统 | 文件 | 安装 |
 |---|---|---|
-| **Windows** | `FirefoxReverse-*-win64.zip` | 解压，双击 `firefox.exe` |
-| **macOS (Apple Silicon)** | `FirefoxReverse-*-mac-arm64.dmg` | 打开 → 拖进「应用程序」 |
-| **Linux (x86_64)** | `FirefoxReverse-*-linux-x86_64.tar.xz` | 解压，运行 `./firefox` |
+| **Windows** | `firefox-*.win64.zip` | 解压，双击 `firefox.exe`（若 SmartScreen 拦截 → 「更多信息」→「仍要运行」）|
+| **macOS (Apple Silicon)** | `firefox-*.mac.dmg` | 打开 → 拖进「应用程序」；**首次打开若提示「已损坏」见下方 ⚠️** |
+| **Linux (x86_64)** | `firefox-*.linux-x86_64.tar.xz` | 解压，运行 `./firefox` |
+
+> ⚠️ **macOS 首次打开提示「"Firefox Reverse" 已损坏，无法打开」？** 这**不是真的损坏** —— 本浏览器是自签名应用、未做 Apple 付费公证（$99/年），从浏览器下载后会被系统打上「隔离」标记，Apple Silicon 上就报这个。打开「终端」执行一行去掉隔离即可正常打开：
+> ```bash
+> xattr -dr com.apple.quarantine "/Applications/Firefox Reverse.app"
+> ```
+> （路径换成你的实际安装位置；或：系统设置 → 隐私与安全性 → 拉到底点「仍要打开」。）
 
 **② 打开 AI 侧边栏**
 启动浏览器 → 点右侧边栏的 **Firefox‑Reverse** 工具图标（机器人/逆向图标），打开 Agent 面板。
@@ -162,7 +168,7 @@ Agent 可自主调用的工具，按用途分类：
 | **macOS** | Apple Silicon (arm64) | ✅ 提供安装包 |
 | **Linux** | x86_64 | ✅ 提供安装包 |
 
-安装包通过 GitHub Actions **自动编译、自动发布到 [Releases](../../releases)**，每次打 tag 自动出三端构建。
+三端安装包在 **Linux 构建机上交叉编译**（macOS arm64 / Windows64 / Linux x86_64）后发布到 [Releases](../../releases)。
 
 ---
 
