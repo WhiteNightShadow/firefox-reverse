@@ -72,6 +72,10 @@ function summarizeEnv(env) {
 
 const sessions = new Map(); // threadId -> state
 
+// 多窗口预留的心跳过期：持有窗口活着时每隔几秒续约 ts；超过此时长没续约 = 持有者已销毁
+// （切栏/关窗时文档被异常拆除、releaseThread 没跑成）→ 预留视为可回收。比心跳间隔(3s)宽裕。
+const RESERVE_TTL_MS = 8000;
+
 // 关机时中止所有运行中的会话（停掉挂起的 LLM 流/工具 + 经 signal 让子进程被 kill），让 firefox
 // 主进程干净快速退出。修「关闭浏览器后进程僵尸/慢退」：实测基座(无 agent)SIGTERM 1s 退，agent
 // 激活后占资源则慢退；这里在关机早期主动中止。Node 自测无 Services.obs → try 兜底。
@@ -110,7 +114,10 @@ function newState() {
     aborted: false,
     abort: null,
     subs: new Set(),
-    reserved: false, // 多窗口隔离：某窗口认领了本线程(还没订阅或刚关订阅的瞬间)→ 别的窗口同刻挂载别再认领同一条
+    reservation: null, // 多窗口隔离：{ owner, ts } 或 null。owner=持有窗口 token；ts=最后心跳。
+    //   只有「owner 不同 且 心跳新鲜(未过 TTL)」才算被别的活窗口占用；过期/同 owner/空 → 可认领。
+    //   修「切到别的插件侧栏再切回→该会话已在另一个窗口打开」：旧 reserved 布尔无持有者无存活性，
+    //   文档异常拆除时 releaseThread 没跑→reserved 永真泄漏→同窗口重挂载误判成"别的窗口占用"。
     pendingConfirm: null, // { id, name, args, resolve }
     _notifyTimer: null, // 节流定时器
     _lastNotify: 0, // 上次广播时刻
@@ -233,29 +240,57 @@ export const agentSession = {
     }
     return out;
   },
-  /** 多窗口隔离：从候选线程里认领一条**没被别的窗口占用**的（无活订阅者 且 未被预留），原子预留并返回其 id；
-   *  都被占了返回 null（调用方应新建空线程给本窗口）。每个浏览器窗口的侧栏挂载时调，确保两窗口不绑同一条线程。 */
-  acquireThread(candidateIds) {
+  /** 多窗口隔离：从候选线程里认领一条**没被别的活窗口占用**的，原子预留(记 owner+心跳)并返回其 id；
+   *  都被别的活窗口占着返回 null（调用方应新建空线程给本窗口）。`owner`=本窗口稳定 token：
+   *  同一 chrome 窗口切栏重挂载会传同一 token → 立即重认领自己那条（不受 TTL 影响）；
+   *  传旧式无 owner 时退化为匿名(仍按 TTL 回收)。每个侧栏挂载/切线程时调。 */
+  acquireThread(candidateIds, owner) {
+    const token = owner || "anon";
+    const now = Date.now();
     for (const id of (candidateIds || [])) {
       if (!id) {
         continue;
       }
-      const s = sessions.get(id);
-      if (!s || !s.reserved) {                 // 未被任何窗口预留 → 认领（面板用轮询不 subscribe，subs 恒空，故只看 reserved）
-        getOrInit(id).reserved = true;         // 原子预留：同刻挂载的别的窗口认领不到这条
+      const s = getOrInit(id);
+      const r = s.reservation;
+      // 仅「别的 owner 且心跳仍新鲜」= 真有另一个活窗口占用；自己持有 / 无预留 / 预留过期(持有者已销毁) → 认领
+      const liveOther = r && r.owner !== token && now - r.ts < RESERVE_TTL_MS;
+      if (!liveOther) {
+        s.reservation = { owner: token, ts: now };
         return id;
       }
     }
     return null;
   },
-  /** 释放本窗口对某线程的预留（侧栏切走该线程 / 关闭窗口时调）。释放后该线程可被其它窗口/本窗口重开时再认领（=续看）。
-   *  这是配套 acquireThread 的关键：面板不 subscribe，所以预留必须由面板在 currentId 生命周期结束时显式释放，
-   *  否则 reserved 永不清→关窗重开永远新建、续不回（旧设计漏洞）。 */
-  releaseThread(threadId) {
+  /** 心跳续约：本窗口持有 currentId 期间定时调，刷新 ts 证明自己还活着→别的窗口在 TTL 内认领不到。
+   *  仅当本 owner 仍持有(或预留为空=已被回收则重新认领)时续；预留已被别的活窗口接管则返回 false(本窗口已失去)。 */
+  renewThread(threadId, owner) {
     const s = sessions.get(threadId);
-    if (s) {
-      s.reserved = false;                       // 无条件释放：引擎仍在后台跑不受影响（关窗续跑），重开时再 acquire 即续看
+    if (!s) {
+      return false;
     }
+    const token = owner || "anon";
+    if (!s.reservation) {
+      s.reservation = { owner: token, ts: Date.now() };
+      return true;
+    }
+    if (s.reservation.owner !== token) {
+      return false;                             // 已被别的活窗口接管，不抢回
+    }
+    s.reservation.ts = Date.now();
+    return true;
+  },
+  /** 释放本窗口对某线程的预留（侧栏切走该线程 / pagehide / 关闭窗口时调）。释放后该线程可被任意窗口重开续看。
+   *  传了 owner 则只释放自己的预留(不抢释放别窗口的)；不传 owner=旧式无条件释放。引擎后台仍跑不受影响。 */
+  releaseThread(threadId, owner) {
+    const s = sessions.get(threadId);
+    if (!s || !s.reservation) {
+      return;
+    }
+    if (owner && s.reservation.owner !== owner) {
+      return;                                   // 不是自己的预留，别动（避免误放别的活窗口）
+    }
+    s.reservation = null;
   },
   /** 取本线程当前快照（mount/remount 恢复用）；无则 null。 */
   getState(threadId) {
@@ -274,7 +309,7 @@ export const agentSession = {
     return () => {
       s.subs.delete(cb);
       if (s.subs.size === 0) {
-        s.reserved = false; // 窗口关闭/退订 → 释放预留，本线程可被其它窗口再认领（关后台续跑不受影响）
+        s.reservation = null; // 窗口关闭/退订 → 释放预留，本线程可被其它窗口再认领（关后台续跑不受影响）
       }
     };
   },

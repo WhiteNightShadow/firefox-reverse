@@ -271,6 +271,31 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const triedFollowRef = useRef(null); // 上次尝试跟随的会话 id（切不成=被别窗口占用时不再每 1.5s 刷错横幅）
   const uiStateRef = useRef({ msgs: 0, input: "" }); // 给自动跟随读最新 UI 状态（不进 effect deps，防每次按键重建定时器）
 
+  // 多窗口预留的 owner token：同一 chrome 窗口内复用（切到别的侧栏再切回=文档重建，但宿主窗口不变）→
+  // 重挂载传同一 token → 立即重认领自己那条会话，不受心跳 TTL 影响。取不到宿主窗口则退化为 per-mount 随机
+  // token（仍靠引擎侧 TTL 回收过期预留）。修「切栏回来→该会话已在另一窗口打开」。
+  const ownerRef = useRef(null);
+  if (!ownerRef.current) {
+    ownerRef.current = (() => {
+      try {
+        const host =
+          (typeof window !== "undefined" &&
+            (window.browsingContext?.topChromeWindow ||
+              window.docShell?.chromeEventHandler?.ownerGlobal)) ||
+          null;
+        if (host) {
+          if (!host.__frxAgentOwnerToken) {
+            host.__frxAgentOwnerToken = "win-" + Math.random().toString(36).slice(2);
+          }
+          return host.__frxAgentOwnerToken;
+        }
+      } catch {
+        /* 宿主窗口不可达 → 退化 */
+      }
+      return "mount-" + Math.random().toString(36).slice(2);
+    })();
+  }
+
   const refreshThreads = useCallback(async () => {
     if (!conversations) {
       return [];
@@ -295,13 +320,13 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         // 多窗口隔离：认领"最近且没被别的窗口占用"的线程续看；被占（另一窗口正用）或无历史 → 新建空线程给本窗口，
         // 确保两个浏览器窗口绝不绑同一条线程（否则对话/进度/工作目录全串）。
         const latest = list.length > 0 ? list[0].id : null;
-        let id = (latest && session && session.acquireThread) ? session.acquireThread([latest]) : latest;
+        let id = (latest && session && session.acquireThread) ? session.acquireThread([latest], ownerRef.current) : latest;
         let t = id ? await conversations.getThread(id) : null;
         if (!t) {
           t = await conversations.createThread(); // 本窗口独立的新空线程（默认不绑目录，需手动「打开目录」）
           id = t.id;
           if (session && session.acquireThread) {
-            session.acquireThread([id]);
+            session.acquireThread([id], ownerRef.current);
           }
         }
         if (!cancelled && t) {
@@ -327,15 +352,49 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     }
   }, [session, currentId]);
 
-  // 多窗口隔离的**预留生命周期**：本侧栏显示 currentId 期间持有它的预留（mount/新建/切换时已 acquire）；
-  // currentId 变化(切走) 或 **侧栏/窗口关闭(unmount)** 时**释放**——这样：① 本窗口开着时别的窗口认领不到这条
-  // (不会串对话)；② 关窗后释放，重开/别窗口可再认领续看。面板不 subscribe，预留只能这样显式管理。
+  // 多窗口隔离的**预留生命周期 + 心跳**：本侧栏显示 currentId 期间，定时 renew 续约证明本窗口还活着
+  // （别的窗口在 TTL 内认领不到这条→不串对话）；切走/关闭时释放。**关键修复**：切到别的插件侧栏时
+  // 文档被异常拆除、React unmount 清理常跑不成→旧版预留泄漏→切回报"已在另一窗口打开"。两道兜底：
+  // ① 监听 `pagehide`（文档拆除时比 React unmount 更可靠地触发）即时释放；② 引擎侧心跳 TTL：哪怕都没跑成，
+  // 旧预留过期即可回收，且同窗口重挂载用同一 owner token 可立即重认领。
   useEffect(() => {
-    if (!session || !currentId || !session.releaseThread) {
+    if (!session || !currentId) {
       return undefined;
     }
+    const owner = ownerRef.current;
+    const renew = () => {
+      try {
+        session.renewThread && session.renewThread(currentId, owner);
+      } catch {
+        /* ignore */
+      }
+    };
+    renew(); // 立即续一次（覆盖 acquire 与首个心跳之间的空窗）
+    const hb = session.renewThread ? setInterval(renew, 3000) : null;
+    const release = () => {
+      try {
+        session.releaseThread && session.releaseThread(currentId, owner);
+      } catch {
+        /* ignore */
+      }
+    };
+    let win = null;
+    try {
+      win = typeof window !== "undefined" ? window : null;
+    } catch {
+      win = null;
+    }
+    if (win && win.addEventListener) {
+      win.addEventListener("pagehide", release);
+    }
     return () => {
-      try { session.releaseThread(currentId); } catch {}
+      if (hb) {
+        clearInterval(hb);
+      }
+      if (win && win.removeEventListener) {
+        win.removeEventListener("pagehide", release);
+      }
+      release();
     };
   }, [session, currentId]);
 
@@ -780,7 +839,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   async function newChat() {
     const t = await conversations.createThread(); // 新会话不绑定目录（默认为空，需用户手动「打开目录」）
     if (session && session.acquireThread) {
-      session.acquireThread([t.id]); // 认领新线程（预留）→ 别的窗口认领不到，不会串对话
+      session.acquireThread([t.id], ownerRef.current); // 认领新线程（预留）→ 别的窗口认领不到，不会串对话
     }
     setCurrentId(t.id);
     setMessages([]);
@@ -817,7 +876,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   async function openThread(id) {
     // 切到历史会话：先认领；若已被**别的窗口**打开 → 不切、提示（避免两窗口绑同一条线程串对话）。切回当前条不用认领。
     if (id !== currentId && session && session.acquireThread) {
-      const got = session.acquireThread([id]);
+      const got = session.acquireThread([id], ownerRef.current);
       if (!got) {
         setError("该会话已在另一个浏览器窗口打开，不能在此窗口同时打开（避免对话串）。");
         setShowHistory(false);
