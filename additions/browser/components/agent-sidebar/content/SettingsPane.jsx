@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 // providers 由宿主注入（index.jsx 运行时用 ChromeUtils 加载 providers.sys.mjs 后传入），
 // 使本组件零静态依赖 .sys.mjs，便于 esbuild 打包成干净 bundle。
 
@@ -26,6 +26,11 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
   const [saved, setSaved] = useState(false);
 
   const isCustom = provider === "custom";
+  // 在途拉取守卫：拉取期间切 provider / 重复点按钮时，过期响应直接丢弃（否则旧 provider 的
+  // 模型列表会塞进新 provider 的下拉，保存后聊天必错模型名）
+  const providerRef = useRef(provider);
+  providerRef.current = provider;
+  const fetchSeqRef = useRef(0);
 
   function onProviderChange(id) {
     setProvider(id);
@@ -56,12 +61,19 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
     if (!fetchModels) {
       return;
     }
+    const seq = ++fetchSeqRef.current;
+    const forProvider = provider;
+    const stale = () => seq !== fetchSeqRef.current || providerRef.current !== forProvider;
     setFetchMsg("获取中…");
     try {
-      const list = await fetchModels(customUrl, apiKey);
+      // 自定义用用户填的 Base URL；内置 provider 用其官方 baseUrl（模型列表动态拉取，内置列表仅兜底）
+      const list = await fetchModels(isCustom ? customUrl : current.baseUrl, apiKey);
+      if (stale()) {
+        return;
+      }
       setFetchedModels(list);
       setManual(false);
-      if (customProtocol === "anthropic") {
+      if (isCustom && customProtocol === "anthropic") {
         const cl = list.filter((x) => /claude/i.test(x));
         setFetchMsg(
           cl.length
@@ -75,6 +87,9 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         }
       }
     } catch (e) {
+      if (stale()) {
+        return;
+      }
       setFetchMsg("失败：" + ((e && e.message) || e));
     }
     setSaved(false);
@@ -90,8 +105,8 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         ? fetchedClaude
         : current.anthropicModels || []
       : fetchedModels;
-  const showFetchBtn = isCustom; // 两种协议都可尝试从端点拉取模型
-  const modelOptions = isCustom ? customModels : current.models;
+  // 内置 provider：拉取成功用动态列表，否则回退内置硬编码列表
+  const modelOptions = isCustom ? customModels : fetchedModels.length ? fetchedModels : current.models;
 
   return (
     <div className="settings-pane">
@@ -201,41 +216,72 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
                   }}
                 />
               )}
-              {showFetchBtn && (
-                <button type="button" className="settings-pane__btn-ghost" onClick={doFetchModels} title="从 Base URL 的 /v1/models 拉取">
-                  获取模型列表
-                </button>
-              )}
+              <button
+                type="button"
+                className="settings-pane__btn-ghost"
+                onClick={doFetchModels}
+                title="从 Base URL 拉取模型列表（自动探测 /models 与 /v1/models）"
+              >
+                获取模型列表
+              </button>
             </div>
-            {fetchMsg && <span className="settings-pane__hint">{fetchMsg}</span>}
+            {fetchMsg && (
+              <span className="settings-pane__hint" style={{ whiteSpace: "pre-wrap" }}>
+                {fetchMsg}
+              </span>
+            )}
             {customProtocol === "anthropic" && (
               <span className="settings-pane__hint">Anthropic 端点已内置 Claude 模型可直接选；其它版本选「手动输入」。</span>
             )}
           </>
-        ) : modelOptions.length > 0 ? (
-          <select
-            value={model}
-            onChange={(e) => {
-              setModel(e.target.value);
-              setSaved(false);
-            }}
-          >
-            {modelOptions.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
         ) : (
-          <input
-            type="text"
-            value={model}
-            placeholder="模型名"
-            onChange={(e) => {
-              setModel(e.target.value);
-              setSaved(false);
-            }}
-          />
+          <>
+            <div className="settings-pane__modelrow">
+              {modelOptions.length > 0 ? (
+                <select
+                  className="settings-pane__grow"
+                  value={model}
+                  onChange={(e) => {
+                    setModel(e.target.value);
+                    setSaved(false);
+                  }}
+                >
+                  {model && !modelOptions.includes(model) && (
+                    <option value={model}>{model}（当前）</option>
+                  )}
+                  {modelOptions.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="settings-pane__grow"
+                  type="text"
+                  value={model}
+                  placeholder="模型名"
+                  onChange={(e) => {
+                    setModel(e.target.value);
+                    setSaved(false);
+                  }}
+                />
+              )}
+              <button
+                type="button"
+                className="settings-pane__btn-ghost"
+                onClick={doFetchModels}
+                title="从该提供方端点动态拉取模型列表（内置列表仅作兜底）"
+              >
+                获取模型列表
+              </button>
+            </div>
+            {fetchMsg && (
+              <span className="settings-pane__hint" style={{ whiteSpace: "pre-wrap" }}>
+                {fetchMsg}
+              </span>
+            )}
+          </>
         )}
       </label>
 
@@ -259,7 +305,9 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
       </div>
 
       <p className="settings-pane__note">
-        Key 明文存于浏览器 prefs，仅本机。自定义端点：OpenAI 兼容填 /v1 根地址即可，Anthropic 兼容会走 /v1/messages。
+        Key 明文存于浏览器 prefs，仅本机。自定义端点：Base URL 填 API 服务根地址（如
+        https://api.example.com 或 https://dashscope.aliyuncs.com/compatible-mode/v1，
+        不是文档/控制台页面）；已带 /v1 等版本段时不会重复叠加。
       </p>
     </div>
   );

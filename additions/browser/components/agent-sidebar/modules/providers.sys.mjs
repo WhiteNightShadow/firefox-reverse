@@ -93,23 +93,110 @@ export const BUILTIN_PROVIDERS = Object.freeze({
 });
 
 /**
- * 从配置的端点拉取可用模型列表（OpenAI 风格 GET /v1/models；多数网关都支持，含 Anthropic 网关）。
+ * 规范化用户填写的 Base URL：去空白与末尾斜杠；误贴完整 chat/models 端点时剥掉尾段，
+ * 只留 API 根地址（如 …/v1/chat/completions → …/v1）。
+ * @param {string} raw
+ * @returns {string}
+ */
+export function normalizeBaseUrl(raw) {
+  let u = String(raw || "").trim().replace(/\/+$/, "");
+  u = u.replace(/\/(chat\/completions|completions|messages|models)$/i, "");
+  return u.replace(/\/+$/, "");
+}
+
+/** baseUrl 路径里是否已含版本段（/v1、/v4、/v1beta、/v1beta/openai …）。只看 path 不看 host，
+ *  且不限结尾——Gemini 兼容根 …/v1beta/openai 这种版本段后还有后缀的也算（再叠 /v1 必 404）。 */
+function hasVersionSegment(base) {
+  const path = String(base).replace(/^https?:\/\/[^/]*/i, "");
+  return /\/v\d+[a-z]*(?:\.\d+)?(?:\/|$)/i.test(path);
+}
+
+/**
+ * 自定义端点的 chat 路径：baseUrl 已带版本段就不再叠 /v1（否则 …/v1/v1/chat/completions 必 404）。
+ * @param {"openai"|"anthropic"} protocol
+ * @param {string} baseUrl
+ * @returns {string}
+ */
+export function resolveChatPath(protocol, baseUrl) {
+  const versioned = hasVersionSegment(normalizeBaseUrl(baseUrl));
+  if (protocol === "anthropic") {
+    return versioned ? "/messages" : "/v1/messages";
+  }
+  return versioned ? "/chat/completions" : "/v1/chat/completions";
+}
+
+/**
+ * 从配置的端点动态拉取可用模型列表。不再死拼 /v1/models：按 baseUrl 形态生成候选路径逐个探测
+ * （带版本段 → 先 {base}/models 再 {base}/v1/models；否则反序），兼容 OpenAI(/v1/models)、
+ * 智谱(/api/paas/v4/models)、DashScope(/compatible-mode/v1/models) 等。
+ * 401/403 视为「路径已对、Key 不对」直接报 Key 问题；全部失败时列出每个尝试的 URL 与状态。
  * @param {string} baseUrl
  * @param {string} [token]
  * @returns {Promise<string[]>}
  */
 export async function fetchModels(baseUrl, token) {
-  if (!baseUrl) {
+  const base = normalizeBaseUrl(baseUrl);
+  if (!base) {
     throw new Error("请先填写 Base URL");
   }
-  const url = baseUrl.replace(/\/+$/, "") + "/v1/models";
-  const resp = await fetch(url, { headers: token ? { Authorization: "Bearer " + token } : {} });
-  if (!resp.ok) {
-    throw new Error("获取模型失败：HTTP " + resp.status);
+  if (!/^https?:\/\//i.test(base)) {
+    throw new Error("Base URL 需以 http:// 或 https:// 开头");
   }
-  const j = await resp.json();
-  const arr = Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : [];
-  return arr.map(m => (typeof m === "string" ? m : m.id || m.name)).filter(Boolean);
+  const candidates = hasVersionSegment(base)
+    ? [base + "/models", base + "/v1/models"]
+    : [base + "/v1/models", base + "/models"];
+  // 同时带 OpenAI(Bearer) 与 Anthropic(x-api-key+version) 两套鉴权头：OpenAI 网关忽略多余头，
+  // Anthropic 官方/同款网关只认 x-api-key——只发 Bearer 会把有效 key 误报成 401。
+  const headers = {};
+  if (token) {
+    headers.Authorization = "Bearer " + token;
+    headers["x-api-key"] = token;
+    headers["anthropic-version"] = "2023-06-01";
+  }
+  const attempts = [];
+  for (const url of candidates) {
+    let resp;
+    try {
+      resp = await fetch(url, { headers });
+    } catch (e) {
+      attempts.push(`${url} → 网络错误：${(e && e.message) || e}`);
+      continue;
+    }
+    const isHtml = /html/i.test(resp.headers.get("content-type") || "");
+    if (resp.ok) {
+      let j = null;
+      try {
+        j = await resp.json();
+      } catch (_) {}
+      const arr =
+        j && (Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : Array.isArray(j) ? j : null);
+      if (arr) {
+        const names = arr
+          .map(m => (typeof m === "string" ? m : m && (m.id || m.name || m.model)))
+          .filter(Boolean);
+        if (names.length) {
+          return names;
+        }
+        attempts.push(`${url} → 200 但模型列表为空`);
+      } else {
+        attempts.push(`${url} → 200 但${isHtml ? "返回的是网页(HTML)，不是 API 地址" : "响应不是模型列表 JSON"}`);
+      }
+      continue;
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error(
+        `API Key 无效或未填写（模型端点已找到：${url}，HTTP ${resp.status}）。` +
+          `若确认 Key 无误，可能是该端点鉴权方式特殊——可直接手动输入模型名使用。`
+      );
+    }
+    attempts.push(`${url} → HTTP ${resp.status}${isHtml ? "（返回网页，疑似不是 API 地址）" : ""}`);
+  }
+  throw new Error(
+    "获取模型失败，已尝试：\n" +
+      attempts.join("\n") +
+      "\nBase URL 应为 API 服务根地址（如 https://api.deepseek.com 或 " +
+      "https://dashscope.aliyuncs.com/compatible-mode/v1），而非文档/控制台页面。"
+  );
 }
 
 /** 已知支持看图（多模态）的模型集合。 */
@@ -132,11 +219,12 @@ export function isVisionModel(model) {
   return /(^|[-_/])(vl|vision)([-_/]|$)|gpt-4o|gpt-4\.1|qwen.*vl|claude-3|gemini-(1\.5|2)|kimi-k2/.test(m);
 }
 
-/** 给 SettingsPane 下拉用。 */
+/** 给 SettingsPane 下拉用。baseUrl 供「获取模型列表」对内置 provider 动态拉取。 */
 export function listProviders() {
   return Object.entries(BUILTIN_PROVIDERS).map(([id, p]) => ({
     id,
     label: p.label,
+    baseUrl: p.baseUrl,
     models: p.models,
     defaultModel: p.defaultModel,
     anthropicModels: p.anthropicModels || [],
@@ -160,8 +248,8 @@ export function buildClientFromStore(store, overrides = {}) {
   let chatPath = p.chatPath;
   if (id === "custom") {
     protocol = (store.getCustomProtocol && store.getCustomProtocol()) || "openai";
-    baseUrl = overrides.baseUrl || (store.getCustomBaseUrl && store.getCustomBaseUrl()) || "";
-    chatPath = protocol === "anthropic" ? "/v1/messages" : "/v1/chat/completions";
+    baseUrl = normalizeBaseUrl(overrides.baseUrl || (store.getCustomBaseUrl && store.getCustomBaseUrl()) || "");
+    chatPath = resolveChatPath(protocol, baseUrl);
   }
   if (!baseUrl) {
     throw new Error(`provider "${id}" 未配置 Base URL（请在设置里填写自定义端点地址）`);
