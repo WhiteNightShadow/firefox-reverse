@@ -240,6 +240,40 @@ export const agentSession = {
     }
     return out;
   },
+  /** 列出全部已注册工具的规格（OpenAI tools 数组）。供 MCP 等外部 director 发现可直调的工具集。
+   *  只读、零副作用；与 agent 用的是同一个全局 ToolRouter 单例（可用工具面 = 已接好的 backend）。 */
+  listTools() {
+    try {
+      return { ok: true, tools: router().listSpecs() };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  },
+  /** 直调一个内置工具并返回信封（dispatch 永不抛、已校验未知工具/缺参）。**不经 LLM、不走 confirm**
+   *  —— 外部 director（Claude/Cursor 等）即审批者，等同现有 director 驱动的 confirmMode:false。
+   *  用的是与 agent **同一个全局 ToolRouter + backends 单例**，状态一致；ctx 复刻 director 驱动路径
+   *  （win:null → PageBackend 兜底到活动标签页，与 agentSession.run 第 410 行的 toolCtx 一致；
+   *   signal:null 各 backend 均 `ctx && ctx.signal` 守护，安全）。
+   *  ⚠ 安全闸：任一会话正在跑时拒绝——raw 调用与运行中的 agent 共享同一标签页/hook/trace 状态，
+   *  并发会相互串味。先停掉 agent 再直调。 */
+  async callTool(name, args, opts = {}) {
+    if (!name || typeof name !== "string") {
+      return { ok: false, error: "callTool: name (string) required" };
+    }
+    const running = this.listRunning();
+    if (running.length) {
+      return {
+        ok: false,
+        error:
+          `agent 正在运行（${running.map(r => r.id).join(", ")}）——raw 工具直调已暂时禁用：` +
+          `它与运行中的 agent 共享同一页面/hook/trace 状态，并发会相互串味。` +
+          `先 agent_wait_for_stop 等它停、或 agent_stop 砍掉，再直调工具。`,
+        running,
+      };
+    }
+    const ctx = { workspaceRoot: (opts && opts.workspaceRoot) || null, win: null, signal: null };
+    return await router().dispatch(name, args || {}, ctx);
+  },
   /** 多窗口隔离：从候选线程里认领一条**没被别的活窗口占用**的，原子预留(记 owner+心跳)并返回其 id；
    *  都被别的活窗口占着返回 null（调用方应新建空线程给本窗口）。`owner`=本窗口稳定 token：
    *  同一 chrome 窗口切栏重挂载会传同一 token → 立即重认领自己那条（不受 TTL 影响）；
