@@ -412,7 +412,18 @@ export class WorkspaceBackend {
         }
       } catch { /* ignore */ }
     } else {
+      // GUI(Finder/Dock) 启动的 app 不 source 用户 shell rc → 继承的 PATH 精简,常缺 homebrew
+      // 与版本管理器(nvm/fnm/volta/pyenv/asdf…)装的 node/python（用户终端 `which node` 找得到、
+      // 浏览器找不到即此因；nvm 装在 ~/.nvm/versions/node/<ver>/bin 这类版本化目录）。三路兜底，
+      // 顺序贴合用户终端 `which`：① 登录交互 shell 的真实 PATH（覆盖任意管理器、与用户终端一致）
+      // ② 常见 bin ③ 版本管理器目录（治 rc 懒加载 nvm 时登录 PATH 也取不到的情况）。
+      for (const d of await this._loginShellPathDirs()) {
+        dirs.push(d);
+      }
       dirs.push("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/opt/local/bin");
+      for (const d of await this._versionManagerBinDirs()) {
+        dirs.push(d);
+      }
     }
     for (const d of dirs) {
       for (const n of names) {
@@ -427,6 +438,138 @@ export class WorkspaceBackend {
       }
     }
     return null;
+  }
+
+  /** 用用户【登录+交互】shell 取回真实 PATH —— GUI(Finder/Dock) 启动的 app 不 source ~/.zshrc，
+   *  继承的 PATH 里没有 nvm/fnm/volta/asdf 注入的目录（用户终端 `which node` 找得到、浏览器报
+   *  「找不到 node」即此因）。缓存一次；失败/超时返回 []。仅冒号分隔 PATH 的 shell(zsh/bash/sh)有效，
+   *  够覆盖绝大多数 mac/Linux；fish 等少数走下面的版本管理器目录兜底。 */
+  async _loginShellPathDirs() {
+    if (this.__loginPathDirs) {
+      return this.__loginPathDirs;
+    }
+    let out = [];
+    try {
+      const cands = [];
+      try {
+        const s = Services.env && Services.env.get("SHELL");
+        if (s) {
+          cands.push(s);
+        }
+      } catch {
+        /* ignore */
+      }
+      cands.push("/bin/zsh", "/bin/bash", "/bin/sh");
+      let shell = null;
+      for (const c of cands) {
+        try {
+          if (await IOUtils.exists(c)) {
+            shell = c;
+            break;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (shell) {
+        // -l 读 profile（path_helper/版本管理器 init）、-i 读 rc（nvm 常在此）、-c 跑命令即退。
+        const r = await this._spawn(shell, ["-lic", "echo __FRXPATH__=$PATH"], { timeoutMs: 6000 });
+        const m = /__FRXPATH__=([^\n]*)/.exec((r && r.output) || "");
+        if (m && m[1]) {
+          out = m[1].trim().split(":").filter(Boolean);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    this.__loginPathDirs = out;
+    return out;
+  }
+
+  /** 版本管理器装 node/python 的 bin 目录（deterministic 兜底，治 shell rc 懒加载 nvm 时登录 PATH 也取不到）。
+   *  nvm 版本化目录优先 `alias/default`，其余按版本降序；另含 fnm/volta/n/asdf、pyenv/conda、~/.local/bin。 */
+  async _versionManagerBinDirs() {
+    let home;
+    try {
+      home = Services.env.get("HOME");
+    } catch {
+      home = null;
+    }
+    if (!home) {
+      return [];
+    }
+    const J = (...p) => p.join("/");
+    const out = [];
+    const listVersDesc = async root => {
+      try {
+        if (!(await IOUtils.exists(root))) {
+          return [];
+        }
+        const vs = (await IOUtils.getChildren(root)).map(p => PathUtils.filename(p));
+        vs.sort((a, b) => this._cmpVerDesc(a, b));
+        return vs;
+      } catch {
+        return [];
+      }
+    };
+    // nvm: ~/.nvm/versions/node/<ver>/bin —— 优先 default 别名指向的版本，其余按版本降序
+    const nvmRoot = J(home, ".nvm", "versions", "node");
+    let nvmVers = await listVersDesc(nvmRoot);
+    try {
+      const def = J(home, ".nvm", "alias", "default");
+      if (await IOUtils.exists(def)) {
+        const d = (await IOUtils.readUTF8(def)).trim();
+        if (d) {
+          nvmVers = [d, ...nvmVers.filter(v => v !== d)];
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    for (const v of nvmVers) {
+      out.push(J(nvmRoot, v, "bin"));
+    }
+    // fnm: ~/.local/share/fnm/... 或 ~/Library/Application Support/fnm/...
+    for (const fnmRoot of [
+      J(home, ".local", "share", "fnm", "node-versions"),
+      J(home, "Library", "Application Support", "fnm", "node-versions"),
+    ]) {
+      for (const v of await listVersDesc(fnmRoot)) {
+        out.push(J(fnmRoot, v, "installation", "bin"));
+      }
+    }
+    // volta / n / asdf shims / 用户 local + python 管理器(pyenv shims / conda)
+    out.push(
+      J(home, ".volta", "bin"),
+      J(home, "n", "bin"),
+      J(home, ".asdf", "shims"),
+      J(home, ".local", "bin"),
+      J(home, ".pyenv", "shims"),
+      J(home, ".pyenv", "bin"),
+      J(home, "miniconda3", "bin"),
+      J(home, "anaconda3", "bin"),
+      J(home, "miniforge3", "bin")
+    );
+    return out;
+  }
+
+  /** 版本目录名降序比较（"v23.11.0"/"23.9.0"… 取数字段比较；非数字段当 -1）。 */
+  _cmpVerDesc(a, b) {
+    const parse = s =>
+      String(s)
+        .replace(/^v/, "")
+        .split(/[.\-+]/)
+        .map(x => (/^\d+$/.test(x) ? parseInt(x, 10) : -1));
+    const pa = parse(a);
+    const pb = parse(b);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] ?? -1;
+      const y = pb[i] ?? -1;
+      if (x !== y) {
+        return y - x;
+      }
+    }
+    return 0;
   }
 
   /**
@@ -554,8 +697,9 @@ export class WorkspaceBackend {
     const exe = await this._resolveExe(kind);
     if (!exe) {
       throw new Error(
-        `找不到 ${kind} 可执行文件。请确认已安装并在 PATH 中，或在设置里配置 ${kind} 路径` +
-          "（GUI 启动的浏览器 PATH 较精简，homebrew/usr-local 可能搜不到）。"
+        `找不到 ${kind} 可执行文件（已尝试：继承 PATH + 登录 shell 真实 PATH + homebrew/usr-local + ` +
+          `nvm/fnm/volta/pyenv 等版本管理器目录）。请确认已安装；若用的是少见安装方式（如 fish shell 下的 nvm），` +
+          `直接在 Agent 设置里把 ${kind} 路径填成 \`which ${kind}\` 的输出即可。`
       );
     }
     const argv = [];
