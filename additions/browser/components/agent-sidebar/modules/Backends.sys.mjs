@@ -82,6 +82,116 @@ export function getBackends() {
     },
   };
 
-  _singleton = { page, net, scripts, code, jsvmp, webapi, workspace, notes, ledger, skill, find };
+  // Cookie 管理（站点无关）：用 nsICookieManager 直接读写 cookie 存储——含 **httpOnly**（page_eval 的
+  // document.cookie 够不到 httpOnly），可跨域读、可增删改。纯新增能力，不影响任何现有 backend。
+  const cookieJSON = c => ({
+    name: c.name,
+    value: c.value,
+    host: c.host,
+    path: c.path,
+    isSecure: c.isSecure,
+    isHttpOnly: c.isHttpOnly,
+    isSession: c.isSession,
+    sameSite: c.sameSite,
+    expiry: c.expiry, // 毫秒 since epoch（nsICookie.expiry）；0/会话见 isSession
+  });
+  const cookieSchemeMap =
+    (((Ci.nsICookie && Ci.nsICookie.SCHEME_HTTP) || 1) | ((Ci.nsICookie && Ci.nsICookie.SCHEME_HTTPS) || 2)) || 3;
+  const cookieEOK = (Ci.nsICookieValidation && Ci.nsICookieValidation.eOK) ?? 0;
+  const dnorm = d => String(d || "").replace(/^\./, "").toLowerCase();
+  const cookies = {
+    /** 列出 cookie（含 httpOnly）。domain=按 host 子串过滤；name=按名过滤（精确或子串）。只读。 */
+    async list({ domain, name } = {}) {
+      let out = (Services.cookies.cookies || []).map(cookieJSON);
+      if (domain) {
+        out = out.filter(c => c.host && c.host.toLowerCase().includes(String(domain).toLowerCase()));
+      }
+      if (name) {
+        out = out.filter(c => c.name === name || c.name.includes(name));
+      }
+      return { ok: true, count: out.length, cookies: out.slice(0, 500) };
+    },
+    /** 新增/修改一个 cookie（同 host+path+name 即覆盖）。expiry 用毫秒（nsICookie 语义）；
+     *  expires=unix 秒、maxAge=相对秒（内部转毫秒）；都不给则默认持久一年；session:true=会话 cookie。 */
+    async set({ name, value, domain, path = "/", secure = false, httpOnly = false, session, expires, maxAge, sameSite } = {}) {
+      if (!name || !domain) {
+        throw new Error("cookies_set: name 和 domain 必填");
+      }
+      const nowMs = Date.now();
+      let isSession;
+      let expiryMs;
+      if (maxAge != null) {
+        isSession = session === true;
+        expiryMs = nowMs + Number(maxAge) * 1000;
+      } else if (expires != null) {
+        isSession = session === true;
+        expiryMs = Number(expires) * 1000; // 入参 expires 是 unix 秒 → 毫秒
+      } else if (session === true) {
+        isSession = true;
+        expiryMs = nowMs + 3600 * 1000;
+      } else {
+        isSession = false;
+        expiryMs = nowMs + 365 * 24 * 3600 * 1000; // 默认持久一年
+      }
+      const ss = sameSite != null ? Number(sameSite) : ((Ci.nsICookie && Ci.nsICookie.SAMESITE_UNSET) ?? 0);
+      const cv = Services.cookies.add(
+        domain, path, name, String(value == null ? "" : value),
+        !!secure, !!httpOnly, !!isSession, expiryMs, {}, ss, cookieSchemeMap
+      );
+      if (cv && cv.result !== undefined && cv.result !== cookieEOK) {
+        return { ok: false, error: "cookie 被拒：" + (cv.errorString || "validation result " + cv.result) };
+      }
+      // 读回确认（host 可能被规范化；按 name+path+host(去前点/小写) 匹配）
+      const dn = dnorm(domain);
+      const after = (Services.cookies.cookies || []).find(
+        c => c.name === name && c.path === path && dnorm(c.host) === dn
+      );
+      return after
+        ? { ok: true, set: cookieJSON(after) }
+        : { ok: false, error: "add 已调用但读回为空——检查 domain 是否为有效 host（如 example.com）" };
+    },
+    /** 删除：name+domain 删单个；只给 domain 删该 host 全部；all:true 清空所有(危险)。 */
+    async remove({ name, domain, path = "/", all = false } = {}) {
+      if (all === true && !name && !domain) {
+        const n = (Services.cookies.cookies || []).length;
+        Services.cookies.removeAll();
+        return { ok: true, removed: n, scope: "ALL" };
+      }
+      if (!domain) {
+        throw new Error("cookies_remove: domain 必填（或 all:true 清空全部）");
+      }
+      if (name) {
+        Services.cookies.remove(domain, name, path, {});
+        return { ok: true, removed: 1, name, host: domain, path };
+      }
+      const dn = dnorm(domain);
+      let n = 0;
+      for (const c of (Services.cookies.cookies || []).filter(c => dnorm(c.host) === dn)) {
+        try {
+          Services.cookies.remove(c.host, c.name, c.path, {});
+          n++;
+        } catch {
+          /* skip */
+        }
+      }
+      return { ok: true, removed: n, host: domain };
+    },
+    /** 单一 `cookies` 工具的 action 分发入口（list/set/remove）。 */
+    async run(a = {}) {
+      const act = a && a.action;
+      if (act === "list") {
+        return this.list(a);
+      }
+      if (act === "set") {
+        return this.set(a);
+      }
+      if (act === "remove") {
+        return this.remove(a);
+      }
+      throw new Error(`cookies: 未知 action "${act}"（用 list / set / remove）`);
+    },
+  };
+
+  _singleton = { page, net, scripts, code, jsvmp, webapi, workspace, notes, ledger, skill, find, cookies };
   return _singleton;
 }
