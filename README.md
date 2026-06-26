@@ -254,22 +254,20 @@ cd upstream && ./mach build && ./mach package
 
 ---
 
-## 🔌 外部支持 · 模型 Key 申请
+## 🔑 外部支持 · 模型 Key 申请
 
-Firefox‑Reverse 自带 Key、直连你选的模型，**Key 只存本地、不经第三方**。下面整理了各模型的 Key 申请入口，按需自取：
+Firefox‑Reverse Key 直连你选的模型，**Key 只存本地、不经第三方**。下面整理了各模型的 Key 申请入口，按需自取：
 
-| 模型 / 服务 | 申请 Key | 说明 |
-|---|---|---|
-| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com/usage) | 性价比高，Agent 默认推荐 |
-| **智谱 GLM** | [open.bigmodel.cn](https://open.bigmodel.cn/) | |
-| **Kimi（Moonshot）** | [platform.moonshot.cn](https://platform.moonshot.cn/) | |
-| **MiniMax** | [platform.minimaxi.com](https://platform.minimaxi.com/) | |
-| **通义千问（Qwen）** | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/) | 阿里云百炼 |
-| **Claude（Anthropic）** | [console.anthropic.com](https://console.anthropic.com/) | 官方，需海外支付方式 |
-| **OpenAI** | [platform.openai.com](https://platform.openai.com/) | 官方，需海外支付方式 |
-| **xfastapi（中转）** | [xfastapi.ai](https://xfastapi.ai/register?aff=EXTJPLX9H5MS) | 第三方中转，国内直连 Claude / GPT；按「自定义端点」接入 |
+| 模型 / 服务 | 说明 |
+|---|---|
+| [**DeepSeek**](https://platform.deepseek.com/usage) | 性价比高，Agent 默认推荐 |
+| [**智谱 GLM**](https://open.bigmodel.cn/) | |
+| [**Kimi（Moonshot）**](https://platform.moonshot.cn/) | |
+| [**MiniMax**](https://platform.minimaxi.com/) | |
+| [**通义千问（Qwen）**](https://bailian.console.aliyun.com/) | 阿里云百炼 |
+| [**xfastapi（中转）**](https://xfastapi.ai/register?aff=EXTJPLX9H5MS) | 高质量三方中转，国内直连 **Claude / GPT**（免海外支付）；按「自定义端点」接入 |
 
-> 前 7 个在 Agent ⚙️ 设置里是**内置 provider**，选中填 Key 即用；中转站选**「自定义（OpenAI / Anthropic 兼容）」**，填 baseUrl + Key + 模型名即可。
+> **接入方式**：前 5 家是 Agent ⚙️ 设置里的**内置供应商**，选中、填 Key 即可用；中转站选 **「自定义（OpenAI / Anthropic 兼容）」**，填入 baseUrl + Key + 模型名即可。
 
 ---
 
