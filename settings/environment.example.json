@@ -1,0 +1,28 @@
+{
+  "_comment": "Example environment manager defaults. Runtime environment data lives outside profiles under ~/.firefox-reverse/environments.",
+  "schemaVersion": 1,
+  "root": "~/.firefox-reverse/environments",
+  "port": {
+    "base": 2828,
+    "scan": 200
+  },
+  "launch": {
+    "args": [
+      "-marionette",
+      "-remote-allow-system-access",
+      "-no-remote",
+      "--marionette-port",
+      "<port>",
+      "-profile",
+      "<env/profile>"
+    ],
+    "environment": [
+      "MOZ_FRX_ENV_ID",
+      "MOZ_FRX_FINGERPRINT_CONFIG",
+      "MOZ_FRX_PROXY_CONFIG",
+      "MOZ_FRX_TRACE_DIR",
+      "MOZ_WEBAPI_TRACE_FILE",
+      "MOZ_JSVMP_TRACE_FILE"
+    ]
+  }
+}

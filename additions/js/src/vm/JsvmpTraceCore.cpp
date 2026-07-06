@@ -36,18 +36,18 @@ static inline int FrxTruncate(FILE* f) { return ftruncate(fileno(f), 0); }
 #endif
 #include <sys/stat.h>  // stat（ctl mtime 自动过期）
 
-#include "js/ColumnNumber.h"      // JS::LimitedColumnNumberOneOrigin
-#include "js/CharacterEncoding.h" // JS_EncodeStringToUTF8
+#include "jsfriendapi.h"          // js::GetPropertyKeys, JSITER_OWNONLY
+#include "jit/JitOptions.h"       // js::jit::JitOptions（trace 期间钉死解释器层，hook 才抓得到热函数）
 #include "js/Array.h"             // JS::IsArrayObject, JS::GetArrayLength
+#include "js/CharacterEncoding.h" // JS_EncodeStringToUTF8
+#include "js/ColumnNumber.h"      // JS::LimitedColumnNumberOneOrigin
 #include "js/Id.h"                // JS::PropertyKey (jsid)
 #include "js/PropertyAndElement.h"// JS_GetPropertyById, JS_GetElement
-#include "jsfriendapi.h"          // js::GetPropertyKeys, JSITER_OWNONLY
 #include "vm/BytecodeUtil.h"      // CodeName(JSOp) 字符串
 #include "vm/EnvironmentObject.h" // js::EnvironmentObject::enclosingEnvironment（闭包链）
 #include "vm/FrameIter.h"         // js::FrameIter for arg dump
 #include "vm/JSScript.h"          // JSScript::filename, JSScript::code, PCToLineNumber
 #include "vm/Stack.h"             // js::AbstractFramePtr
-#include "jit/JitOptions.h"       // js::jit::JitOptions（trace 期间钉死解释器层，hook 才抓得到热函数）
 
 namespace mozilla {
 namespace jsvmp {

@@ -1,10 +1,14 @@
 {
-  "_comment": "示例配置：复制为 fingerprint.json 并按需修改。fingerprint.json 不入库。",
-
+  "_comment": "Example fingerprint config. Environment files live under ~/.firefox-reverse/environments/<envId>/fingerprint.json.",
+  "schemaVersion": 1,
   "enabled": true,
-  "seed_mode": "session",
-  "_seed_mode_options": ["session", "persistent", "rotate"],
-
+  "seed_mode": "persistent",
+  "seed": "example-seed",
+  "source": {
+    "type": "generated",
+    "browser": "chromium",
+    "createdAt": "2026-07-06T00:00:00.000Z"
+  },
   "trace": {
     "enabled": true,
     "dir": "~/.firefox-reverse/traces",
@@ -13,69 +17,174 @@
     "property_dir": "~/.firefox-reverse/traces/property",
     "js_dir": "~/.firefox-reverse/traces/js"
   },
-
   "navigator": {
-    "userAgent": { "enabled": true, "value": null },
-    "platform": { "enabled": true, "value": null },
+    "userAgent": {
+      "enabled": true,
+      "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    },
+    "platform": { "enabled": true, "value": "Win32" },
     "language": { "enabled": true, "value": "en-US" },
     "languages": { "enabled": true, "value": ["en-US", "en"] },
-    "hardwareConcurrency": { "enabled": true, "min": 4, "max": 16 },
-    "deviceMemory": { "enabled": true, "values": [4, 8, 16] },
     "webdriver": { "enabled": true, "value": false },
-    "plugins": { "enabled": true, "strategy": "empty" },
-    "mimeTypes": { "enabled": true, "strategy": "empty" }
+    "hardwareConcurrency": { "enabled": true, "value": 8 },
+    "appCodeName": { "enabled": true, "value": "Mozilla" },
+    "appName": { "enabled": true, "value": "Netscape" },
+    "appVersion": {
+      "enabled": true,
+      "value": "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    },
+    "product": { "enabled": true, "value": "Gecko" },
+    "productSub": { "enabled": true, "value": "20030107" },
+    "vendor": { "enabled": true, "value": "Google Inc." },
+    "vendorSub": { "enabled": true, "value": "" },
+    "maxTouchPoints": { "enabled": true, "value": 0 },
+    "cookieEnabled": { "enabled": true, "value": true },
+    "pdfViewerEnabled": { "enabled": true, "value": true },
+    "doNotTrack": { "enabled": false, "value": null },
+    "oscpu": { "enabled": false, "value": null },
+    "buildID": { "enabled": false, "value": null },
+    "userAgentData": {
+      "enabled": true,
+      "value": {
+        "brands": [
+          { "brand": "Chromium", "version": "150" },
+          { "brand": "Google Chrome", "version": "150" },
+          { "brand": "Not A(Brand", "version": "24" }
+        ],
+        "mobile": false,
+        "platform": "Windows",
+        "architecture": "x86",
+        "bitness": "64",
+        "model": "",
+        "platformVersion": "10.0.0",
+        "fullVersionList": [
+          { "brand": "Chromium", "version": "150.0.0.0" },
+          { "brand": "Google Chrome", "version": "150.0.0.0" },
+          { "brand": "Not A(Brand", "version": "24.0.0.0" }
+        ]
+      }
+    },
+    "plugins": {
+      "enabled": true,
+      "value": [
+        {
+          "name": "PDF Viewer",
+          "filename": "internal-pdf-viewer",
+          "description": "Portable Document Format",
+          "mimeTypes": ["application/pdf", "text/pdf"]
+        }
+      ]
+    },
+    "mimeTypes": {
+      "enabled": true,
+      "value": [
+        {
+          "type": "application/pdf",
+          "suffixes": "pdf",
+          "description": "Portable Document Format",
+          "enabledPlugin": "PDF Viewer"
+        }
+      ]
+    }
   },
-
   "screen": {
     "enabled": true,
-    "presets": [
-      { "width": 1920, "height": 1080, "colorDepth": 24, "pixelDepth": 24 },
-      { "width": 2560, "height": 1440, "colorDepth": 24, "pixelDepth": 24 },
-      { "width": 1366, "height": 768, "colorDepth": 24, "pixelDepth": 24 }
-    ]
+    "width": { "enabled": true, "value": 1920 },
+    "height": { "enabled": true, "value": 1080 },
+    "availWidth": { "enabled": true, "value": 1920 },
+    "availHeight": { "enabled": true, "value": 1040 },
+    "colorDepth": { "enabled": true, "value": 24 },
+    "pixelDepth": { "enabled": true, "value": 24 },
+    "orientation": { "enabled": true, "value": { "type": "landscape-primary", "angle": 0 } }
   },
-
   "window": {
-    "devicePixelRatio": { "enabled": true, "values": [1, 1.25, 1.5, 2] }
+    "devicePixelRatio": { "enabled": true, "value": 1 },
+    "innerWidth": { "enabled": false, "value": 1920 },
+    "innerHeight": { "enabled": false, "value": 947 },
+    "outerWidth": { "enabled": false, "value": 1920 },
+    "outerHeight": { "enabled": false, "value": 1080 }
   },
-
-  "canvas": {
-    "enabled": true,
-    "noise": "low",
-    "_noise_options": ["off", "low", "medium", "high"]
+  "intl": {
+    "locale": { "enabled": true, "value": "en-US" },
+    "timezone": { "enabled": true, "value": "America/New_York" },
+    "calendar": { "enabled": true, "value": "gregory" },
+    "numberingSystem": { "enabled": true, "value": "latn" },
+    "timezoneOffset": { "enabled": false, "value": 300 }
   },
-
+  "http": {
+    "userAgent": {
+      "enabled": true,
+      "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    },
+    "acceptLanguage": { "enabled": true, "value": "en-US,en;q=0.9" },
+    "secChUa": {
+      "enabled": true,
+      "value": "\"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\", \"Not A(Brand\";v=\"24\""
+    },
+    "secChUaMobile": { "enabled": true, "value": "?0" },
+    "secChUaPlatform": { "enabled": true, "value": "\"Windows\"" },
+    "secChUaFullVersionList": {
+      "enabled": true,
+      "value": "\"Chromium\";v=\"150.0.0.0\", \"Google Chrome\";v=\"150.0.0.0\", \"Not A(Brand\";v=\"24.0.0.0\""
+    },
+    "secChUaArch": { "enabled": true, "value": "\"x86\"" },
+    "secChUaBitness": { "enabled": true, "value": "\"64\"" },
+    "secChUaModel": { "enabled": true, "value": "\"\"" },
+    "secChUaPlatformVersion": { "enabled": true, "value": "\"10.0.0\"" }
+  },
   "webgl": {
     "enabled": true,
-    "vendor": null,
-    "renderer": null,
-    "noise_on_getParameter": "low"
+    "vendor": { "enabled": true, "value": "WebKit" },
+    "renderer": { "enabled": true, "value": "WebKit WebGL" },
+    "unmaskedVendor": { "enabled": true, "value": "Google Inc. (Intel)" },
+    "unmaskedRenderer": {
+      "enabled": true,
+      "value": "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    },
+    "maxTextureSize": { "enabled": false, "value": 16384 },
+    "extensions": { "enabled": false, "value": [] }
   },
-
+  "canvas": {
+    "enabled": true,
+    "mode": { "enabled": true, "value": "native" },
+    "seed": { "enabled": true, "value": "example-seed" },
+    "noise": { "enabled": true, "value": 0 }
+  },
   "audio": {
     "enabled": true,
-    "noise": "low"
+    "mode": { "enabled": true, "value": "native" },
+    "sampleRate": { "enabled": true, "value": 48000 },
+    "seed": { "enabled": true, "value": "example-seed" },
+    "noise": { "enabled": true, "value": 0 }
   },
-
-  "webrtc": {
-    "block_local_ip": true
-  },
-
-  "timezone": {
-    "enabled": true,
-    "value": null,
-    "_value_example": "Asia/Shanghai"
-  },
-
-  "locale": {
-    "enabled": true,
-    "value": null,
-    "_value_example": "en-US"
-  },
-
   "fonts": {
     "enabled": true,
-    "strategy": "preset",
-    "preset": "common-windows"
+    "mode": { "enabled": true, "value": "native" },
+    "visibility": { "enabled": true, "value": 3 },
+    "families": { "enabled": true, "value": ["Arial", "Calibri", "Cambria", "Times New Roman", "Segoe UI"] }
+  },
+  "webrtc": {
+    "enabled": true,
+    "mode": { "enabled": true, "value": "default_address_only" },
+    "noHost": { "enabled": true, "value": true },
+    "defaultAddressOnly": { "enabled": true, "value": true },
+    "obfuscateHostAddresses": { "enabled": true, "value": true }
+  },
+  "tls": {
+    "enabled": true,
+    "mode": { "enabled": true, "value": "firefox-default" },
+    "minVersion": { "enabled": true, "value": 3 },
+    "maxVersion": { "enabled": true, "value": 4 },
+    "http3": { "enabled": true, "value": true },
+    "alpn": { "enabled": true, "value": true },
+    "zeroRtt": { "enabled": true, "value": false },
+    "echGrease": { "enabled": true, "value": true },
+    "kyber": { "enabled": true, "value": true }
+  },
+  "storage": {
+    "localStorage": { "enabled": true, "value": true },
+    "sessionStorage": { "enabled": true, "value": true },
+    "indexedDB": { "enabled": true, "value": true },
+    "cookie": { "enabled": false, "value": "" }
   }
 }

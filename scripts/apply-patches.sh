@@ -52,4 +52,6 @@ if [[ -d "$REPO_ROOT/additions" ]]; then
   fi
 fi
 
+python3 "$REPO_ROOT/scripts/apply-fingerprint-config.py" "$UPSTREAM_DIR"
+
 echo "[apply-patches] done."

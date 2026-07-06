@@ -66,7 +66,7 @@ body {
 
 .agent-panel__actions {
   display: flex;
-  gap: 1px;
+  gap: 3px;
   flex: none;
 }
 
@@ -87,6 +87,29 @@ body {
 .agent-panel__actions button:hover {
   background: var(--in-content-button-background-hover, rgba(128,128,128,0.18));
   color: var(--in-content-page-color, FieldText);
+}
+
+.agent-panel__actions .agent-panel__envButton {
+  width: auto;
+  max-width: 104px;
+  padding: 0 9px;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--in-content-primary-button-background, Highlight) 38%, transparent);
+  background: color-mix(in srgb, var(--in-content-primary-button-background, Highlight) 10%, transparent);
+  color: var(--in-content-page-color, FieldText);
+}
+
+.agent-panel__envButton span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agent-panel__actions .agent-panel__envButton:hover {
+  background: color-mix(in srgb, var(--in-content-primary-button-background, Highlight) 18%, transparent);
+  border-color: color-mix(in srgb, var(--in-content-primary-button-background, Highlight) 56%, transparent);
 }
 
 /* ──────────────────────────────────────────────────────────
@@ -664,6 +687,724 @@ body {
 }
 .agent-ws__refresh:hover {
   background: var(--in-content-button-background-hover, rgba(128,128,128,0.18));
+}
+
+/* ──────────────────────────────────────────────────────────
+   环境管理
+   ────────────────────────────────────────────────────────── */
+.env-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--in-content-page-background, Field);
+  color: var(--in-content-page-color, FieldText);
+}
+
+.env-pane__bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--in-content-border-color, ThreeDShadow);
+  font-weight: 600;
+  font-size: 0.87em;
+  background: var(--in-content-box-background, Field);
+  box-shadow: var(--frx-shadow-sm);
+}
+
+.env-pane__bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--frx-radius-sm);
+  background: none;
+  color: var(--in-content-deemphasized-text, GrayText);
+  cursor: pointer;
+}
+.env-pane__bar button:hover {
+  background: var(--in-content-button-background-hover, rgba(128,128,128,0.18));
+  color: var(--in-content-page-color, FieldText);
+}
+
+.env-pane__title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.env-pane__title em {
+  font-style: normal;
+  font-weight: 500;
+  font-size: 0.82em;
+  color: var(--in-content-deemphasized-text, GrayText);
+}
+
+.env-pane__toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+.env-pane__toolbar input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: var(--frx-radius-sm);
+  border: 1px solid var(--in-content-border-color, ThreeDShadow);
+  background: var(--in-content-box-background, Field);
+  color: inherit;
+}
+.env-pane__toolbar input:focus {
+  outline: none;
+  border-color: var(--in-content-primary-button-background, Highlight);
+  box-shadow: 0 0 0 2px color-mix(in srgb, Highlight 22%, transparent);
+}
+.env-pane__toolbar button,
+.env-current button,
+.env-row__actions button,
+.env-table__actions button,
+.env-detail__head-actions button,
+.env-detail__actions button,
+.env-tabs button {
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 11px;
+  border-radius: var(--frx-radius-sm);
+  border: 1px solid var(--in-content-border-color, ThreeDShadow);
+  background: var(--in-content-button-background, rgba(128,128,128,0.10));
+  color: var(--in-content-page-color, FieldText);
+  cursor: pointer;
+}
+.env-pane__toolbar button:hover:not(:disabled),
+.env-current button:hover:not(:disabled),
+.env-row__actions button:hover:not(:disabled),
+.env-table__actions button:hover:not(:disabled),
+.env-detail__head-actions button:hover:not(:disabled),
+.env-detail__actions button:hover:not(:disabled),
+.env-tabs button:hover:not(:disabled) {
+  background: var(--in-content-button-background-hover, rgba(128,128,128,0.2));
+}
+.env-pane__toolbar button:disabled,
+.env-current button:disabled,
+.env-row__actions button:disabled,
+.env-table__actions button:disabled,
+.env-detail__head-actions button:disabled,
+.env-detail__actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.env-pane__toolbar button.is-primary,
+.env-current button.is-primary,
+.env-table__actions button.is-primary,
+.env-detail__actions button.is-primary {
+  border-color: color-mix(in srgb, var(--in-content-primary-button-background, Highlight) 65%, transparent);
+  background: color-mix(in srgb, var(--in-content-primary-button-background, Highlight) 16%, var(--in-content-button-background, rgba(128,128,128,0.10)));
+}
+
+.env-pane__root {
+  margin: 8px 12px 0;
+  font-size: 0.76em;
+  color: var(--in-content-deemphasized-text, GrayText);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-pane__error {
+  margin: 8px 12px 0;
+  padding: 7px 9px;
+  border-radius: var(--frx-radius-sm);
+  color: #d70022;
+  background: rgba(215, 0, 34, 0.09);
+  border: 1px solid rgba(215, 0, 34, 0.2);
+  font-size: 0.82em;
+}
+
+.env-pane__notice {
+  margin: 8px 12px 0;
+  padding: 7px 9px;
+  border-radius: var(--frx-radius-sm);
+  color: color-mix(in srgb, var(--frx-tool-ok) 70%, FieldText);
+  background: color-mix(in srgb, var(--frx-tool-ok) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--frx-tool-ok) 24%, transparent);
+  font-size: 0.82em;
+}
+
+.env-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 12px 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--in-content-primary-button-background, Highlight) 30%, var(--in-content-border-color, ThreeDShadow));
+  border-radius: var(--frx-radius-sm);
+  background: color-mix(in srgb, var(--in-content-primary-button-background, Highlight) 8%, var(--in-content-box-background, Field));
+}
+
+.env-current.is-selected {
+  border-color: color-mix(in srgb, var(--in-content-primary-button-background, Highlight) 62%, transparent);
+  box-shadow: inset 3px 0 0 var(--in-content-primary-button-background, Highlight);
+}
+
+.env-current__main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.env-current__main strong {
+  font-size: 13px;
+}
+
+.env-current__main span,
+.env-current__main small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-current__main span {
+  color: var(--in-content-page-color, FieldText);
+  font-size: 12px;
+}
+
+.env-current__main small {
+  color: var(--in-content-deemphasized-text, GrayText);
+  font-size: 11px;
+}
+
+.env-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+
+.env-stat {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--in-content-border-color, ThreeDShadow);
+  border-radius: var(--frx-radius-sm);
+  background: var(--in-content-box-background, Field);
+}
+
+.env-stat span {
+  display: block;
+  font-size: 0.72em;
+  color: var(--in-content-deemphasized-text, GrayText);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-stat strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 1em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-stat.is-running strong {
+  color: color-mix(in srgb, var(--frx-tool-ok) 75%, FieldText);
+}
+
+.env-pane__list {
+  flex: 0 0 auto;
+  max-height: 34vh;
+  overflow-y: auto;
+  padding: 12px;
+  border-bottom: 1px solid var(--in-content-border-color, ThreeDShadow);
+}
+
+.env-table-wrap {
+  flex: 0 0 auto;
+  max-height: 32vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--in-content-border-color, ThreeDShadow);
+}
+
+.env-pane__empty {
+  padding: 24px 0;
+  text-align: center;
+  color: var(--in-content-deemphasized-text, GrayText);
+  font-size: 0.88em;
+}
+
+.env-table {
+  width: 100%;
+  min-width: 0;
+  border-spacing: 0;
+  border-collapse: separate;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.env-table th:first-child,
+.env-table td:first-child {
+  width: 84px;
+}
+
+.env-table th:nth-child(3),
+.env-table td:nth-child(3) {
+  width: 64px;
+}
+
+.env-table th:nth-child(4),
+.env-table td:nth-child(4),
+.env-table th:nth-child(5),
+.env-table td:nth-child(5) {
+  width: 60px;
+}
+
+.env-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 7px 8px;
+  text-align: left;
+  color: var(--in-content-deemphasized-text, GrayText);
+  background: var(--in-content-page-background, Field);
+  border-bottom: 1px solid var(--in-content-border-color, ThreeDShadow);
+  font-weight: 600;
+}
+
+.env-table td {
+  padding: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--in-content-border-color, ThreeDShadow) 76%, transparent);
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+.env-table tr:hover td {
+  background: var(--in-content-button-background-hover, rgba(128,128,128,0.10));
+}
+
+.env-table tr.is-selected td {
+  background: color-mix(in srgb, Highlight 8%, var(--in-content-box-background, Field));
+}
+
+.env-table tr.is-running td:nth-child(2) {
+  box-shadow: inset 3px 0 0 var(--frx-tool-ok);
+}
+
+.env-table tr.is-closing td:nth-child(2) {
+  box-shadow: inset 3px 0 0 var(--frx-tool-run);
+}
+
+.env-table tr.is-stopped td:nth-child(2) {
+  box-shadow: inset 3px 0 0 var(--in-content-border-color, ThreeDShadow);
+}
+
+.env-table td strong,
+.env-table td span,
+.env-table td small {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-table td small {
+  margin-top: 3px;
+  font-size: 0.84em;
+  color: var(--in-content-deemphasized-text, GrayText);
+}
+
+.env-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.84em;
+  font-weight: 600;
+  color: var(--in-content-deemphasized-text, GrayText);
+  background: rgba(128,128,128,0.12);
+}
+
+.env-badge.is-running {
+  color: color-mix(in srgb, var(--frx-tool-ok) 75%, FieldText);
+  background: color-mix(in srgb, var(--frx-tool-ok) 16%, transparent);
+}
+
+.env-badge.is-closing {
+  color: color-mix(in srgb, var(--frx-tool-run) 80%, FieldText);
+  background: color-mix(in srgb, var(--frx-tool-run) 18%, transparent);
+}
+
+.env-table__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.env-table__actions button {
+  min-width: 0;
+  padding-inline: 4px;
+  font-size: 11px;
+}
+
+.env-name-cell {
+  display: block;
+  min-width: 0;
+  max-width: 240px;
+}
+
+.env-name-cell strong,
+.env-name-cell span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-name-cell span {
+  margin-top: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82em;
+  color: var(--in-content-deemphasized-text, GrayText);
+}
+
+.env-name-button {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.env-name-button:hover strong {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.env-name-button strong,
+.env-name-button span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-name-button span {
+  margin-top: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82em;
+  color: var(--in-content-deemphasized-text, GrayText);
+}
+
+.env-name-button--detail {
+  width: auto;
+  max-width: 100%;
+}
+
+.env-name-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font: inherit;
+  font-weight: 600;
+  padding: 5px 7px;
+  border-radius: var(--frx-radius-sm);
+  border: 1px solid var(--in-content-primary-button-background, Highlight);
+  background: var(--in-content-box-background, Field);
+  color: inherit;
+}
+
+.env-name-input--detail {
+  font-size: 0.94em;
+}
+
+.env-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--in-content-border-color, ThreeDShadow);
+  border-left: 3px solid var(--in-content-border-color, ThreeDShadow);
+  border-radius: var(--frx-radius-sm);
+  background: var(--in-content-box-background, Field);
+  box-shadow: var(--frx-shadow-sm);
+  cursor: pointer;
+}
+.env-row + .env-row {
+  margin-top: 8px;
+}
+.env-row.is-running {
+  border-left-color: var(--frx-tool-ok);
+}
+.env-row.is-selected {
+  border-color: var(--in-content-primary-button-background, Highlight);
+  background: color-mix(in srgb, Highlight 8%, var(--in-content-box-background, Field));
+}
+
+.env-row__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.env-row__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.env-row__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.env-row__status {
+  flex: none;
+  font-size: 0.72em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--in-content-deemphasized-text, GrayText);
+  background: rgba(128,128,128,0.12);
+}
+.env-row__status.is-running {
+  color: color-mix(in srgb, var(--frx-tool-ok) 75%, FieldText);
+  background: color-mix(in srgb, var(--frx-tool-ok) 16%, transparent);
+}
+
+.env-row__id,
+.env-row__meta,
+.env-row__path,
+.env-row__url {
+  margin-top: 4px;
+  font-size: 0.76em;
+  color: var(--in-content-deemphasized-text, GrayText);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.env-row__id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.env-row__meta {
+  display: flex;
+  gap: 9px;
+}
+
+.env-row__actions {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+.env-row__actions button.is-danger {
+  color: #d70022;
+}
+.env-row__actions button.is-danger:hover:not(:disabled),
+.env-table__actions button.is-danger:hover:not(:disabled),
+.env-detail__head-actions button.is-danger:hover:not(:disabled),
+.env-detail__actions button.is-danger:hover:not(:disabled) {
+  background: rgba(215, 0, 34, 0.12);
+}
+
+.env-table__actions button.is-danger,
+.env-detail__head-actions button.is-danger,
+.env-detail__actions button.is-danger {
+  color: #d70022;
+}
+
+.env-detail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--in-content-page-background, Field);
+}
+
+.env-detail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.env-detail__head > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.env-detail__head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.94em;
+}
+.env-detail__head span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74em;
+  color: var(--in-content-deemphasized-text, GrayText);
+}
+.env-detail__head b {
+  flex: none;
+  font-size: 0.72em;
+  font-weight: 600;
+  color: var(--frx-tool-run);
+}
+
+.env-detail__head-actions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.env-detail__head-actions button {
+  padding-block: 5px;
+}
+
+.env-detail__summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  margin-bottom: 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--in-content-border-color, ThreeDShadow);
+  border-radius: var(--frx-radius-sm);
+  background: color-mix(in srgb, var(--in-content-box-background, Field) 88%, transparent);
+}
+
+.env-detail__summary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76em;
+  color: var(--in-content-deemphasized-text, GrayText);
+}
+
+.env-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.env-tabs button {
+  min-width: 0;
+  padding-inline: 6px;
+}
+.env-tabs button.is-active {
+  border-color: var(--in-content-primary-button-background, Highlight);
+  background: color-mix(in srgb, Highlight 12%, transparent);
+}
+
+.env-editor,
+.env-import {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.env-editor__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+}
+
+.env-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 0.78em;
+  color: var(--in-content-deemphasized-text, GrayText);
+}
+.env-field span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.env-field input,
+.env-field select,
+.env-field textarea,
+.env-json {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 8px;
+  border-radius: var(--frx-radius-sm);
+  border: 1px solid var(--in-content-border-color, ThreeDShadow);
+  background: var(--in-content-box-background, Field);
+  color: var(--in-content-page-color, FieldText);
+}
+.env-field textarea,
+.env-json {
+  resize: vertical;
+  line-height: 1.35;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.env-json {
+  min-height: 300px;
+}
+
+.env-json--import {
+  min-height: 190px;
+}
+
+.env-help {
+  margin: 0;
+  color: var(--in-content-deemphasized-text, GrayText);
+  font-size: 0.78em;
+  line-height: 1.45;
+}
+
+.env-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 0.82em;
+}
+.env-check--field {
+  align-self: end;
+  min-height: 32px;
+}
+.env-check input {
+  flex: none;
+}
+.env-check span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
 }
 
 /* ──────────────────────────────────────────────────────────
