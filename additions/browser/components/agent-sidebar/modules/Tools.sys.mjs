@@ -10,7 +10,7 @@
  * backend 适配器约定（各方法 async，返回普通可序列化对象；抛错由 ToolRouter 兜信封）：
  *   page    : eval({expression,awaitPromise}) info() navigate({url})
  *             click({selector,text}) type({selector,text,submit}) scroll({dy,toBottom,toTop,selector})
- *             elements({limit,selector}) screenshot({fullPage}) → {_media:[{type:image,dataUrl}]}
+ *             elements({limit,selector}) screenshot({fullPage}) automationScan({saveTo}) → {_media:[{type:image,dataUrl}]}
  *   code    : search({query,regex,scriptUrl,maxResults})
  *   net     : capture({action,urlPattern,captureBody}) list({urlPattern,method,limit})
  *             get({requestId,includeBody}) intercept({urlPattern,action,...})
@@ -45,6 +45,13 @@ const CONFIRM_TOOLS = new Set([
   "hook_inject",
   "whitebox_diff",
   "cookies",
+  "env_create",
+  "env_update",
+  "env_open",
+  "env_close",
+  "env_delete",
+  "env_import",
+  "env_generate_fingerprint",
 ]);
 
 /** 全部内置工具的声明表（声明 ≠ 注册；注册由 backend 在场决定）。 */
@@ -575,6 +582,18 @@ function toolTable() {
       (b, a, ctx) => b.page.info(a, ctx)
     ),
     T(
+      "page_automation_scan",
+      "在当前网页内容上下文扫描常见自动化/底层环境暴露点：navigator.webdriver、UA-CH、plugins、permissions、Chrome/Firefox 对象、WebGL/canvas/audio/WebRTC/storage 等。用于比较手动打开与 MCP 打开的全局差异，不做单站点加密分析。",
+      {
+        type: "object",
+        properties: {
+          saveTo: { type: "string", description: "可选；把完整扫描 JSON 落到工作目录相对路径，如 diagnostics/automation-scan.json" },
+        },
+      },
+      b => b.page && b.page.automationScan,
+      (b, a, ctx) => b.page.automationScan(a, ctx)
+    ),
+    T(
       "scripts_capture_all",
       "把当前页面所有外部脚本源码落盘到语料目录（供 code_search / find_param_entry）。",
       { type: "object", properties: {} },
@@ -819,6 +838,280 @@ function toolTable() {
       },
       b => b.cookies && b.cookies.run,
       (b, a) => b.cookies.run(a)
+    ),
+
+    // ───────── 环境管理（backend: env；一个环境一个 profile + 独立进程）─────────
+    T(
+      "env_current",
+      "返回当前 Firefox Reverse 进程所属的环境。如果浏览器不是从环境打开，则 environment 为 null。",
+      {
+        type: "object",
+        properties: {
+          refresh: { type: "boolean", description: "是否刷新运行状态，默认 true" },
+        },
+      },
+      b => b.env && b.env.current,
+      (b, a) => b.env.current(a)
+    ),
+    T(
+      "env_current_process",
+      "返回当前主进程的指纹配置状态。普通启动时它不是环境列表的一行；保存主进程配置后需重启 Firefox Reverse 生效。",
+      {
+        type: "object",
+        properties: {
+          refresh: { type: "boolean", description: "是否刷新运行状态，默认 true" },
+        },
+      },
+      b => b.env && b.env.currentProcess,
+      (b, a) => b.env.currentProcess(a)
+    ),
+    T(
+      "env_read_current_process_config",
+      "读取当前主进程配置文件。type 支持 fingerprint 或 proxy；普通启动主进程使用当前 profile 的 user.js 指向该配置。",
+      {
+        type: "object",
+        properties: {
+          type: { type: "string", enum: ["fingerprint", "proxy"] },
+        },
+      },
+      b => b.env && b.env.readCurrentProcessConfig,
+      (b, a) => b.env.readCurrentProcessConfig(a)
+    ),
+    T(
+      "env_write_current_process_config",
+      "写入当前主进程配置文件。保存后会写入当前 profile/user.js，C++ 指纹覆盖需要重启主进程后生效。",
+      {
+        type: "object",
+        properties: {
+          type: { type: "string", enum: ["fingerprint", "proxy"] },
+          config: { type: "object" },
+          text: { type: "string", description: "可选 JSON 文本；传入时优先解析 text" },
+        },
+      },
+      b => b.env && b.env.writeCurrentProcessConfig,
+      (b, a) => b.env.writeCurrentProcessConfig(a)
+    ),
+    T(
+      "env_reset_current_process_default",
+      "一键还原当前主进程默认指纹配置：移除当前 profile/user.js 中的主进程指纹 block，并清掉对应 user prefs。需要 confirm:true。",
+      {
+        type: "object",
+        properties: {
+          confirm: { type: "boolean", description: "必须为 true" },
+        },
+        required: ["confirm"],
+      },
+      b => b.env && b.env.resetCurrentProcessDefault,
+      (b, a) => b.env.resetCurrentProcessDefault(a)
+    ),
+    T(
+      "env_list",
+      "列出 firefox-reverse 环境。环境是独立 profile + 独立 Firefox 进程；root 默认 ~/.firefox-reverse/environments。",
+      {
+        type: "object",
+        properties: {
+          refresh: { type: "boolean", description: "是否刷新运行状态，默认 true" },
+        },
+      },
+      b => b.env && b.env.list,
+      (b, a) => b.env.list(a)
+    ),
+    T(
+      "env_status",
+      "查看某个环境或全部环境的运行状态。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "环境 id；省略则返回全部环境" },
+        },
+      },
+      b => b.env && b.env.status,
+      (b, a) => b.env.status(a)
+    ),
+    T(
+      "env_create",
+      "新建一个隔离环境，自动创建 env.json/fingerprint.json/proxy.json/profile/traces/control。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "可选环境 id；不传则自动生成" },
+          name: { type: "string", description: "环境名称" },
+          generateOptions: {
+            type: "object",
+            description: "可选；传入时新建后立即按该组选项生成 fingerprint.json",
+            properties: {
+              os: { type: "string", enum: ["windows", "macos", "linux"] },
+              firefoxVersion: { type: "string" },
+              language: { type: "string" },
+              resolution: { type: "string", description: "如 1920x1080" },
+              timezone: { type: "string" },
+              devicePixelRatio: { type: "number" },
+              hardwareConcurrency: { type: "integer" },
+              randomize: { type: "boolean", description: "true 时从内置桌面组合池随机生成一组参数" },
+            },
+          },
+        },
+      },
+      b => b.env && b.env.create,
+      (b, a) => b.env.create(a)
+    ),
+    T(
+      "env_update",
+      "修改环境基础信息。第一版只支持改名。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+        },
+        required: ["id"],
+      },
+      b => b.env && b.env.update,
+      (b, a) => b.env.update(a)
+    ),
+    T(
+      "env_open",
+      "启动指定环境：独立 Firefox 进程 + -no-remote + 独立 profile + 独立 Marionette 端口。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          url: { type: "string", description: "可选，启动后打开的 URL" },
+          port: { type: "integer", description: "可选 Marionette 端口；不传则自动分配" },
+        },
+        required: ["id"],
+      },
+      b => b.env && b.env.open,
+      (b, a) => b.env.open(a)
+    ),
+    T(
+      "env_close",
+      "关闭指定环境进程并更新 runtime 状态。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+        },
+        required: ["id"],
+      },
+      b => b.env && b.env.close,
+      (b, a) => b.env.close(a)
+    ),
+    T(
+      "env_read_config",
+      "读取环境配置文件。type 支持 fingerprint 或 proxy。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          type: { type: "string", enum: ["fingerprint", "proxy"] },
+        },
+        required: ["id"],
+      },
+      b => b.env && b.env.readConfig,
+      (b, a) => b.env.readConfig(a)
+    ),
+    T(
+      "env_write_config",
+      "写入环境配置文件。type 支持 fingerprint 或 proxy；config 必须是 JSON object。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          type: { type: "string", enum: ["fingerprint", "proxy"] },
+          config: { type: "object" },
+          text: { type: "string", description: "可选 JSON 文本；传入时优先解析 text" },
+        },
+        required: ["id"],
+      },
+      b => b.env && b.env.writeConfig,
+      (b, a) => b.env.writeConfig(a)
+    ),
+    T(
+      "env_generate_fingerprint",
+      "按 Firefox 桌面参数生成一致的 fingerprint.json。支持 os/firefoxVersion/language/languages/resolution/timezone/devicePixelRatio/hardwareConcurrency。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          options: {
+            type: "object",
+            properties: {
+              os: { type: "string", enum: ["windows", "macos", "linux"] },
+              firefoxVersion: { type: "string" },
+              language: { type: "string" },
+              languages: { type: "array", items: { type: "string" } },
+              resolution: { type: "string", description: "如 1920x1080" },
+              timezone: { type: "string", description: "如 Asia/Shanghai" },
+              devicePixelRatio: { type: "number" },
+              hardwareConcurrency: { type: "integer" },
+              randomize: { type: "boolean", description: "true 时从内置桌面组合池随机生成一组参数" },
+            },
+          },
+        },
+        required: ["id"],
+      },
+      b => b.env && b.env.generateFingerprint,
+      (b, a) => b.env.generateFingerprint(a)
+    ),
+    T(
+      "env_capture_fingerprint",
+      "采集当前 Firefox Reverse JS 可见指纹并写入该环境 captures/*.json。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+        },
+        required: ["id"],
+      },
+      b => b.env && b.env.captureFingerprint,
+      (b, a) => b.env.captureFingerprint(a)
+    ),
+    T(
+      "env_import_fingerprint",
+      "把 captures/*.json 或传入 capture 对象规范化写入 fingerprint.json。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          capturePath: { type: "string", description: "可选；省略则导入最新 capture" },
+          capture: { type: "object", description: "可选；直接传 capture object" },
+          text: { type: "string", description: "可选；外部采集脚本弹出的 JSON 文本" },
+        },
+        required: ["id"],
+      },
+      b => b.env && b.env.importFingerprint,
+      (b, a) => b.env.importFingerprint(a)
+    ),
+    T(
+      "env_import",
+      "导入完整环境 JSON。支持 {name,id,fingerprint,proxy,generateOptions} 或 {env, fingerprint, proxy}；默认新建环境，若 id 已存在必须传 overwrite:true。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "可选；指定导入到哪个环境 id" },
+          name: { type: "string", description: "可选；覆盖导入后的环境名称" },
+          text: { type: "string", description: "完整环境 JSON 文本" },
+          config: { type: "object", description: "完整环境 JSON object" },
+          overwrite: { type: "boolean", description: "id 已存在时是否覆盖 fingerprint/proxy/name" },
+        },
+      },
+      b => b.env && b.env.importEnvironment,
+      (b, a) => b.env.importEnvironment(a)
+    ),
+    T(
+      "env_delete",
+      "删除已关闭环境。必须传 confirm:true；会递归删除该环境目录。",
+      {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          confirm: { type: "boolean", description: "必须为 true" },
+        },
+        required: ["id", "confirm"],
+      },
+      b => b.env && b.env.delete,
+      (b, a) => b.env.delete(a)
     ),
   ];
 }

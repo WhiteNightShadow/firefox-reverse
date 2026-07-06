@@ -15,7 +15,7 @@ cd "$UPSTREAM_DIR"
 
 # 安装 build 依赖（首次）
 if [[ ! -f .bootstrap-done ]]; then
-  ./mach bootstrap --no-interactive --application-choice browser
+  ./mach --no-interactive bootstrap --application-choice browser
   touch .bootstrap-done
 fi
 

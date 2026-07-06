@@ -1,0 +1,16 @@
+diff --git a/browser/components/sidebar/sidebar-main.css b/browser/components/sidebar/sidebar-main.css
+index 0fcb6e59e4..c992fc66a0 100644
+--- a/browser/components/sidebar/sidebar-main.css
++++ b/browser/components/sidebar/sidebar-main.css
+@@ -21,8 +21,9 @@
+ }
+ 
+ .wrapper {
+-  display: grid;
+-  grid-template-rows: auto min-content min-content;
++  display: flex;
++  flex-direction: column;
++  justify-content: flex-start;
+   box-sizing: border-box;
+   height: 100%;
+   max-width: 100%;

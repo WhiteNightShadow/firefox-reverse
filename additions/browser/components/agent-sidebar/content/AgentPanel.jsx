@@ -9,6 +9,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
  * @param {object} props
  * @param {() => import("../modules/LlmClient.sys.mjs").LlmClient} props.buildClient
  * @param {import("../modules/ConversationStore.sys.mjs").ConversationStore} props.conversations
+ * @param {() => void} [props.onOpenEnvironment]
  * @param {() => void} [props.onOpenSettings]
  */
 
@@ -87,6 +88,14 @@ const ICONS = {
     <svg {...svgProps}>
       <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
       <circle cx="12" cy="12" r="3" />
+    </svg>
+  ),
+  env: (
+    <svg {...svgProps}>
+      <path d="M4 5.5h16M4 12h16M4 18.5h16" />
+      <circle cx="8" cy="5.5" r="1.8" />
+      <circle cx="14" cy="12" r="1.8" />
+      <circle cx="10" cy="18.5" r="1.8" />
     </svg>
   ),
   // 删除按钮 SVG（轻量 × 号，比文本字符更可控）
@@ -238,12 +247,13 @@ function fmtSize(n) {
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + "K";
   return (n / 1024 / 1024).toFixed(1) + "M";
 }
+
 // chrome 特权全局（侧边栏文档 = chrome:// 系统 principal）。typeof 守卫，取不到则降级（按钮报错不崩）。
 const _CC = typeof Components !== "undefined" ? Components.classes : typeof Cc !== "undefined" ? Cc : null;
 const _CI = typeof Components !== "undefined" ? Components.interfaces : typeof Ci !== "undefined" ? Ci : null;
 const _SVC = typeof Services !== "undefined" ? Services : null;
 
-export default function AgentPanel({ buildClient, conversations, store, router, runAgentTurn, session, isVisionModel, workspace, notes, toolNames = [], onOpenSettings, hidden = false }) {
+export default function AgentPanel({ buildClient, conversations, store, router, runAgentTurn, session, isVisionModel, workspace, notes, toolNames = [], onOpenEnvironment, onOpenSettings, hidden = false }) {
   const [messages, setMessages] = useState([]); // 仅 user/assistant
   const [threads, setThreads] = useState([]); // 摘要列表
   const [currentId, setCurrentId] = useState(null);
@@ -788,6 +798,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           `\n\n【当前工作目录】${workspaceDir}\n用 fs_list/fs_read/fs_write 读写其中文件、run_node/run_python 在此目录执行脚本验证；jsvmp trace 自动镜像到其 jsvmp/ 子目录。把抓取的脚本、还原出的实现、笔记都存到这里。`
         : SYSTEM +
           `\n\n【当前工作目录】未设置。若任务需要读写文件或执行脚本，请提示用户点击侧边栏顶部「打开目录」选择一个本地目录。`;
+      sys += "\n\n【浏览器环境】环境隔离、指纹配置和 MCP 指定环境由 env_* 工具链处理；Agent 对话页不做环境选择。";
       // 模式注入：未选过 → 落定全自动（与"全自动就是当前模式"一致，并持久化，之后不再弹选择卡）。
       // 注意：直接用已解析的 tid 落库，**不要**走 chooseMode()——它内部会 currentId||ensureThread()，
       // 而此刻 setCurrentId 还没 flush（异步），会再建一条空线程并切走 currentId（run 却跑在原线程上）。
@@ -955,6 +966,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         <span className="agent-panel__actions">
           <button type="button" onClick={() => setShowHistory(v => !v)} title="历史对话" aria-label="历史对话">{ICONS.history}</button>
           <button type="button" onClick={newChat} title="新对话" aria-label="新对话">{ICONS.plus}</button>
+          <button type="button" className="agent-panel__envButton" onClick={onOpenEnvironment} title="环境管理" aria-label="环境管理">
+            {ICONS.env}
+            <span>环境管理</span>
+          </button>
           <button type="button" onClick={onOpenSettings} title="设置" aria-label="设置">{ICONS.gear}</button>
         </span>
       </header>

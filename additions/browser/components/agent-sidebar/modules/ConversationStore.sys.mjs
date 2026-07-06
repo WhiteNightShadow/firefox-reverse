@@ -3,8 +3,10 @@
  * - Firefox：落盘到 profile 下 <profile>/firefox-reverse-agent/conversations.json
  *   （用 IOUtils/PathUtils，system ESM 全局可用）。比 prefs 更适合大体量历史。
  * - Node 自测：无 IOUtils → 退化为内存，仍可 import 验证。
- * 全部 API 异步。数据结构：{ threads: [{ id, title, createdAt, updatedAt, workspace, messages:[{role,content}] }] }
+ * 全部 API 异步。数据结构：{ threads: [{ id, title, createdAt, updatedAt, workspace, envId, modelStrategy, messages:[{role,content}] }] }
  *   workspace = 该会话绑定的本地工作目录绝对路径（null=未设；**新会话默认为空/不绑定**，需用户手动打开目录）。
+ *   envId = 该会话准备使用的 Firefox-Reverse 环境 id（null=未选）。
+ *   modelStrategy = "balanced" | "premium"，先作为 Agent 调度上下文，后续可映射到具体 provider/model。
  */
 
 const DIR_NAME = "firefox-reverse-agent";
@@ -78,6 +80,8 @@ export class ConversationStore {
         updatedAt: t.updatedAt,
         workspace: t.workspace || null,
         mode: t.mode || null,
+        envId: t.envId || null,
+        modelStrategy: t.modelStrategy || "balanced",
         count: t.messages.length,
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -98,6 +102,8 @@ export class ConversationStore {
       updatedAt: now,
       workspace: workspace || null,
       mode: mode || null, // "auto"=全自动一条龙 / "assist"=AI辅助逐阶段 / null=未选（用时默认 auto）
+      envId: null,
+      modelStrategy: "balanced",
       messages: [],
     };
     d.threads.push(t);
@@ -123,6 +129,30 @@ export class ConversationStore {
     const t = d.threads.find(x => x.id === id);
     if (t) {
       t.mode = mode || null;
+      t.updatedAt = nextTs();
+      await this._save();
+    }
+    return t;
+  }
+
+  /** 绑定/更新会话的浏览器环境。 */
+  async setThreadEnvironment(id, envId) {
+    const d = await this._load();
+    const t = d.threads.find(x => x.id === id);
+    if (t) {
+      t.envId = envId || null;
+      t.updatedAt = nextTs();
+      await this._save();
+    }
+    return t;
+  }
+
+  /** 设置/更新会话的模型策略。 */
+  async setThreadModelStrategy(id, strategy) {
+    const d = await this._load();
+    const t = d.threads.find(x => x.id === id);
+    if (t) {
+      t.modelStrategy = strategy === "premium" ? "premium" : "balanced";
       t.updatedAt = nextTs();
       await this._save();
     }

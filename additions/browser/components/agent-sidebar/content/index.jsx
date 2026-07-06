@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import AgentPanel from "./AgentPanel.jsx";
+import EnvironmentPane from "./EnvironmentPane.jsx";
 import SettingsPane from "./SettingsPane.jsx";
 
 /* Agent 侧边栏入口：在 chrome-privileged document 里挂载 React。
@@ -53,6 +54,7 @@ function loadModules() {
     fetchModels,
     workspace: backends.workspace, // 工作目录后端（侧边栏据此 setRoot/列文件）
     notes: backends.notes, // 逆向进展笔记后端（每轮把当前站点笔记摘要注入系统提示）
+    env: backends.env, // 环境管理后端（手动环境管理页 + MCP 共用同一套 env_* 能力）
     toolNames: router.names(),
   };
 }
@@ -75,9 +77,16 @@ function App({ mods }) {
         workspace={mods.workspace}
         notes={mods.notes}
         toolNames={mods.toolNames}
+        onOpenEnvironment={() => setView("environment")}
         onOpenSettings={() => setView("settings")}
-        hidden={view === "settings"}
+        hidden={view !== "chat"}
       />
+      {view === "environment" && (
+        <EnvironmentPane
+          env={mods.env}
+          onClose={() => setView("chat")}
+        />
+      )}
       {view === "settings" && (
         <SettingsPane
           store={mods.store}

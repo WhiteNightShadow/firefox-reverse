@@ -17,6 +17,254 @@ const { setTimeout: _setTimeout, clearTimeout: _clearTimeout } = ChromeUtils.imp
   "resource://gre/modules/Timer.sys.mjs"
 );
 
+const AUTOMATION_SCAN_EXPRESSION = String.raw`(async () => {
+  const safe = (fn, fallback = null) => {
+    try { return fn(); } catch (e) { return fallback; }
+  };
+  const err = e => String((e && e.message) || e || "");
+  const descInfo = (obj, prop) => safe(() => {
+    const d = Object.getOwnPropertyDescriptor(obj, prop);
+    if (!d) return null;
+    return {
+      configurable: !!d.configurable,
+      enumerable: !!d.enumerable,
+      writable: Object.prototype.hasOwnProperty.call(d, "writable") ? !!d.writable : null,
+      hasGetter: typeof d.get === "function",
+      hasSetter: typeof d.set === "function",
+      getterSource: d.get ? Function.prototype.toString.call(d.get).slice(0, 160) : "",
+    };
+  }, null);
+  const permission = async name => {
+    try {
+      if (!navigator.permissions || !navigator.permissions.query) return { state: "unsupported" };
+      const r = await navigator.permissions.query({ name });
+      return { state: r && r.state || "" };
+    } catch (e) {
+      return { state: "error", error: err(e) };
+    }
+  };
+  const getUAData = async () => {
+    const ua = safe(() => navigator.userAgentData, null);
+    if (!ua) return null;
+    const out = {
+      brands: safe(() => Array.from(ua.brands || []), []),
+      mobile: safe(() => ua.mobile, null),
+      platform: safe(() => ua.platform, ""),
+    };
+    if (typeof ua.getHighEntropyValues === "function") {
+      try {
+        out.highEntropy = await ua.getHighEntropyValues([
+          "architecture",
+          "bitness",
+          "model",
+          "platformVersion",
+          "uaFullVersion",
+          "fullVersionList",
+          "wow64",
+        ]);
+      } catch (e) {
+        out.highEntropyError = err(e);
+      }
+    }
+    return out;
+  };
+  const webgl = () => safe(() => {
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+    if (!gl) return null;
+    const dbg = safe(() => gl.getExtension("WEBGL_debug_renderer_info"), null);
+    return {
+      vendor: safe(() => gl.getParameter(gl.VENDOR), ""),
+      renderer: safe(() => gl.getParameter(gl.RENDERER), ""),
+      version: safe(() => gl.getParameter(gl.VERSION), ""),
+      shadingLanguageVersion: safe(() => gl.getParameter(gl.SHADING_LANGUAGE_VERSION), ""),
+      unmaskedVendor: dbg ? safe(() => gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL), "") : "",
+      unmaskedRenderer: dbg ? safe(() => gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL), "") : "",
+      extensionsCount: safe(() => (gl.getSupportedExtensions() || []).length, 0),
+    };
+  }, null);
+  const canvas = () => safe(() => {
+    const c = document.createElement("canvas");
+    c.width = 220;
+    c.height = 60;
+    const ctx = c.getContext("2d");
+    if (!ctx) return null;
+    ctx.textBaseline = "top";
+    ctx.font = "16px Arial";
+    ctx.fillStyle = "#123456";
+    ctx.fillText("frx automation scan", 8, 8);
+    const data = c.toDataURL("image/png");
+    let h = 2166136261;
+    for (let i = 0; i < data.length; i++) {
+      h ^= data.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return { hash32: (h >>> 0).toString(16).padStart(8, "0"), dataUrlLength: data.length };
+  }, null);
+  const audio = async () => safe(() => {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return null;
+    const ctx = new Ctor();
+    const out = {
+      sampleRate: ctx.sampleRate || null,
+      state: ctx.state || "",
+      baseLatency: ctx.baseLatency || null,
+      outputLatency: ctx.outputLatency || null,
+    };
+    Promise.resolve().then(() => safe(() => ctx.close(), null));
+    return out;
+  }, null);
+  const rtc = async () => {
+    if (typeof RTCPeerConnection !== "function") return { supported: false };
+    return await new Promise(resolve => {
+      const candidates = [];
+      let done = false;
+      const finish = error => {
+        if (done) return;
+        done = true;
+        safe(() => pc.close(), null);
+        const types = {};
+        for (const c of candidates) {
+          const m = String(c).match(/\btyp\s+([a-z0-9]+)/i);
+          const t = m ? m[1] : "unknown";
+          types[t] = (types[t] || 0) + 1;
+        }
+        resolve({
+          supported: true,
+          count: candidates.length,
+          types,
+          hasMdnsHost: candidates.some(c => /\.local\b/i.test(c)),
+          hasPrivateIpv4: candidates.some(c => /\b(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(c)),
+          hasIpv6: candidates.some(c => /([a-f0-9]{0,4}:){2,}/i.test(c)),
+          error: error || "",
+        });
+      };
+      let pc;
+      try {
+        pc = new RTCPeerConnection({ iceServers: [] });
+        pc.onicecandidate = e => {
+          if (e && e.candidate && e.candidate.candidate) {
+            candidates.push(e.candidate.candidate);
+          } else {
+            finish("");
+          }
+        };
+        pc.createDataChannel("frx");
+        pc.createOffer().then(o => pc.setLocalDescription(o)).catch(e => finish(err(e)));
+        setTimeout(() => finish("timeout"), 1800);
+      } catch (e) {
+        resolve({ supported: true, count: 0, types: {}, error: err(e) });
+      }
+    });
+  };
+  const globalNames = [
+    "webdriver",
+    "__webdriver_evaluate",
+    "__selenium_evaluate",
+    "__webdriver_script_function",
+    "__webdriver_script_func",
+    "__webdriver_script_fn",
+    "__fxdriver_evaluate",
+    "__driver_unwrapped",
+    "__webdriver_unwrapped",
+    "__selenium_unwrapped",
+    "__fxdriver_unwrapped",
+    "_selenium",
+    "callSelenium",
+    "_Selenium_IDE_Recorder",
+    "callPhantom",
+    "_phantom",
+    "phantom",
+    "__nightmare",
+    "domAutomation",
+    "domAutomationController",
+    "Buffer",
+    "process",
+  ];
+  const globals = {};
+  for (const name of globalNames) {
+    globals[name] = safe(() => Object.prototype.hasOwnProperty.call(window, name) || typeof window[name] !== "undefined", false);
+  }
+  const uaData = await getUAData();
+  const out = {
+    schemaVersion: 1,
+    scannedAt: new Date().toISOString(),
+    url: location.href,
+    navigator: {
+      userAgent: safe(() => navigator.userAgent, ""),
+      platform: safe(() => navigator.platform, ""),
+      language: safe(() => navigator.language, ""),
+      languages: safe(() => Array.from(navigator.languages || []), []),
+      webdriver: safe(() => navigator.webdriver, null),
+      hardwareConcurrency: safe(() => navigator.hardwareConcurrency, null),
+      deviceMemory: safe(() => navigator.deviceMemory, null),
+      maxTouchPoints: safe(() => navigator.maxTouchPoints, null),
+      cookieEnabled: safe(() => navigator.cookieEnabled, null),
+      pdfViewerEnabled: safe(() => navigator.pdfViewerEnabled, null),
+      pluginsLength: safe(() => navigator.plugins.length, null),
+      mimeTypesLength: safe(() => navigator.mimeTypes.length, null),
+      userAgentData: uaData,
+    },
+    descriptors: {
+      webdriver: descInfo(Navigator.prototype, "webdriver"),
+      userAgent: descInfo(Navigator.prototype, "userAgent"),
+      plugins: descInfo(Navigator.prototype, "plugins"),
+      languages: descInfo(Navigator.prototype, "languages"),
+      platform: descInfo(Navigator.prototype, "platform"),
+    },
+    window: {
+      innerWidth: safe(() => innerWidth, null),
+      innerHeight: safe(() => innerHeight, null),
+      outerWidth: safe(() => outerWidth, null),
+      outerHeight: safe(() => outerHeight, null),
+      devicePixelRatio: safe(() => devicePixelRatio, null),
+      hasFocus: safe(() => document.hasFocus(), null),
+      visibilityState: safe(() => document.visibilityState, ""),
+      chromeType: safe(() => typeof window.chrome, "undefined"),
+      chromeKeys: safe(() => window.chrome ? Object.keys(window.chrome).slice(0, 20) : [], []),
+      installTrigger: safe(() => typeof window.InstallTrigger !== "undefined", false),
+      mozInnerScreenX: safe(() => typeof window.mozInnerScreenX !== "undefined", false),
+      browserType: safe(() => typeof window.browser, "undefined"),
+    },
+    css: {
+      mozAppearance: safe(() => CSS.supports("-moz-appearance", "none"), false),
+      webkitAppearance: safe(() => CSS.supports("-webkit-appearance", "none"), false),
+    },
+    permissions: {
+      notifications: await permission("notifications"),
+      geolocation: await permission("geolocation"),
+      camera: await permission("camera"),
+      microphone: await permission("microphone"),
+      clipboardRead: await permission("clipboard-read"),
+    },
+    globals,
+    webgl: webgl(),
+    canvas: canvas(),
+    audio: await audio(),
+    webrtc: await rtc(),
+    storage: {
+      localStorage: safe(() => typeof localStorage === "object", false),
+      sessionStorage: safe(() => typeof sessionStorage === "object", false),
+      indexedDB: safe(() => typeof indexedDB === "object", false),
+      cookieLength: safe(() => document.cookie.length, null),
+    },
+    timing: {
+      performanceNowDecimals: safe(() => {
+        const s = String(performance.now());
+        return s.includes(".") ? s.split(".")[1].length : 0;
+      }, null),
+    },
+  };
+  out.findings = [];
+  if (out.navigator.webdriver === true) out.findings.push("navigator.webdriver is true");
+  if (out.globals.domAutomation || out.globals.domAutomationController) out.findings.push("domAutomation global exists");
+  if (out.globals._selenium || out.globals.callSelenium) out.findings.push("selenium global exists");
+  if (out.globals.callPhantom || out.globals._phantom || out.globals.phantom) out.findings.push("phantom global exists");
+  if (out.permissions.notifications && out.permissions.notifications.error) out.findings.push("permissions notifications query error: " + out.permissions.notifications.error);
+  if (out.webrtc && out.webrtc.hasPrivateIpv4) out.findings.push("WebRTC exposed private IPv4 candidate");
+  return out;
+})()`;
+
 function ensureActor() {
   if (_registered) {
     return;
@@ -359,6 +607,14 @@ export class PageBackend {
     return this.eval({
       expression:
         "({url:location.href,title:document.title,scripts:document.scripts.length,ua:navigator.userAgent})",
+    }, ctx);
+  }
+
+  async automationScan({ saveTo } = {}, ctx) {
+    return this.eval({
+      expression: AUTOMATION_SCAN_EXPRESSION,
+      awaitPromise: true,
+      saveTo,
     }, ctx);
   }
 
