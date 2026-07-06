@@ -4,9 +4,35 @@
  */
 // 最小 mock：_resolve 对合法相对路径会调 PathUtils.join。
 globalThis.PathUtils = globalThis.PathUtils || {
-  join: (...a) => a.join("/"),
-  filename: p => String(p).split("/").pop(),
-  parent: p => String(p).split("/").slice(0, -1).join("/"),
+  join: (...a) => {
+    const isWin = globalThis.Services?.appinfo?.OS === "WINNT";
+    const parts = a.map(x => String(x)).filter(Boolean);
+    const out = isWin
+      ? parts.reduce(
+          (acc, part, i) =>
+            i === 0
+              ? (/^[A-Za-z]:[\\/]$/.test(part) ? part.replace(/\//g, "\\") : part.replace(/[\\/]+$/, ""))
+              : acc + (/[\\/]$/.test(acc) ? "" : "\\") + part.replace(/^[\\/]+|[\\/]+$/g, ""),
+          ""
+        )
+      : parts.join("/");
+    if (isWin && /%[^%]+%/.test(out)) {
+      throw new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH");
+    }
+    return out;
+  },
+  filename: p => String(p).split(/[\\/]/).pop(),
+  parent: p => {
+    const s = String(p).replace(/[\\/]+$/, "");
+    const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+    return i >= 0 ? s.slice(0, i) : "";
+  },
+  isAbsolute: p => {
+    const s = String(p || "");
+    return globalThis.Services?.appinfo?.OS === "WINNT"
+      ? /^[A-Za-z]:[\\/]/.test(s) || s.startsWith("\\\\")
+      : s.startsWith("/");
+  },
 };
 
 const { WorkspaceBackend } = await import("../modules/WorkspaceBackend.sys.mjs");
@@ -66,6 +92,37 @@ try {
   runErr = true;
 }
 ok(runErr, "Node 环境 runNode 抛错（Subprocess 不可用）");
+
+console.log("[6] Windows 路径/nvm PATH 兼容");
+globalThis.Services = {
+  appinfo: { OS: "WINNT" },
+  env: {
+    get(name) {
+      const env = {
+        PATH: "%NVM_SYMLINK%;C:\\Windows\\System32",
+        NVM_HOME: "C:\\Users\\me\\AppData\\Roaming\\nvm",
+        NVM_SYMLINK: "C:\\Program Files\\nodejs",
+      };
+      return env[name] || "";
+    },
+  },
+};
+const ww = new WorkspaceBackend();
+ww.setRoot("D:/EasyJob");
+ok(ww.getRoot() === "D:\\EasyJob", "Windows root D:/EasyJob → D:\\EasyJob");
+ok(ww._resolve("scripts\\a.js") === "D:\\EasyJob\\scripts\\a.js", "Windows 相对反斜杠路径解析");
+ok(ww._resolve("D:/EasyJob/scripts/a.js") === "D:\\EasyJob\\scripts\\a.js", "Windows 正斜杠盘符绝对路径放行");
+throws(() => ww._resolve("D:/Other/a.js"), "Windows 盘符绝对路径越界拒绝");
+ok(
+  ww._joinPath("%NVM_SYMLINK%", "node.exe") === "C:\\Program Files\\nodejs\\node.exe",
+  "Windows PATH 变量先展开再 join"
+);
+ok(ww._joinPath("C:\\", "node.exe") === "C:\\node.exe", "Windows 盘根 C:\\ 不被清成 C:");
+ok(ww._joinPath("%MISSING_VAR%", "node.exe") === null, "未展开的 %VAR% 不让 PathUtils.join 冒泡炸出");
+const merged = ww._mergedPath("C:\\Program Files\\nodejs\\node.exe");
+ok(merged.includes(";"), "Windows PATH 使用分号拼接");
+ok(!merged.includes("/usr/local/bin"), "Windows PATH 不混入 Unix 目录");
+ok(!merged.split(";").includes("C"), "Windows PATH 不按冒号拆坏盘符");
 
 console.log(`\nworkspace selftest: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

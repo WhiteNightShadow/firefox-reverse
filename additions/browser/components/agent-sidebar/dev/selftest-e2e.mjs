@@ -17,8 +17,8 @@ store.setApiKey("deepseek", process.env.DEEPSEEK_API_KEY || "(none)");
 
 const client = buildClientFromStore(store);
 console.log("构造结果: provider=deepseek model=%s endpoint=%s", client.model, client.endpoint);
-if (client.model !== "deepseek-v4-pro") {
-  console.error("FAIL: 期望回退到 defaultModel=deepseek-v4-pro");
+if (client.model !== "deepseek-v4-flash") {
+  console.error("FAIL: 期望回退到 defaultModel=deepseek-v4-flash");
   process.exit(1);
 }
 

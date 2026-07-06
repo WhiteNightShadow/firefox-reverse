@@ -83,7 +83,7 @@ const mockClient = {
       };
     }
     // 第二轮：拿到工具结果后给最终答复
-    return { content: "在 app.bundle.js:1234 找到 _0x25788b", toolCalls: [], finishReason: "stop", usage: null, raw: {} };
+    return { content: "## 结论\n在 app.bundle.js:1234 找到 _0x25788b", toolCalls: [], finishReason: "stop", usage: null, raw: {} };
   },
 };
 
@@ -98,8 +98,8 @@ const result = await runAgentTurn({
 });
 
 ok(sawTools, "LLM 收到了 tools 规格");
-ok(result.content === "在 app.bundle.js:1234 找到 _0x25788b", "最终答复来自第二轮（工具结果回灌后）");
-ok(result.rounds === 2 && result.stopReason === "stop", `两轮收敛 stop（rounds=${result.rounds}）`);
+ok(result.content === "## 结论\n在 app.bundle.js:1234 找到 _0x25788b", "最终答复来自第二轮（工具结果回灌后）");
+ok(result.rounds === 2 && result.stopReason === "final", `两轮收敛 final（rounds=${result.rounds}）`);
 ok(result.toolCalls.length === 1 && result.toolCalls[0].name === "code_search", "记录了 1 次 code_search 调用");
 ok(result.toolCalls[0].env.ok && result.toolCalls[0].env.data.total === 1, "工具调用结果信封正确");
 const tcMsg = result.messages.find(m => m.role === "assistant" && m.tool_calls);

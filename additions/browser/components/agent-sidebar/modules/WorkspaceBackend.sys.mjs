@@ -56,10 +56,93 @@ export class WorkspaceBackend {
     this._config = config || null;
   }
 
+  _isWindows() {
+    try {
+      return Services.appinfo.OS === "WINNT";
+    } catch {
+      return false;
+    }
+  }
+
+  _pathListSep() {
+    return this._isWindows() ? ";" : ":";
+  }
+
+  _stripQuotes(s) {
+    return String(s ?? "").trim().replace(/^"+|"+$/g, "");
+  }
+
+  _expandWinEnv(s) {
+    if (!this._isWindows()) {
+      return s;
+    }
+    return String(s).replace(/%([^%]+)%/g, (m, name) => {
+      try {
+        const v = Services.env && Services.env.get(name);
+        return v || m;
+      } catch {
+        return m;
+      }
+    });
+  }
+
+  _normalizePath(path) {
+    let p = this._stripQuotes(path);
+    if (this._isWindows()) {
+      p = this._expandWinEnv(p).replace(/\//g, "\\");
+    }
+    return p;
+  }
+
+  _cleanSearchDir(dir) {
+    let d = this._normalizePath(dir);
+    if (this._isWindows() && /^[A-Za-z]:\\$/.test(d)) {
+      return d;
+    }
+    d = d.replace(/[\\/]+$/, "");
+    // Windows PATH/registry entries often contain unexpanded %NVM_SYMLINK%/%SystemRoot%.
+    // PathUtils.join throws NS_ERROR_FILE_UNRECOGNIZED_PATH for those; skip unresolved ones.
+    if (this._isWindows() && /%[^%]+%/.test(d)) {
+      return "";
+    }
+    return d;
+  }
+
+  _isAbs(path) {
+    const p = String(path || "");
+    if (this._isWindows() && (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\"))) {
+      return true;
+    }
+    return PathUtils.isAbsolute(p);
+  }
+
+  _cmpPath(path) {
+    let p = this._normalizePath(path).replace(/\\/g, "/").replace(/\/+$/, "");
+    return this._isWindows() ? p.toLowerCase() : p;
+  }
+
+  _insideRoot(abs, root) {
+    const a = this._cmpPath(abs);
+    const r = this._cmpPath(root);
+    return a === r || a.startsWith(r + "/");
+  }
+
+  _joinPath(dir, ...parts) {
+    const d = this._cleanSearchDir(dir);
+    if (!d) {
+      return null;
+    }
+    try {
+      return PathUtils.join(d, ...parts);
+    } catch {
+      return null;
+    }
+  }
+
   /** 绑定/切换工作目录（绝对路径）。返回规范化后的根。
    * 注意：此 setter 设置的是后备全局根。优先使用 ctx.workspaceRoot（工具执行时由会话注入）。 */
   setRoot(path) {
-    const p = path && String(path).trim();
+    const p = path && this._normalizePath(path);
     this._root = p || null;
     return this._root;
   }
@@ -69,7 +152,8 @@ export class WorkspaceBackend {
   }
   /** ctx.workspaceRoot 优先于全局 this._root，实现多窗口/多会话隔离。 */
   _resolveRoot(ctx) {
-    return (ctx && ctx.workspaceRoot) || this._root;
+    const r = (ctx && ctx.workspaceRoot) || this._root;
+    return r ? this._normalizePath(r) : r;
   }
 
   _assertRoot(ctx) {
@@ -112,24 +196,32 @@ export class WorkspaceBackend {
   /** 把用户给的相对/绝对路径安全解析为工作目录内的绝对路径（拒绝越界）。 */
   _resolve(rel, ctx) {
     const root = this._assertRoot(ctx);
-    let r = String(rel ?? "").replace(/\\/g, "/").trim();
+    let r = String(rel ?? "").trim();
     if (!r || r === "." || r === "./") {
       return root;
     }
-    const segs = r.split("/").filter(s => s && s !== ".");
+    r = this._isWindows() ? this._normalizePath(r) : r.replace(/\\/g, "/");
+    const scan = r.replace(/\\/g, "/");
+    const segs = scan.split("/").filter(s => s && s !== ".");
     if (segs.includes("..")) {
       throw new Error("路径不允许包含 ..（必须在工作目录内）：" + rel);
     }
-    let abs;
-    if (r.startsWith("/")) {
-      abs = "/" + segs.join("/");
-      if (abs !== root && !abs.startsWith(root.replace(/\/$/, "") + "/")) {
+    if (this._isAbs(r)) {
+      const abs = this._normalizePath(r);
+      if (!this._insideRoot(abs, root)) {
         throw new Error("路径越界（必须在工作目录内）：" + rel);
       }
-    } else {
-      abs = PathUtils.join(root, ...segs);
+      return abs;
+    }
+    const abs = PathUtils.join(root, ...segs);
+    if (!this._insideRoot(abs, root)) {
+      throw new Error("路径越界（必须在工作目录内）：" + rel);
     }
     return abs;
+  }
+
+  _safeChildPath(dir, name) {
+    return this._joinPath(dir, name);
   }
 
   /** 工作目录状态。 */
@@ -196,7 +288,10 @@ export class WorkspaceBackend {
    *  ——写了却读不到（用户实测 run_sign.js 凭空消失）。只扫一层、命中即返回，开销小。 */
   async _findByBasename(name, ctx) {
     const root = this._assertRoot(ctx);
-    const atRoot = PathUtils.join(root, name);
+    const atRoot = this._safeChildPath(root, name);
+    if (!atRoot) {
+      return null;
+    }
     if (await IOUtils.exists(atRoot)) {
       return { abs: atRoot, rel: name };
     }
@@ -216,7 +311,10 @@ export class WorkspaceBackend {
       if (!isDir) {
         continue;
       }
-      const cand = PathUtils.join(child, name);
+      const cand = this._safeChildPath(child, name);
+      if (!cand) {
+        continue;
+      }
       if (await IOUtils.exists(cand)) {
         return { abs: cand, rel: PathUtils.filename(child) + "/" + name };
       }
@@ -357,8 +455,9 @@ export class WorkspaceBackend {
     // 1. 配置覆盖
     try {
       const cfg = this._config && (kind === "node" ? this._config.getNodePath?.() : this._config.getPythonPath?.());
-      if (cfg && (await IOUtils.exists(cfg))) {
-        return cfg;
+      const cfgPath = cfg && this._normalizePath(cfg);
+      if (cfgPath && (await IOUtils.exists(cfgPath))) {
+        return cfgPath;
       }
     } catch {
       /* ignore */
@@ -390,6 +489,8 @@ export class WorkspaceBackend {
       const lad = env("LOCALAPPDATA"); if (lad) dirs.push(lad + "\\Microsoft\\WinGet\\Links", lad + "\\fnm", lad + "\\Volta\\bin", lad + "\\nvm");
       const up = env("USERPROFILE"); if (up) dirs.push(up + "\\scoop\\shims", up + "\\scoop\\apps\\nodejs\\current", up + "\\.volta\\bin");
       const pd = env("ProgramData"); if (pd) dirs.push(pd + "\\chocolatey\\bin");
+      const nvmHome = env("NVM_HOME"); if (nvmHome) dirs.push(nvmHome);
+      const nvmSymlink = env("NVM_SYMLINK"); if (nvmSymlink) dirs.push(nvmSymlink);
       // 注册表权威 PATH（HKCU + HKLM 系统环境）：进程继承的 PATH 可能过期，注册表才是真值
       try {
         const roots = [
@@ -427,7 +528,10 @@ export class WorkspaceBackend {
     }
     for (const d of dirs) {
       for (const n of names) {
-        const p = PathUtils.join(d, n);
+        const p = this._joinPath(d, n);
+        if (!p) {
+          continue;
+        }
         try {
           if (await IOUtils.exists(p)) {
             return p;
@@ -587,6 +691,8 @@ export class WorkspaceBackend {
     } catch {
       /* ignore */
     }
+    const isWin = this._isWindows();
+    const sep = this._pathListSep();
     const parts = [];
     if (exe) {
       try {
@@ -595,14 +701,19 @@ export class WorkspaceBackend {
         /* ignore */
       }
     }
-    for (const d of ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/opt/local/bin", "/usr/sbin", "/sbin"]) {
-      parts.push(d);
+    if (!isWin) {
+      for (const d of ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/opt/local/bin", "/usr/sbin", "/sbin"]) {
+        parts.push(d);
+      }
     }
-    for (const d of base.split(":")) {
-      if (d) parts.push(d);
+    for (const d of base.split(sep)) {
+      const clean = this._cleanSearchDir(d);
+      if (clean) {
+        parts.push(clean);
+      }
     }
     const seen = new Set();
-    return parts.filter(p => p && !seen.has(p) && seen.add(p)).join(":");
+    return parts.filter(p => p && !seen.has(p) && seen.add(p)).join(sep);
   }
 
   /** 派生子进程并捕获合并输出（node/python/npm 共用）。PATH 经 _mergedPath 补全。 */
@@ -753,7 +864,10 @@ export class WorkspaceBackend {
       if (node) {
         const parent = PathUtils.parent(node);
         for (const nm of npmNames) {
-          const sib = PathUtils.join(parent, nm);
+          const sib = this._joinPath(parent, nm);
+          if (!sib) {
+            continue;
+          }
           if (await IOUtils.exists(sib)) {
             return sib;
           }
@@ -778,14 +892,21 @@ export class WorkspaceBackend {
     }
     const dirs = [];
     if (isWin) {
-      const pf = Services.env.get("ProgramFiles"); if (pf) dirs.push(pf + "\\nodejs");
-      const ad = Services.env.get("APPDATA"); if (ad) dirs.push(ad + "\\npm");
+      const env = n => Services.env.get(n);
+      const pf = env("ProgramFiles"); if (pf) dirs.push(pf + "\\nodejs");
+      const ad = env("APPDATA"); if (ad) dirs.push(ad + "\\npm", ad + "\\nvm");
+      const nvmHome = env("NVM_HOME"); if (nvmHome) dirs.push(nvmHome);
+      const nvmSymlink = env("NVM_SYMLINK"); if (nvmSymlink) dirs.push(nvmSymlink);
+      const lad = env("LOCALAPPDATA"); if (lad) dirs.push(lad + "\\Volta\\bin", lad + "\\Microsoft\\WinGet\\Links");
     } else {
       dirs.push("/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/opt/local/bin");
     }
     for (const d of dirs) {
       for (const nm of npmNames) {
-        const p = PathUtils.join(d, nm);
+        const p = this._joinPath(d, nm);
+        if (!p) {
+          continue;
+        }
         try {
           if (await IOUtils.exists(p)) {
             return p;

@@ -620,6 +620,22 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       /* ignore */
     }
   }
+  function directoryPathFromPicker(fp) {
+    let f = fp && fp.file;
+    if (!f) {
+      return null;
+    }
+    try {
+      if (f.isDirectory && !f.isDirectory() && f.parent) {
+        f = f.parent;
+      }
+    } catch {
+      if (f.parent) {
+        f = f.parent;
+      }
+    }
+    return (f && f.path) || null;
+  }
   function pickDirectory() {
     try {
       if (!_CC || !_CI || !_SVC) {
@@ -630,8 +646,11 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       const fp = _CC["@mozilla.org/filepicker;1"].createInstance(_CI.nsIFilePicker);
       fp.init(win.browsingContext, "选择工作目录", _CI.nsIFilePicker.modeGetFolder);
       fp.open(rv => {
-        if (rv === _CI.nsIFilePicker.returnOK && fp.file) {
-          setWorkspaceForThread(fp.file.path);
+        if (rv === _CI.nsIFilePicker.returnOK) {
+          const path = directoryPathFromPicker(fp);
+          if (path) {
+            setWorkspaceForThread(path);
+          }
         }
       });
     } catch (e) {
