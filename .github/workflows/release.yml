@@ -76,6 +76,7 @@ jobs:
           set -e
           export MOZCONFIG=mozconfig.mac
           ./mach build
+          "$GITHUB_WORKSPACE/scripts/macos-adhoc-sign-apps.sh" "$UPSTREAM"
           ./mach package
 
       - name: 找 dmg
@@ -84,6 +85,11 @@ jobs:
           f=$(ls "$UPSTREAM"/obj-*/dist/firefox-*.mac.dmg 2>/dev/null | head -1)
           echo "path=$f" >> "$GITHUB_OUTPUT"
           test -n "$f" && echo "dmg: $f"
+
+      - name: 校验 dmg 内 app 签名
+        if: steps.dmg.outputs.path != ''
+        run: |
+          "$GITHUB_WORKSPACE/scripts/macos-verify-dmg.sh" "${{ steps.dmg.outputs.path }}"
 
       - name: 上传 dmg 到 Release
         if: steps.dmg.outputs.path != ''
