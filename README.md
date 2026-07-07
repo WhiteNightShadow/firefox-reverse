@@ -239,6 +239,14 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
+### v0.22.0（2026-07-07）
+- **指纹浏览器环境管理**：新增环境实体与独立 profile / 独立进程运行链路，支持环境列表、新建、重命名、打开、关闭、删除、导入指纹 JSON。
+- **侧边栏环境管理**：Agent 侧边栏新增明显的环境管理入口，可维护环境状态、编辑当前主进程指纹、保存后重启生效，并支持一键还原默认。
+- **首批 C++ 指纹覆盖**：启动时读取环境或当前 profile 的 `fingerprint.json`，覆盖 `navigator.userAgent/platform/language/languages/webdriver/hardwareConcurrency`、`screen.*`、`devicePixelRatio`、timezone / locale、`User-Agent` / `Accept-Language` headers 等低风险字段。
+- **Chrome-like 指纹生成与导入**：支持按 OS、版本、语言、分辨率、DPR、时区生成一致组合；支持外部浏览器控制台采集 JSON 后粘贴导入。
+- **MCP 环境联动**：配合 `frx-director-mcp` 通过 `FRX_ENV_ID` 启动指定环境，并保留无环境时的主进程 profile 指纹模式。
+- **macOS 包修复**：修复本地覆盖安装后的签名/启动问题，重新生成签名 DMG 与 SHA256 校验文件。
+
 ### v0.19（2026-06-10）
 - **新增模型**：Kimi（Moonshot，`kimi-k2.6`）、MiniMax（`MiniMax-M3`）、通义千问（Qwen，`qwen3-max`）—— 连同原有 DeepSeek / 智谱 GLM / Claude / OpenAI，主流大模型基本覆盖。
 - **MCP 外部驱动可见性**：新增 `AgentSession.listRunning()` + 侧栏「空闲自动跟随 / 忙时横幅」——外部（如 MCP director）驱动的会话能在侧栏**自动切到、实时流式、并显示绑定的工作目录**（配套 [frx-director-mcp](https://github.com/WhiteNightShadow/frx-director-mcp) 成本拆分玩法，见「两种工作模式」）。
