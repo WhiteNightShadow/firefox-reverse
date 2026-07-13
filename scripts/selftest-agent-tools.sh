@@ -29,6 +29,7 @@ SELFTESTS=(
   selftest-toolrouter.mjs
   selftest-thread-reservation.mjs
   selftest-workspace.mjs
+  selftest-environment.mjs
   selftest-e2e.mjs
 )
 

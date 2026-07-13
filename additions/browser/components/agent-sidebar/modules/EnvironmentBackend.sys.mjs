@@ -14,6 +14,9 @@ const SCHEMA_VERSION = 1;
 const DEFAULT_DIR_NAME = "environments";
 const DEFAULT_PORT_BASE = 2828;
 const MAX_PORT_SCAN = 200;
+const PROCESS_ALIVE = "alive";
+const PROCESS_DEAD = "dead";
+const PROCESS_UNKNOWN = "unknown";
 const ENV_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const CURRENT_PROCESS_DIR_NAME = ".current-process";
 const CURRENT_PROCESS_ID = "current-process";
@@ -420,6 +423,9 @@ export class EnvironmentBackend {
   constructor(opts = {}) {
     this._root = opts.root || this._defaultRoot();
     this._firefoxBin = opts.firefoxBin || "";
+    this._subprocess = opts.subprocess || null;
+    this._portProbe = typeof opts.portProbe === "function" ? opts.portProbe : null;
+    this._systemCommands = new Map();
     this._procs = new Map();
   }
 
@@ -1822,7 +1828,21 @@ export class EnvironmentBackend {
 
   async _refreshRuntime(env) {
     const rt = env.runtime || {};
-    if ((rt.status === "running" || rt.status === "starting") && rt.pid && !(await this._pidAlive(rt.pid))) {
+    const localProc = this._procs.get(env.id);
+    if (localProc && localProc.exitCode == null) {
+      const localPid = localProc.pid || rt.pid || null;
+      if (!isRuntimeActive(rt) || (localPid && Number(rt.pid) !== Number(localPid))) {
+        env.runtime = {
+          ...rt,
+          status: "running",
+          pid: localPid,
+          stopReason: null,
+        };
+        await this._saveRuntime(env);
+      }
+      return env;
+    }
+    if (isRuntimeActive(rt) && rt.pid && (await this._pidState(rt.pid, env.id)) === PROCESS_DEAD) {
       env.runtime = {
         ...rt,
         status: "stopped",
@@ -1873,23 +1893,56 @@ export class EnvironmentBackend {
         continue;
       }
       const rt = item.runtime || {};
-      if ((rt.status === "running" || rt.status === "starting") && rt.marionettePort) {
+      const localProc = this._procs.get(item.id);
+      const localRunning = !!localProc && localProc.exitCode == null;
+      if ((isRuntimeActive(rt) || localRunning) && rt.marionettePort) {
         used.add(Number(rt.marionettePort));
       }
     }
     return used;
   }
 
+  async _isPortAvailable(port) {
+    const n = Number(port);
+    if (!Number.isInteger(n) || n < 1 || n > 65535) {
+      return false;
+    }
+    if (this._portProbe) {
+      try {
+        return !!(await this._portProbe(n));
+      } catch {
+        return false;
+      }
+    }
+    let socket = null;
+    try {
+      socket = Cc["@mozilla.org/network/server-socket;1"].createInstance(Ci.nsIServerSocket);
+      const flags = Ci.nsIServerSocket.LoopbackOnly | Ci.nsIServerSocket.KeepWhenOffline;
+      socket.initSpecialConnection(n, flags, -1);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (socket) {
+        try {
+          socket.close();
+        } catch {
+          /* socket was not bound */
+        }
+      }
+    }
+  }
+
   async _allocatePort(env, requestedPort = null) {
     const used = await this._usedPorts(env.id);
-    const current = requestedPort || env.runtime?.marionettePort || null;
-    if (current && !used.has(Number(current))) {
-      return Number(current);
+    const current = Number(requestedPort || env.runtime?.marionettePort || 0);
+    if (current && !used.has(current) && (await this._isPortAvailable(current))) {
+      return current;
     }
     const base = DEFAULT_PORT_BASE;
     for (let i = 0; i < MAX_PORT_SCAN; i++) {
       const port = base + i;
-      if (!used.has(port)) {
+      if (!used.has(port) && (await this._isPortAvailable(port))) {
         return port;
       }
     }
@@ -1910,6 +1963,27 @@ export class EnvironmentBackend {
       return PathUtils.join(gre, name);
     }
     throw new Error("cannot locate current Firefox executable");
+  }
+
+  _getSubprocess() {
+    if (this._subprocess) {
+      return this._subprocess;
+    }
+    const SP = lazyESM("resource://gre/modules/Subprocess.sys.mjs");
+    return SP && SP.Subprocess;
+  }
+
+  async _resolveSystemCommand(name) {
+    if (this._systemCommands.has(name)) {
+      return this._systemCommands.get(name);
+    }
+    const Subprocess = this._getSubprocess();
+    if (!Subprocess || typeof Subprocess.pathSearch !== "function") {
+      throw new Error(`cannot resolve system command: ${name}`);
+    }
+    const path = await Subprocess.pathSearch(name);
+    this._systemCommands.set(name, path);
+    return path;
   }
 
   _processArgv0(env, port = null) {
@@ -1983,8 +2057,7 @@ export class EnvironmentBackend {
       processArgv0: launch.argv0,
     };
     await this._saveRuntime(env);
-    const SP = lazyESM("resource://gre/modules/Subprocess.sys.mjs");
-    const Subprocess = SP && SP.Subprocess;
+    const Subprocess = this._getSubprocess();
     if (!Subprocess) {
       throw new Error("Subprocess unavailable");
     }
@@ -2710,27 +2783,53 @@ export class EnvironmentBackend {
     return { ok: true, id: env.id, path: env.fingerprintPath, capturePath: finalPath || null, fingerprint, environment: shortEnv(env) };
   }
 
-  async _pidAlive(pid) {
+  async _readProcessOutput(proc) {
+    if (!proc || !proc.stdout || typeof proc.stdout.readString !== "function") {
+      return "";
+    }
+    let output = "";
+    for (let chunk; (chunk = await proc.stdout.readString()); ) {
+      output += chunk;
+    }
+    return output;
+  }
+
+  async _pidState(pid, envId = null) {
     if (!pid) {
-      return false;
+      return PROCESS_DEAD;
+    }
+    if (envId) {
+      const localProc = this._procs.get(envId);
+      if (localProc && (!localProc.pid || Number(localProc.pid) === Number(pid))) {
+        return localProc.exitCode == null ? PROCESS_ALIVE : PROCESS_DEAD;
+      }
     }
     const os = safe(() => Services.appinfo.OS, "");
-    const SP = lazyESM("resource://gre/modules/Subprocess.sys.mjs");
-    const Subprocess = SP && SP.Subprocess;
+    const Subprocess = this._getSubprocess();
     if (!Subprocess) {
-      return true;
+      return PROCESS_UNKNOWN;
     }
     try {
       let proc;
       if (os === "WINNT") {
+        const tasklist = await this._resolveSystemCommand("tasklist.exe");
         proc = await Subprocess.call({
-          command: "tasklist.exe",
-          arguments: ["/FI", "PID eq " + String(pid)],
+          command: tasklist,
+          arguments: ["/FI", "PID eq " + String(pid), "/FO", "CSV", "/NH"],
           stderr: "stdout",
         });
-        const out = await proc.stdout.readString();
+        const out = await this._readProcessOutput(proc);
         const r = await proc.wait();
-        return r.exitCode === 0 && out.includes(String(pid));
+        if (r.exitCode !== 0) {
+          return PROCESS_UNKNOWN;
+        }
+        for (const line of String(out).split(/\r?\n/)) {
+          const match = line.match(/^"[^"]*","(\d+)"/);
+          if (match && Number(match[1]) === Number(pid)) {
+            return PROCESS_ALIVE;
+          }
+        }
+        return PROCESS_DEAD;
       }
       proc = await Subprocess.call({
         command: "/bin/kill",
@@ -2738,26 +2837,33 @@ export class EnvironmentBackend {
         stderr: "stdout",
       });
       const r = await proc.wait();
-      return r.exitCode === 0;
+      return r.exitCode === 0 ? PROCESS_ALIVE : PROCESS_DEAD;
     } catch {
-      return false;
+      return PROCESS_UNKNOWN;
     }
+  }
+
+  async _pidAlive(pid, envId = null) {
+    return (await this._pidState(pid, envId)) === PROCESS_ALIVE;
   }
 
   async _terminatePid(pid) {
     if (!pid) {
       return { ok: false, forced: false };
     }
-    await this._killPid(pid, { force: false });
+    const signalled = await this._killPid(pid, { force: false });
+    if (!signalled) {
+      return { ok: false, forced: false };
+    }
     for (let i = 0; i < 60; i++) {
-      if (!(await this._pidAlive(pid))) {
+      if ((await this._pidState(pid)) === PROCESS_DEAD) {
         return { ok: true, forced: false };
       }
       await delay(250);
     }
     const forced = await this._killPid(pid, { force: true });
     for (let i = 0; i < 20; i++) {
-      if (!(await this._pidAlive(pid))) {
+      if ((await this._pidState(pid)) === PROCESS_DEAD) {
         return { ok: true, forced };
       }
       await delay(250);
@@ -2767,19 +2873,19 @@ export class EnvironmentBackend {
 
   async _killPid(pid, { force = false } = {}) {
     const os = safe(() => Services.appinfo.OS, "");
-    const SP = lazyESM("resource://gre/modules/Subprocess.sys.mjs");
-    const Subprocess = SP && SP.Subprocess;
+    const Subprocess = this._getSubprocess();
     if (!Subprocess || !pid) {
       return false;
     }
     try {
+      const command = os === "WINNT" ? await this._resolveSystemCommand("taskkill.exe") : "/bin/kill";
       const proc = await Subprocess.call(
         os === "WINNT"
-          ? { command: "taskkill.exe", arguments: ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])], stderr: "stdout" }
-          : { command: "/bin/kill", arguments: [force ? "-KILL" : "-TERM", String(pid)], stderr: "stdout" }
+          ? { command, arguments: ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])], stderr: "stdout" }
+          : { command, arguments: [force ? "-KILL" : "-TERM", String(pid)], stderr: "stdout" }
       );
-      await proc.wait();
-      return true;
+      const result = await proc.wait();
+      return result.exitCode === 0;
     } catch {
       return false;
     }

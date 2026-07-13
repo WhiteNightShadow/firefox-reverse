@@ -163,6 +163,96 @@ try {
   assert.equal(overwritten.overwritten, true);
   assert.equal(overwritten.environment.name, "Imported JSON Renamed");
 
+  const windowsRoot = path.join(root, "windows-runtime");
+  const commandSearches = [];
+  const commandCalls = [];
+  let tasklistMode = "alive";
+  const outputProcess = (output, exitCode = 0) => {
+    let sent = false;
+    return {
+      stdout: {
+        async readString() {
+          if (sent) {
+            return "";
+          }
+          sent = true;
+          return output;
+        },
+      },
+      async wait() {
+        return { exitCode };
+      },
+    };
+  };
+  const fakeSubprocess = {
+    async pathSearch(command) {
+      commandSearches.push(command);
+      return `C:\\Windows\\System32\\${command}`;
+    },
+    async call(spec) {
+      commandCalls.push(spec);
+      if (spec.command.endsWith("taskkill.exe")) {
+        return outputProcess("SUCCESS", 0);
+      }
+      if (tasklistMode === "error") {
+        throw new Error("tasklist unavailable");
+      }
+      if (tasklistMode === "alive") {
+        return outputProcess('"firefox.exe","4242","Console","1","100,000 K"\r\n', 0);
+      }
+      return outputProcess("INFO: No tasks are running which match the specified criteria.\r\n", 0);
+    },
+  };
+  const externallyOccupiedPorts = new Set([2830]);
+  const windowsBackend = new EnvironmentBackend({
+    root: windowsRoot,
+    subprocess: fakeSubprocess,
+    portProbe: async port => !externallyOccupiedPorts.has(port),
+  });
+  Services.appinfo.OS = "WINNT";
+
+  const winA = (await windowsBackend.create({ name: "Windows A" })).environment;
+  const winB = (await windowsBackend.create({ name: "Windows B" })).environment;
+  assert.equal(await windowsBackend._pidState(4242, winA.id), "alive");
+  assert.equal(commandSearches.filter(x => x === "tasklist.exe").length, 1);
+  assert.equal(commandCalls.at(-1).command, "C:\\Windows\\System32\\tasklist.exe");
+
+  tasklistMode = "dead";
+  assert.equal(await windowsBackend._pidState(9999, winA.id), "dead");
+  tasklistMode = "error";
+  assert.equal(await windowsBackend._pidState(6000, winA.id), "unknown");
+
+  let winAEnv = await windowsBackend._loadEnv(winA.id);
+  winAEnv.runtime = {
+    ...winAEnv.runtime,
+    status: "running",
+    pid: 6000,
+    marionettePort: 2829,
+  };
+  await windowsBackend._saveRuntime(winAEnv);
+  const unknownRefresh = await windowsBackend._refreshRuntime(await windowsBackend._loadEnv(winA.id));
+  assert.equal(unknownRefresh.runtime.status, "running");
+
+  const tasklistCallsBeforeHandle = commandCalls.length;
+  windowsBackend._procs.set(winA.id, { pid: 6000, exitCode: null });
+  assert.equal(await windowsBackend._pidState(6000, winA.id), "alive");
+  assert.equal(commandCalls.length, tasklistCallsBeforeHandle);
+
+  winAEnv = await windowsBackend._loadEnv(winA.id);
+  winAEnv.runtime.status = "stopped";
+  winAEnv.runtime.pid = null;
+  await windowsBackend._saveRuntime(winAEnv);
+  const restoredFromHandle = await windowsBackend._refreshRuntime(await windowsBackend._loadEnv(winA.id));
+  assert.equal(restoredFromHandle.runtime.status, "running");
+  assert.equal(restoredFromHandle.runtime.pid, 6000);
+
+  const allocated = await windowsBackend._allocatePort(await windowsBackend._loadEnv(winB.id));
+  assert.equal(allocated, 2831);
+  assert.equal(await windowsBackend._killPid(6000, { force: true }), true);
+  assert.ok(commandSearches.includes("taskkill.exe"));
+  assert.equal(commandCalls.at(-1).command, "C:\\Windows\\System32\\taskkill.exe");
+  Services.appinfo.OS = "Darwin";
+
   await backend.delete({ id, confirm: true });
   await backend.delete({ id: importedEnv.id, confirm: true });
   const afterDelete = await backend.list({ refresh: false });
