@@ -14,6 +14,9 @@ const SCHEMA_VERSION = 1;
 const DEFAULT_DIR_NAME = "environments";
 const DEFAULT_PORT_BASE = 2828;
 const MAX_PORT_SCAN = 200;
+const DEFAULT_STARTUP_TIMEOUT_MS = 90000;
+const DEFAULT_STARTUP_POLL_MS = 500;
+const PROCESS_OUTPUT_TAIL_CHARS = 8192;
 const PROCESS_ALIVE = "alive";
 const PROCESS_DEAD = "dead";
 const PROCESS_UNKNOWN = "unknown";
@@ -52,13 +55,36 @@ const AUTOMATION_STEALTH_PREFS = {
 // 现阶段 Chrome-like 覆盖还没补到 153 的完整特性面，默认生成先收敛到本地实测更稳的兼容版本；
 // 用户手动填写 chromeVersion 时不受这个 cap 限制。
 const DEFAULT_CHROME_FEATURE_COMPAT_MAJOR = 150;
+let timerModuleCache;
 
 function nowISO() {
   return new Date().toISOString();
 }
 
+function getTimerModule() {
+  if (timerModuleCache === undefined) {
+    timerModuleCache = lazyESM("resource://gre/modules/Timer.sys.mjs") || null;
+  }
+  return timerModuleCache;
+}
+
+function scheduleTimeout(callback, ms) {
+  const fn = getTimerModule()?.setTimeout || globalThis.setTimeout;
+  if (typeof fn !== "function") {
+    throw new Error("timer service unavailable");
+  }
+  return fn(callback, ms);
+}
+
+function cancelTimeout(id) {
+  const fn = getTimerModule()?.clearTimeout || globalThis.clearTimeout;
+  if (typeof fn === "function") {
+    fn(id);
+  }
+}
+
 function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(resolve => scheduleTimeout(resolve, ms));
 }
 
 function safe(fn, fallback = null) {
@@ -425,8 +451,13 @@ export class EnvironmentBackend {
     this._firefoxBin = opts.firefoxBin || "";
     this._subprocess = opts.subprocess || null;
     this._portProbe = typeof opts.portProbe === "function" ? opts.portProbe : null;
+    this._portReadyProbe = typeof opts.portReadyProbe === "function" ? opts.portReadyProbe : null;
+    this._startupTimeoutMs = Math.max(1, Number(opts.startupTimeoutMs) || DEFAULT_STARTUP_TIMEOUT_MS);
+    this._startupPollMs = Math.max(1, Number(opts.startupPollMs) || DEFAULT_STARTUP_POLL_MS);
     this._systemCommands = new Map();
     this._procs = new Map();
+    this._procDrains = new Map();
+    this._procOutputTails = new Map();
   }
 
   get root() {
@@ -1831,26 +1862,57 @@ export class EnvironmentBackend {
     const localProc = this._procs.get(env.id);
     if (localProc && localProc.exitCode == null) {
       const localPid = localProc.pid || rt.pid || null;
-      if (!isRuntimeActive(rt) || (localPid && Number(rt.pid) !== Number(localPid))) {
+      const readyNow =
+        rt.status !== "closing" &&
+        rt.marionetteReady !== true &&
+        rt.marionettePort &&
+        (await this._isPortReady(rt.marionettePort));
+      if (!isRuntimeActive(rt) || (localPid && Number(rt.pid) !== Number(localPid)) || readyNow) {
         env.runtime = {
           ...rt,
-          status: "running",
+          status: rt.status === "closing" ? "closing" : "running",
           pid: localPid,
           stopReason: null,
+          ...(readyNow
+            ? {
+                marionetteReady: true,
+                marionetteStatus: "ready",
+                marionetteReadyAt: nowISO(),
+                startWarning: null,
+              }
+            : {}),
         };
         await this._saveRuntime(env);
       }
       return env;
     }
-    if (isRuntimeActive(rt) && rt.pid && (await this._pidState(rt.pid, env.id)) === PROCESS_DEAD) {
-      env.runtime = {
-        ...rt,
-        status: "stopped",
-        pid: null,
-        lastStoppedAt: nowISO(),
-        stopReason: "process-not-found",
-      };
-      await this._saveRuntime(env);
+    if (isRuntimeActive(rt) && rt.pid) {
+      const state = await this._pidState(rt.pid, env.id);
+      if (state === PROCESS_DEAD) {
+        env.runtime = {
+          ...rt,
+          status: "stopped",
+          pid: null,
+          lastStoppedAt: nowISO(),
+          stopReason: "process-not-found",
+        };
+        await this._saveRuntime(env);
+      } else if (
+        rt.status !== "closing" &&
+        rt.marionetteReady !== true &&
+        rt.marionettePort &&
+        (await this._isPortReady(rt.marionettePort))
+      ) {
+        env.runtime = {
+          ...rt,
+          status: "running",
+          marionetteReady: true,
+          marionetteStatus: "ready",
+          marionetteReadyAt: nowISO(),
+          startWarning: null,
+        };
+        await this._saveRuntime(env);
+      }
     }
     return env;
   }
@@ -1947,6 +2009,105 @@ export class EnvironmentBackend {
       }
     }
     throw new Error("no free Marionette port found");
+  }
+
+  async _isPortReady(port) {
+    if (this._portReadyProbe) {
+      try {
+        return !!(await this._portReadyProbe(Number(port)));
+      } catch {
+        return false;
+      }
+    }
+    const n = Number(port);
+    if (!Number.isInteger(n) || n < 1 || n > 65535) {
+      return false;
+    }
+    return new Promise(resolve => {
+      let settled = false;
+      let timer = null;
+      let input = null;
+      let transport = null;
+      const finish = ready => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          cancelTimeout(timer);
+        }
+        try {
+          input?.close();
+        } catch {
+          /* already closed */
+        }
+        try {
+          transport?.close(Cr.NS_BINDING_ABORTED);
+        } catch {
+          /* already closed */
+        }
+        resolve(ready);
+      };
+      timer = scheduleTimeout(() => finish(false), 750);
+      try {
+        const sts = Cc["@mozilla.org/network/socket-transport-service;1"].getService(Ci.nsISocketTransportService);
+        transport = sts.createTransport([], "127.0.0.1", n, null, null);
+        transport.setTimeout(Ci.nsISocketTransport.TIMEOUT_CONNECT, 1);
+        transport.setTimeout(Ci.nsISocketTransport.TIMEOUT_READ_WRITE, 1);
+        input = transport.openInputStream(0, 0, 0).QueryInterface(Ci.nsIAsyncInputStream);
+        const thread = Cc["@mozilla.org/thread-manager;1"].getService().currentThread;
+        input.asyncWait(stream => {
+          try {
+            stream.available();
+            finish(true);
+          } catch {
+            finish(false);
+          }
+        }, 0, 0, thread);
+      } catch {
+        finish(false);
+      }
+    });
+  }
+
+  async _waitForMarionette(proc, port) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < this._startupTimeoutMs) {
+      if (await this._isPortReady(port)) {
+        return { ready: true, exited: false, durationMs: Date.now() - startedAt };
+      }
+      if (proc && proc.exitCode != null) {
+        return { ready: false, exited: true, durationMs: Date.now() - startedAt };
+      }
+      await delay(this._startupPollMs);
+    }
+    return { ready: false, exited: false, durationMs: Date.now() - startedAt };
+  }
+
+  _startProcessOutputDrain(envId, proc) {
+    if (!proc?.stdout || typeof proc.stdout.readString !== "function") {
+      return;
+    }
+    this._procOutputTails.delete(envId);
+    const task = (async () => {
+      let tail = "";
+      try {
+        for (let chunk; (chunk = await proc.stdout.readString()); ) {
+          tail = (tail + chunk).slice(-PROCESS_OUTPUT_TAIL_CHARS);
+          this._procOutputTails.set(envId, tail);
+        }
+      } catch (e) {
+        tail = (tail + `\n[output drain error] ${(e && e.message) || String(e)}`).slice(-PROCESS_OUTPUT_TAIL_CHARS);
+        this._procOutputTails.set(envId, tail);
+      }
+      return tail;
+    })();
+    this._procDrains.set(envId, task);
+    void task.finally(() => {
+      if (this._procDrains.get(envId) === task) {
+        this._procDrains.delete(envId);
+      }
+    });
   }
 
   _getFirefoxBin() {
@@ -2049,12 +2210,16 @@ export class EnvironmentBackend {
       status: "starting",
       pid: null,
       marionettePort,
+      marionetteReady: false,
+      marionetteStatus: "starting",
       lastStartedAt: nowISO(),
       lastUrl: finalUrl || null,
       firefoxBin: bin,
       envName: envDisplayName(env),
       processLabel: launch.argv0,
       processArgv0: launch.argv0,
+      startError: null,
+      startWarning: null,
     };
     await this._saveRuntime(env);
     const Subprocess = this._getSubprocess();
@@ -2076,6 +2241,8 @@ export class EnvironmentBackend {
       MOZ_WEBAPI_TRACE_CTL: PathUtils.join(env.controlDir, "webapi.ctl"),
       MOZ_JSVMP_TRACE_FILE: PathUtils.join(env.traceDir, "jsvmp.ndjson"),
       MOZ_FRX_HIDE_REMOTE_CONTROL_CUE: "1",
+      MOZ_MARIONETTE: "1",
+      MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS: JSON.stringify({ "marionette.port": marionettePort }),
       FRX_ENV_ID: env.id,
       FRX_ENV_NAME: envDisplayName(env),
       FRX_ENVS_ROOT: this._root,
@@ -2094,16 +2261,20 @@ export class EnvironmentBackend {
         ...env.runtime,
         status: "stopped",
         pid: null,
+        marionetteReady: false,
+        marionetteStatus: "launch-error",
         lastStoppedAt: nowISO(),
+        stopReason: "launch-error",
         startError: e && e.message ? e.message : String(e),
       };
       await this._saveRuntime(env);
       throw e;
     }
     this._procs.set(env.id, proc);
+    this._startProcessOutputDrain(env.id, proc);
     env.runtime = {
       ...env.runtime,
-      status: "running",
+      status: "starting",
       pid: proc && proc.pid ? proc.pid : null,
       marionettePort,
       lastStartedAt: env.runtime.lastStartedAt,
@@ -2114,9 +2285,43 @@ export class EnvironmentBackend {
       processArgv0: launch.argv0,
     };
     await this._saveRuntime(env);
+    const startup = await this._waitForMarionette(proc, marionettePort);
+    if (startup.exited) {
+      const output = String(this._procOutputTails.get(env.id) || "").trim();
+      env.runtime = {
+        ...env.runtime,
+        status: "stopped",
+        pid: null,
+        marionetteReady: false,
+        marionetteStatus: "process-exited",
+        startupDurationMs: startup.durationMs,
+        lastStoppedAt: nowISO(),
+        stopReason: "process-exited-before-marionette",
+        startError: output || "Firefox exited before Marionette became ready",
+      };
+      await this._saveRuntime(env);
+      this._procs.delete(env.id);
+      throw new Error(env.runtime.startError);
+    }
+    const startWarning = startup.ready
+      ? null
+      : `Firefox is running, but Marionette :${marionettePort} was not ready within ${Math.ceil(this._startupTimeoutMs / 1000)}s`;
+    env.runtime = {
+      ...env.runtime,
+      status: "running",
+      marionetteReady: startup.ready,
+      marionetteStatus: startup.ready ? "ready" : "timeout",
+      marionetteReadyAt: startup.ready ? nowISO() : null,
+      startupDurationMs: startup.durationMs,
+      startWarning,
+    };
+    await this._saveRuntime(env);
     return {
       ok: true,
       launched: true,
+      marionetteReady: startup.ready,
+      startupDurationMs: startup.durationMs,
+      warning: startWarning,
       command: launch.command,
       args: launch.arguments,
       originalCommand: launch.originalCommand,
@@ -2155,6 +2360,8 @@ export class EnvironmentBackend {
         forced = await this._killPid(procPid, { force: true });
       }
       this._procs.delete(env.id);
+      this._procDrains.delete(env.id);
+      this._procOutputTails.delete(env.id);
     } else if (pid) {
       const res = await this._terminatePid(pid);
       forced = res.forced;
@@ -2165,6 +2372,8 @@ export class EnvironmentBackend {
       pid: null,
       lastStoppedAt: nowISO(),
       stopReason: forced ? "forced-kill-after-timeout" : "closed",
+      marionetteReady: false,
+      marionetteStatus: "stopped",
     };
     await this._saveRuntime(env);
     return { ok: true, environment: shortEnv(env) };
@@ -2184,6 +2393,8 @@ export class EnvironmentBackend {
     await IOUtils.remove(env.rootPath, { recursive: true, ignoreAbsent: true });
     await this._removeFromManifest(env.id);
     this._procs.delete(env.id);
+    this._procDrains.delete(env.id);
+    this._procOutputTails.delete(env.id);
     return { ok: true, deleted: env.id };
   }
 

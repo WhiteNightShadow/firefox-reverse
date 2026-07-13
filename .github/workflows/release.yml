@@ -2,9 +2,8 @@
 #
 # 触发：打 tag（v* 形如 v0.17.0）自动跑；也可手动 workflow_dispatch。
 #
-# 主路径 = 自托管 runner（标签 self-hosted）：复用编译机上已有的 Firefox 源码树
-#   ~/firefox-reverse/upstream（带 mozconfig.mac + obj-aarch64-apple-darwin），
-#   只 rsync 侧栏改动后做「增量」mach build → package → 出 macOS(arm64) dmg → 传 Release。
+# 主路径 = 自托管 runner（标签 self-hosted）：复用编译机上已有的 Firefox 源码树，
+#   分别使用独立对象目录增量构建 macOS arm64 / x86_64 DMG，再上传 Release。
 #   增量构建几十秒级，远比 GitHub 托管从零编译靠谱。
 #
 # 可选路径 = GitHub 托管的 Windows/Linux 从零编译：手动 workflow_dispatch 且勾 build_all=true 才跑，
@@ -43,13 +42,28 @@ jobs:
             Firefox-Reverse ${{ steps.meta.outputs.tag }} —— 内置 AI 逆向 Agent 的 Firefox。
             按系统下载安装包，使用说明见 README。
 
-  # ── 2. 自托管 runner：增量构建 macOS(arm64) dmg → 传 Release ──
+  # ── 2. 自托管 runner：增量构建 macOS arm64 / Intel DMG → 传 Release ──
   build-mac:
     needs: create-release
-    runs-on: self-hosted               # ← 编译机上注册的自托管 runner（标签 self-hosted）
-    timeout-minutes: 90
+    runs-on: self-hosted
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - arch: arm64
+            asset_arch: arm64
+            mozconfig: mozconfig.mac
+            objdir: obj-aarch64-apple-darwin
+            file_marker: arm64
+          - arch: x86_64
+            asset_arch: x86_64
+            mozconfig: configs/mozconfig.macos-x64
+            objdir: obj-x86_64-apple-darwin
+            file_marker: x86_64
     env:
-      UPSTREAM: /home/ubuntu/firefox-reverse/upstream     # 编译机上已有的 Firefox 源码树
+      UPSTREAM: /home/ubuntu/firefox-reverse/upstream
     steps:
       - name: Checkout 补丁集
         uses: actions/checkout@v4
@@ -70,26 +84,39 @@ jobs:
             "$GITHUB_WORKSPACE/additions/browser/components/agent-sidebar/" \
             "$UPSTREAM/browser/components/agent-sidebar/"
 
-      - name: mach build + package（增量）
+      - name: mach build + package（${{ matrix.arch }}）
         working-directory: ${{ env.UPSTREAM }}
         run: |
           set -e
-          export MOZCONFIG=mozconfig.mac
+          if [[ "${{ matrix.mozconfig }}" = configs/* ]]; then
+            export MOZCONFIG="$GITHUB_WORKSPACE/${{ matrix.mozconfig }}"
+          else
+            export MOZCONFIG="${{ matrix.mozconfig }}"
+          fi
+          export MOZ_BUILD_DATE="$(date -u +%Y%m%d%H%M%S)"
+          rm -f "${{ matrix.objdir }}/buildid.h"
           ./mach build
           "$GITHUB_WORKSPACE/scripts/macos-adhoc-sign-apps.sh" "$UPSTREAM"
           ./mach package
 
-      - name: 找 dmg
+      - name: 校验目标架构并整理 DMG
         id: dmg
         run: |
-          f=$(ls "$UPSTREAM"/obj-*/dist/firefox-*.mac.dmg 2>/dev/null | head -1)
-          echo "path=$f" >> "$GITHUB_OUTPUT"
-          test -n "$f" && echo "dmg: $f"
+          set -e
+          obj="$UPSTREAM/${{ matrix.objdir }}"
+          executable=$(find "$obj/dist/firefox" -path '*/Contents/MacOS/firefox' -type f | head -1)
+          test -n "$executable"
+          file "$executable" | grep -F '${{ matrix.file_marker }}'
+          source_dmg=$(ls "$obj"/dist/firefox-*.mac.dmg | head -1)
+          output="$GITHUB_WORKSPACE/firefox-reverse-${{ needs.create-release.outputs.tag }}-macos-${{ matrix.asset_arch }}.dmg"
+          cp "$source_dmg" "$output"
+          echo "path=$output" >> "$GITHUB_OUTPUT"
+          echo "dmg: $output"
 
       - name: 校验 dmg 内 app 签名
         if: steps.dmg.outputs.path != ''
         run: |
-          "$GITHUB_WORKSPACE/scripts/macos-verify-dmg.sh" "${{ steps.dmg.outputs.path }}"
+          "$GITHUB_WORKSPACE/scripts/macos-verify-dmg.sh" --arch "${{ matrix.arch }}" "${{ steps.dmg.outputs.path }}"
 
       - name: 上传 dmg 到 Release
         if: steps.dmg.outputs.path != ''

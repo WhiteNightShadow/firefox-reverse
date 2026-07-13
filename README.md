@@ -45,7 +45,8 @@
 | 系统 | 文件 | 安装 |
 |---|---|---|
 | **Windows** | `firefox-*.win64.zip` | 解压，双击 `firefox.exe`（若 SmartScreen 拦截 → 「更多信息」→「仍要运行」）|
-| **macOS (Apple Silicon)** | `firefox-*.mac.dmg` | 打开 → 拖进「应用程序」；**首次打开若提示「已损坏」见下方 ⚠️** |
+| **macOS (Apple Silicon)** | `firefox-reverse-*-macos-arm64.dmg` | 打开 → 拖进「应用程序」；**首次打开若提示「已损坏」见下方 ⚠️** |
+| **macOS (Intel)** | `firefox-reverse-*-macos-x86_64.dmg` | 适用于 Intel Mac（macOS 10.15+）；安装方式同上 |
 | **Linux (x86_64)** | `firefox-*.linux-x86_64.tar.xz` | 解压，运行 `./firefox` |
 
 > ⚠️ **macOS 首次打开提示「"Firefox Reverse" 已损坏，无法打开」？** 这**不是真的损坏** —— 本浏览器是自签名应用、未做 Apple 付费公证（$99/年），从浏览器下载后会被系统打上「隔离」标记，Apple Silicon 上就报这个。打开「终端」执行一行去掉隔离即可正常打开：
@@ -167,9 +168,10 @@ Agent 可自主调用的工具，按用途分类：
 |---|---|---|
 | **Windows** | x86_64 | ✅ 提供安装包（持续完善中，欢迎反馈） |
 | **macOS** | Apple Silicon (arm64) | ✅ 提供安装包 |
+| **macOS** | Intel (x86_64) | ✅ 提供安装包 |
 | **Linux** | x86_64 | ✅ 提供安装包 |
 
-三端安装包在 **Linux 构建机上交叉编译**（macOS arm64 / Windows64 / Linux x86_64）后发布到 [Releases](../../releases)。
+安装包在 **Linux 构建机上交叉编译**（macOS arm64 / macOS x86_64 / Windows64 / Linux x86_64）后发布到 [Releases](../../releases)。macOS 两种架构使用独立对象目录构建，并在发布前校验 DMG 内主程序架构与签名。
 
 ---
 
@@ -238,6 +240,11 @@ cd upstream && ./mach build && ./mach package
 ---
 
 ## 📝 版本更新记录
+
+### v0.22.2（2026-07-13）
+- **新增 Intel Mac Release**：增加 `x86_64-apple-darwin` 独立构建配置和 `macos-x86_64` DMG，支持 Intel Mac（macOS 10.15+）。
+- **macOS 架构防错**：发布流程分别构建 arm64 / x86_64，并在 DMG 校验时核对真实 Mach-O 架构；新增跨平台产物在 macOS 上 ad-hoc 重签与重打包脚本。
+- **环境启动卡顿修复**：打开指纹环境后等待 Marionette 端口真实就绪再显示“运行中”，正确通过 Marionette pref 分配端口，并持续消费子进程输出，避免 Windows 冷启动期间误判和管道阻塞。
 
 ### v0.22.1（2026-07-13）
 - **Windows 环境状态修复**：`tasklist.exe` / `taskkill.exe` 改用绝对路径，浏览器已经打开后不再被环境管理误判为“已停止”。

@@ -251,6 +251,94 @@ try {
   assert.equal(await windowsBackend._killPid(6000, { force: true }), true);
   assert.ok(commandSearches.includes("taskkill.exe"));
   assert.equal(commandCalls.at(-1).command, "C:\\Windows\\System32\\taskkill.exe");
+
+  const launchRoot = path.join(root, "windows-launch");
+  const launchCalls = [];
+  let launchStarted = false;
+  let readyChecks = 0;
+  let outputReads = 0;
+  const launchProcess = {
+    pid: 7331,
+    exitCode: null,
+    stdout: {
+      async readString() {
+        outputReads += 1;
+        return outputReads === 1 ? "Firefox startup output\n" : "";
+      },
+    },
+    kill() {},
+  };
+  const launchBackend = new EnvironmentBackend({
+    root: launchRoot,
+    firefoxBin: "C:\\Program Files\\Firefox Reverse\\firefox.exe",
+    subprocess: {
+      async pathSearch(command) {
+        return `C:\\Windows\\System32\\${command}`;
+      },
+      async call(spec) {
+        launchCalls.push(spec);
+        launchStarted = true;
+        return launchProcess;
+      },
+    },
+    portProbe: async () => true,
+    portReadyProbe: async () => {
+      readyChecks += 1;
+      return launchStarted && readyChecks >= 2;
+    },
+    startupTimeoutMs: 100,
+    startupPollMs: 1,
+  });
+  const launchEnv = (await launchBackend.create({ name: "Windows Launch" })).environment;
+  const opened = await launchBackend.open({ id: launchEnv.id });
+  assert.equal(opened.marionetteReady, true);
+  assert.equal(opened.environment.runtime.status, "running");
+  assert.equal(opened.environment.runtime.marionetteStatus, "ready");
+  assert.equal(opened.environment.runtime.pid, 7331);
+  assert.deepEqual(opened.originalArgs.slice(0, 4), ["-marionette", "-remote-allow-system-access", "-no-remote", "-profile"]);
+  assert.equal(opened.originalArgs.includes("--marionette-port"), false);
+  assert.equal(opened.launchEnvironment.MOZ_MARIONETTE, "1");
+  assert.deepEqual(JSON.parse(opened.launchEnvironment.MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS), {
+    "marionette.port": 2829,
+  });
+  assert.equal(launchCalls.length, 1);
+  assert.equal(launchCalls[0].command, "C:\\Program Files\\Firefox Reverse\\firefox.exe");
+  assert.ok(outputReads >= 2);
+  assert.match(launchBackend._procOutputTails.get(launchEnv.id), /Firefox startup output/);
+
+  let failedOutputReads = 0;
+  const failedLaunchBackend = new EnvironmentBackend({
+    root: path.join(root, "windows-launch-failed"),
+    firefoxBin: "C:\\Program Files\\Firefox Reverse\\firefox.exe",
+    subprocess: {
+      async call() {
+        return {
+          pid: 7332,
+          exitCode: 1,
+          stdout: {
+            async readString() {
+              failedOutputReads += 1;
+              return failedOutputReads === 1 ? "Firefox startup failed\n" : "";
+            },
+          },
+          kill() {},
+        };
+      },
+    },
+    portProbe: async () => true,
+    portReadyProbe: async () => false,
+    startupTimeoutMs: 100,
+    startupPollMs: 1,
+  });
+  const failedLaunchEnv = (await failedLaunchBackend.create({ name: "Failed Windows Launch" })).environment;
+  await assert.rejects(
+    () => failedLaunchBackend.open({ id: failedLaunchEnv.id }),
+    /Firefox startup failed/
+  );
+  const failedStatus = await failedLaunchBackend.status({ id: failedLaunchEnv.id });
+  assert.equal(failedStatus.environment.runtime.status, "stopped");
+  assert.equal(failedStatus.environment.runtime.marionetteStatus, "process-exited");
+  assert.equal(failedStatus.environment.runtime.stopReason, "process-exited-before-marionette");
   Services.appinfo.OS = "Darwin";
 
   await backend.delete({ id, confirm: true });

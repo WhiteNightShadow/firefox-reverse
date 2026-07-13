@@ -463,14 +463,14 @@ export default function EnvironmentPane({ env, onClose }) {
     };
   }, [items]);
 
-  async function refresh(preferredId = selectedId) {
+  async function refresh(preferredId = selectedId, { checkRuntime = true } = {}) {
     if (!env) {
       return;
     }
     setBusy(true);
     setError("");
     try {
-      const res = await env.list({ refresh: true });
+      const res = await env.list({ refresh: checkRuntime });
       const nextItems = res.environments || [];
       setItems(nextItems);
       setRoot(res.root || "");
@@ -594,10 +594,17 @@ export default function EnvironmentPane({ env, onClose }) {
   async function openEnv(id) {
     setBusy(true);
     setError("");
-    setNotice("");
+    setNotice("正在启动环境，等待 Marionette 就绪…");
     try {
-      await env.open({ id });
-      await refresh(id);
+      const res = await env.open({ id });
+      setNotice(
+        res.marionetteReady
+          ? "环境已启动，Marionette 已就绪"
+          : res.warning || "环境已启动，Marionette 仍在初始化"
+      );
+      // open() 已完成进程与端口握手，避免 Windows 紧接着再跑一轮
+      // 全量 tasklist 探测，减少冷启动阶段的额外开销。
+      await refresh(id, { checkRuntime: false });
     } catch (e) {
       setError((e && e.message) || String(e));
     } finally {
