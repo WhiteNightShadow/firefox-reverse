@@ -9,6 +9,8 @@
  * LoginManager 加密存储留后续增强。
  */
 
+import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
+
 const PREF_PREFIX = "extensions.firefox-reverse.agent.";
 
 /** 选择 storage backend：有 Services.prefs 用之，否则内存（仅供 Node 自测）。 */
@@ -96,6 +98,20 @@ export class ConfigStore {
   }
   setCustomProtocol(p) {
     this.b.setString(PREF_PREFIX + "custom.protocol", p || "openai");
+  }
+
+  /** 自定义 OpenAI 兼容端点的 reasoning_effort；"auto" 表示不发送该字段。 */
+  getCustomReasoningEffort(def = "auto") {
+    return normalizeReasoningEffort(
+      this.b.getString(PREF_PREFIX + "custom.reasoningEffort", def),
+      def
+    );
+  }
+  setCustomReasoningEffort(value) {
+    this.b.setString(
+      PREF_PREFIX + "custom.reasoningEffort",
+      normalizeReasoningEffort(value)
+    );
   }
 
   /** 改动型工具（page_eval/导航/网络/存JS/jsvmp）执行前是否需用户确认。

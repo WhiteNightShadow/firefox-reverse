@@ -13,6 +13,8 @@
  * 若系统全局无 fetch，集成时由宿主注入。详见 patches/agent-ui/README.md 风险表。
  */
 
+import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
+
 /** 协议族标识（与 settings/agent.example.json 的 provider.protocol 对应）。 */
 export const PROTOCOLS = Object.freeze({
   OPENAI: "openai",
@@ -65,7 +67,7 @@ export class LlmClient {
    * @param {string} cfg.chatPath  e.g. "/v1/chat/completions"
    * @param {string} cfg.apiKey
    * @param {string} cfg.model
-   * @param {object} [cfg.request]  { timeout_ms, max_tokens, temperature, stream }
+   * @param {object} [cfg.request]  { timeout_ms, max_tokens, temperature, stream, reasoning_effort }
    */
   constructor(cfg) {
     if (!cfg || typeof cfg !== "object") {
@@ -92,7 +94,7 @@ export class LlmClient {
   /**
    * 构造请求（url + fetch init），不发送。抽出来便于 dry-run 自测与单元测试。
    * @param {ChatMessage[]} messages
-   * @param {object} [opts]  { tools, model, stream }
+   * @param {object} [opts]  { tools, model, stream, reasoningEffort }
    * @returns {{ url: string, init: object }}
    */
   buildRequest(messages, opts = {}) {
@@ -108,13 +110,20 @@ export class LlmClient {
     }
 
     if (this.protocol === PROTOCOLS.OPENAI) {
+      const reasoningEffort = normalizeReasoningEffort(
+        opts.reasoningEffort ?? this.request.reasoning_effort
+      );
       const body = {
         model,
         messages,
         stream: opts.stream ?? this.request.stream ?? false,
         max_tokens: this.request.max_tokens,
-        temperature: this.request.temperature,
       };
+      if (reasoningEffort === "auto") {
+        body.temperature = this.request.temperature;
+      } else {
+        body.reasoning_effort = reasoningEffort;
+      }
       if (opts.tools) {
         body.tools = opts.tools;
       }

@@ -47,7 +47,13 @@ ok(
 );
 
 console.log("[3] buildRequest(anthropic)");
-const c = new LlmClient({ protocol: "anthropic", baseUrl: "http://h:8080", apiKey: "k1", model: "m1" });
+const c = new LlmClient({
+  protocol: "anthropic",
+  baseUrl: "http://h:8080",
+  apiKey: "k1",
+  model: "m1",
+  request: { reasoning_effort: "high" },
+});
 const { url, init } = c.buildRequest([{ role: "user", content: "hi" }], {
   tools: [{ type: "function", function: { name: "f", description: "d", parameters: { type: "object", properties: {} } } }],
 });
@@ -56,6 +62,7 @@ ok(init.headers["anthropic-version"] && init.headers["x-api-key"] === "k1" && in
 const body = JSON.parse(init.body);
 ok(body.model === "m1" && body.max_tokens > 0 && Array.isArray(body.messages), "body model/max_tokens/messages");
 ok(body.temperature === undefined, "anthropic 不发 temperature（新 Claude 模型已弃用，发了会 400）");
+ok(body.reasoning_effort === undefined, "anthropic 不误发 OpenAI reasoning_effort");
 ok(body.tools[0].name === "f" && body.tools[0].input_schema && !body.tools[0].parameters, "tools → input_schema(去掉 parameters)");
 
 console.log("[4] parseResponse(anthropic)");

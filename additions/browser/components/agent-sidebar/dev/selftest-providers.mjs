@@ -43,6 +43,25 @@ cs.setCustomProtocol("openai");
 cs.setModel("custom", "qwen3-max");
 const client = buildClientFromStore(cs);
 check("custom chat URL 不翻倍", client.baseUrl + client.chatPath, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
+let requestBody = JSON.parse(client.buildRequest([{ role: "user", content: "hi" }]).init.body);
+check("custom reasoning 默认不发字段", requestBody.reasoning_effort, undefined);
+check("custom reasoning 默认保留 temperature", requestBody.temperature, 0.7);
+
+cs.setCustomReasoningEffort("high");
+const reasoningClient = buildClientFromStore(cs);
+requestBody = JSON.parse(reasoningClient.buildRequest([{ role: "user", content: "hi" }]).init.body);
+check("custom reasoning high 写入请求", requestBody.reasoning_effort, "high");
+check("显式 reasoning 不发 temperature", requestBody.temperature, undefined);
+
+const overrideClient = buildClientFromStore(cs, { reasoningEffort: "xhigh" });
+requestBody = JSON.parse(overrideClient.buildRequest([{ role: "user", content: "hi" }]).init.body);
+check("reasoning override 优先", requestBody.reasoning_effort, "xhigh");
+
+cs.setCustomProtocol("anthropic");
+const anthropicClient = buildClientFromStore(cs);
+requestBody = JSON.parse(anthropicClient.buildRequest([{ role: "user", content: "hi" }]).init.body);
+check("Anthropic 不误发 OpenAI reasoning_effort", requestBody.reasoning_effort, undefined);
+cs.setCustomProtocol("openai");
 
 // ---- mock server ----
 const MODELS = { data: [{ id: "m-alpha" }, { id: "m-beta" }] };

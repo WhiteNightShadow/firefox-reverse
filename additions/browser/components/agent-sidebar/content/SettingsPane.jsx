@@ -20,6 +20,9 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
   const [confirmTools, setConfirmTools] = useState(store.getConfirmTools ? store.getConfirmTools() : false);
   const [customUrl, setCustomUrl] = useState(store.getCustomBaseUrl ? store.getCustomBaseUrl() : "");
   const [customProtocol, setCustomProtocol] = useState(store.getCustomProtocol ? store.getCustomProtocol() : "openai");
+  const [customReasoningEffort, setCustomReasoningEffort] = useState(
+    store.getCustomReasoningEffort ? store.getCustomReasoningEffort() : "auto"
+  );
   const [fetchedModels, setFetchedModels] = useState([]);
   const [fetchMsg, setFetchMsg] = useState("");
   const [manual, setManual] = useState(false); // 自定义：手动输入模型名（端点 /v1/models 没列出的，如 claude-*）
@@ -50,6 +53,7 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
     if (isCustom) {
       store.setCustomBaseUrl && store.setCustomBaseUrl(customUrl);
       store.setCustomProtocol && store.setCustomProtocol(customProtocol);
+      store.setCustomReasoningEffort && store.setCustomReasoningEffort(customReasoningEffort);
     }
     if (store.setConfirmTools) {
       store.setConfirmTools(confirmTools);
@@ -174,6 +178,37 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
           }}
         />
       </label>
+
+      {isCustom && customProtocol === "openai" && (
+        <label className="settings-pane__field">
+          思考等级
+          <select
+            value={customReasoningEffort}
+            onChange={(e) => {
+              setCustomReasoningEffort(e.target.value);
+              setSaved(false);
+            }}
+          >
+            <option value="auto">自动（使用模型或网关默认值）</option>
+            <option value="none">关闭（none）</option>
+            <option value="minimal">极低（minimal）</option>
+            <option value="low">低（low）</option>
+            <option value="medium">中（medium）</option>
+            <option value="high">高（high）</option>
+            <option value="xhigh">极高（xhigh）</option>
+            <option value="max">最大（max）</option>
+          </select>
+          <span className="settings-pane__hint">
+            仅对支持 reasoning_effort 的模型生效；不同模型支持的等级可能不同，接口报参数错误时请改回“自动”。
+          </span>
+        </label>
+      )}
+
+      {isCustom && customProtocol === "anthropic" && (
+        <span className="settings-pane__hint">
+          Anthropic 的扩展思考使用不同配置结构，本版本由模型或网关默认控制。
+        </span>
+      )}
 
       <label className="settings-pane__field">
         模型

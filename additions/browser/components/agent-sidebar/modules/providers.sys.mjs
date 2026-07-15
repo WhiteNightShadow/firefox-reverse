@@ -5,6 +5,7 @@
  * buildClientFromStore() 在发送时构造 LlmClient。
  */
 import { LlmClient } from "./LlmClient.sys.mjs";
+import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
 
 /** 内置 Claude 模型（Anthropic 协议自定义端点用；中转站 /v1/models 往往列不出 Claude）。
  *  首项为默认。如需别的版本，设置里仍可「手动输入」。 */
@@ -234,7 +235,7 @@ export function listProviders() {
 /**
  * 从 ConfigStore（+ 可选 overrides）构造 LlmClient。
  * @param {object} store  ConfigStore 实例
- * @param {object} [overrides] { provider, apiKey, model, baseUrl }
+ * @param {object} [overrides] { provider, apiKey, model, baseUrl, reasoningEffort }
  * @returns {LlmClient}
  */
 export function buildClientFromStore(store, overrides = {}) {
@@ -246,10 +247,16 @@ export function buildClientFromStore(store, overrides = {}) {
   let protocol = p.protocol;
   let baseUrl = overrides.baseUrl || p.baseUrl;
   let chatPath = p.chatPath;
+  let reasoningEffort = "auto";
   if (id === "custom") {
     protocol = (store.getCustomProtocol && store.getCustomProtocol()) || "openai";
     baseUrl = normalizeBaseUrl(overrides.baseUrl || (store.getCustomBaseUrl && store.getCustomBaseUrl()) || "");
     chatPath = resolveChatPath(protocol, baseUrl);
+    reasoningEffort = normalizeReasoningEffort(
+      overrides.reasoningEffort ??
+        (store.getCustomReasoningEffort && store.getCustomReasoningEffort()) ??
+        "auto"
+    );
   }
   if (!baseUrl) {
     throw new Error(`provider "${id}" 未配置 Base URL（请在设置里填写自定义端点地址）`);
@@ -260,5 +267,10 @@ export function buildClientFromStore(store, overrides = {}) {
     chatPath,
     apiKey: overrides.apiKey || store.getApiKey(id),
     model: overrides.model || store.getModel(id) || p.defaultModel,
+    request: {
+      // Anthropic extended thinking uses a different object shape and token
+      // budget contract; do not translate an OpenAI-compatible level into it.
+      reasoning_effort: protocol === "openai" ? reasoningEffort : "auto",
+    },
   });
 }

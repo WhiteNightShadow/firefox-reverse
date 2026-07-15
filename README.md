@@ -43,7 +43,7 @@
 
 ### 内置 AI Agent
 
-<img src="docs/agent-sidebar-v0.22.2-guide.png" width="100%" alt="Firefox-Reverse 内置 AI Agent 侧边栏及入口指引">
+<img src="docs/agent-sidebar-guide-20260715.png" width="100%" alt="Firefox-Reverse 内置 AI Agent 侧边栏、星光入口和环境管理入口指引">
 
 - Agent 常驻浏览器侧边栏，当前精确注册 **64 个工具**，覆盖页面操作、网络抓包、代码搜索、Cookie、WebAPI trace、JSVMP、WASM、文件读写、环境管理与 Node/Python 实打验证。
 - 支持**全自动**与**AI辅助**两种工作方式：既可以让 worker 独立推进，也可以由人或外部 MCP director 分阶段领航。
@@ -51,7 +51,7 @@
 
 ### 指纹环境管理
 
-<img src="docs/environment-manager-v0.22.2.png" width="100%" alt="Firefox-Reverse 指纹浏览器环境管理界面">
+<img src="docs/environment-manager-guide-20260715.png" width="100%" alt="Firefox-Reverse 指纹浏览器环境新建、运行状态和指纹导入操作指引">
 
 - 一个环境对应一个**独立 Firefox profile + 独立浏览器进程 + 独立 Marionette 端口**，Cookie、历史记录、LocalStorage、缓存和配置互不混用。
 - 在侧边栏中可新建、重命名、打开、关闭、删除和导入环境，并查看运行状态、端口、profile 与当前主进程指纹。
@@ -294,6 +294,12 @@ cd upstream && ./mach build && ./mach package
 ---
 
 ## 📝 版本更新记录
+
+### v0.22.3（2026-07-15）
+- **自定义模型思考等级**：自定义 OpenAI 兼容端点新增 `自动 / none / minimal / low / medium / high / xhigh / max` 选项；“自动”保持原请求行为，显式等级才发送 `reasoning_effort`，Anthropic 协议不会误传该字段。
+- **品牌显示补齐**：补齐 Firefox-Reverse 新标签页、隐私窗口和 Windows 快捷方式所需的品牌图标与 wordmark，减少回退显示 Nightly 名称或原始图标的情况。
+- **README 操作指引更新**：重新截取当前构建的 Agent 与指纹环境管理界面，增加侧栏按钮、星光入口、一键新建、环境状态和指纹导入的编号标记。
+- **四端安装包**：同步发布 macOS ARM64、macOS Intel、Windows x86_64 和 Linux x86_64 构建及 SHA256 校验文件。
 
 ### v0.22.2（2026-07-13）
 - **新增 Intel Mac Release**：增加 `x86_64-apple-darwin` 独立构建配置和 `macos-x86_64` DMG，支持 Intel Mac（macOS 10.15+）。
