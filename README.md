@@ -43,7 +43,7 @@
 
 ### 内置 AI Agent
 
-<img src="docs/agent-sidebar-v0.22.2.png" width="100%" alt="Firefox-Reverse 内置 AI Agent 侧边栏">
+<img src="docs/agent-sidebar-v0.22.2-guide.png" width="100%" alt="Firefox-Reverse 内置 AI Agent 侧边栏及入口指引">
 
 - Agent 常驻浏览器侧边栏，当前精确注册 **64 个工具**，覆盖页面操作、网络抓包、代码搜索、Cookie、WebAPI trace、JSVMP、WASM、文件读写、环境管理与 Node/Python 实打验证。
 - 支持**全自动**与**AI辅助**两种工作方式：既可以让 worker 独立推进，也可以由人或外部 MCP director 分阶段领航。
@@ -82,7 +82,7 @@
 > （路径换成你的实际安装位置；或：系统设置 → 隐私与安全性 → 拉到底点「仍要打开」。）
 
 **② 打开 AI 侧边栏**
-启动浏览器 → 点右侧边栏的 **Firefox‑Reverse** 工具图标（机器人/逆向图标），打开 Agent 面板。
+启动浏览器 → 点击浏览器**右上角的 Firefox‑Reverse 星光图标**，打开 Agent 面板。若图标暂时不可见，先点地址栏左侧的侧栏按钮展开侧栏。
 
 **③ 配置一个大模型 Key**（用一次配一次，存本地）
 点面板右上角 ⚙️ 设置 → 选一个模型供应商，填上你的 API Key：

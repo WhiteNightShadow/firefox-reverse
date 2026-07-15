@@ -11,6 +11,8 @@ if [[ ! -d "$UPSTREAM_DIR" ]]; then
   exit 1
 fi
 
+node "$REPO_ROOT/scripts/check-branding-assets.mjs" "$UPSTREAM_DIR"
+
 cd "$UPSTREAM_DIR"
 
 # 安装 build 依赖（首次）

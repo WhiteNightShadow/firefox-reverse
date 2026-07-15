@@ -37,5 +37,7 @@ for test_file in "${SELFTESTS[@]}"; do
   run node "$SIDEBAR_DIR/dev/$test_file"
 done
 
+run node "$REPO_ROOT/scripts/check-branding-assets.mjs"
+
 echo
 echo "agent tool selftests: all passed"

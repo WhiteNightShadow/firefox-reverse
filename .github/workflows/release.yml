@@ -76,13 +76,14 @@ jobs:
           npm run build
           test -f content/agent-sidebar.bundle.js   # 确保产物存在，否则后面 jar 打包会失败
 
-      - name: 同步侧栏改动到源码树（复用已 bootstrap 的树，增量编）
+      - name: 同步全部 additions 到源码树（复用已 bootstrap 的树，增量编）
         run: |
           set -e
-          rsync -a --delete \
+          rsync -a \
             --exclude node_modules --exclude dev --exclude README.md \
-            "$GITHUB_WORKSPACE/additions/browser/components/agent-sidebar/" \
-            "$UPSTREAM/browser/components/agent-sidebar/"
+            --exclude '*.jsx' --exclude 'package*.json' --exclude .gitignore \
+            "$GITHUB_WORKSPACE/additions/" "$UPSTREAM/"
+          node "$GITHUB_WORKSPACE/scripts/check-branding-assets.mjs" "$UPSTREAM"
 
       - name: mach build + package（${{ matrix.arch }}）
         working-directory: ${{ env.UPSTREAM }}
@@ -157,6 +158,7 @@ jobs:
         run: |
           rsync -a --exclude node_modules --exclude README.md firefox-reverse/additions/ upstream/ || cp -R firefox-reverse/additions/* upstream/
           [ -f firefox-reverse/scripts/apply-patches.sh ] && ( cd firefox-reverse && bash scripts/apply-patches.sh ) || true
+          node firefox-reverse/scripts/check-branding-assets.mjs upstream
       - name: bootstrap + build + package
         shell: bash
         working-directory: upstream

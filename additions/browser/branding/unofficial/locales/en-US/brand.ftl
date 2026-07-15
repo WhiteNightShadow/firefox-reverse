@@ -20,8 +20,7 @@
 -brand-short-name = Firefox Reverse
 -brand-shortcut-name = Firefox Reverse
 -brand-full-name = Firefox Reverse
-# This brand name can be used in messages where the product name needs to
-# remain unchanged across different versions (Nightly, Beta, etc.).
--brand-product-name = Firefox
+# This brand name is used in messages that need a stable product name.
+-brand-product-name = Firefox Reverse
 -vendor-short-name = Mozilla
 trademarkInfo = { " " }
