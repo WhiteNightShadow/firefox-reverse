@@ -6,6 +6,7 @@
 
 | 日期 | 版本号 | 改版内容（一句话） |
 |------|--------|--------------------|
+| 2026-07-21 | v0.22.3（补充发布） | **新增 Linux ARM64 安装包**：增加 Linux x86_64 主机构建 AArch64 Firefox 的独立 mozconfig、构建脚本与产物校验脚本；发布原生 ARM64 ELF 压缩包并更新 SHA256 校验文件，供 ARM64 Linux / VPS 使用。本次不包含 Docker 镜像。 |
 | 2026-07-15 | v0.22.3 | **自定义模型思考等级 + 品牌与 README 指引完善**：自定义 OpenAI 兼容端点新增 `reasoning_effort` 等级选择，默认 `auto` 不发送字段，显式等级时避开不兼容的 `temperature`，Anthropic 协议保持隔离；补齐配置持久化、参数归一化、provider/Anthropic/moz.build 回归测试。完善 Firefox-Reverse 新标签页、隐私窗口和 Windows 快捷方式品牌资源，并用当前构建重新截取 Agent 与指纹环境管理界面，增加入口和主要操作编号标记；发布 macOS ARM64、macOS Intel、Windows x86_64、Linux x86_64 四端产物与 SHA256。 |
 | 2026-07-13 | v0.22.2 | **Intel Mac 发布 + 指纹环境启动就绪修复**：新增 `x86_64-apple-darwin` 独立 mozconfig、Intel Mac（macOS 10.15+）DMG 和 arm64/x86_64 双架构发布流程；DMG 校验增加 Mach-O 架构断言，并新增 macOS ad-hoc 重签重打包脚本。环境打开流程改为在真实 Marionette TCP 握手成功后才写入 `running/ready`，端口通过 `MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS` 的 `marionette.port` 注入，移除无效的 `--marionette-port` 参数；持续消费子进程输出避免 pipe 回压，UI 启动后不再立刻触发 Windows 全量 `tasklist` 刷新。新增延迟就绪、进程提前退出、端口注入和输出消费回归测试。 |
 | 2026-07-13 | v0.22.1 | **Windows 指纹环境管理热修**：修复 `Subprocess.call` 使用裸 `tasklist.exe` / `taskkill.exe` 导致 PID 探测恒失败、浏览器已经打开但环境管理误显示“已停止”的问题；系统命令改由 `Subprocess.pathSearch()` 解析绝对路径，PID 探测升级为 `alive/dead/unknown` 三态且探测异常不再误写停止；优先使用当前后端保存的进程句柄减少重复 `tasklist`，端口分配增加 loopback 真实绑定检查，避免多个运行环境复用 Marionette 端口及重复启动卡顿；补齐 Windows 状态、命令解析和多环境端口回归测试并接入一键自测。 |

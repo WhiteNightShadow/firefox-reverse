@@ -1,0 +1,15 @@
+# Cross-compile desktop Firefox from Linux x86_64 to Linux ARM64.
+
+ac_add_options --target=aarch64-linux-gnu
+ac_add_options --enable-bootstrap
+ac_add_options --enable-application=browser
+ac_add_options --enable-release
+ac_add_options --disable-crashreporter
+ac_add_options --disable-backgroundtasks
+ac_add_options --disable-tests
+ac_add_options --disable-debug
+ac_add_options --disable-updater
+
+mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-aarch64-linux
+mk_add_options MOZ_CRASHREPORTER=0
+mk_add_options MOZ_TELEMETRY_REPORTING=0
