@@ -74,6 +74,7 @@
 | **macOS (Apple Silicon)** | `firefox-reverse-*-macos-arm64.dmg` | 打开 → 拖进「应用程序」；**首次打开若提示「已损坏」见下方 ⚠️** |
 | **macOS (Intel)** | `firefox-reverse-*-macos-x86_64.dmg` | 适用于 Intel Mac（macOS 10.15+）；安装方式同上 |
 | **Linux (x86_64)** | `firefox-*.linux-x86_64.tar.xz` | 解压，运行 `./firefox` |
+| **Linux (ARM64)** | `firefox-reverse-*-linux-arm64.tar.xz` | 适用于 ARM64 / AArch64 Linux；解压，运行 `./firefox` |
 
 > ⚠️ **macOS 首次打开提示「"Firefox Reverse" 已损坏，无法打开」？** 这**不是真的损坏** —— 本浏览器是自签名应用、未做 Apple 付费公证（$99/年），从浏览器下载后会被系统打上「隔离」标记，Apple Silicon 上就报这个。打开「终端」执行一行去掉隔离即可正常打开：
 > ```bash
@@ -205,8 +206,9 @@ Agent 的推进遵循一条务实路线——**先拿到能用的，再追求吃
 | **macOS** | Apple Silicon (arm64) | ✅ 提供安装包 |
 | **macOS** | Intel (x86_64) | ✅ 提供安装包 |
 | **Linux** | x86_64 | ✅ 提供安装包 |
+| **Linux** | ARM64 (AArch64) | ✅ 提供安装包 |
 
-安装包在 **Linux 构建机上交叉编译**（macOS arm64 / macOS x86_64 / Windows64 / Linux x86_64）后发布到 [Releases](../../releases)。macOS 两种架构使用独立对象目录构建，并在发布前校验 DMG 内主程序架构与签名。
+安装包在 **Linux 构建机上交叉编译**（macOS arm64 / macOS x86_64 / Windows64 / Linux x86_64 / Linux ARM64）后发布到 [Releases](../../releases)。macOS 两种架构使用独立对象目录构建，并在发布前校验 DMG 内主程序架构与签名；Linux 包会校验 ELF 架构和内置 Agent / 指纹环境模块。
 
 ---
 
@@ -300,6 +302,7 @@ cd upstream && ./mach build && ./mach package
 - **品牌显示补齐**：补齐 Firefox-Reverse 新标签页、隐私窗口和 Windows 快捷方式所需的品牌图标与 wordmark，减少回退显示 Nightly 名称或原始图标的情况。
 - **README 操作指引更新**：重新截取当前构建的 Agent 与指纹环境管理界面，增加侧栏按钮、星光入口、一键新建、环境状态和指纹导入的编号标记。
 - **四端安装包**：同步发布 macOS ARM64、macOS Intel、Windows x86_64 和 Linux x86_64 构建及 SHA256 校验文件。
+- **Linux ARM64 补充包（2026-07-21）**：新增原生 AArch64 构建 `firefox-reverse-v0.22.3-linux-arm64.tar.xz`，并更新 Release 的 `SHA256SUMS`。
 
 ### v0.22.2（2026-07-13）
 - **新增 Intel Mac Release**：增加 `x86_64-apple-darwin` 独立构建配置和 `macos-x86_64` DMG，支持 Intel Mac（macOS 10.15+）。
