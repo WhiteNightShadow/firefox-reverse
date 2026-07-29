@@ -1,0 +1,12 @@
+diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
+index 3494d22c4a..e130702b27 100644
+--- a/browser/installer/package-manifest.in
++++ b/browser/installer/package-manifest.in
+@@ -248,6 +248,7 @@
+ @RESPATH@/chrome/pdfjs.manifest
+ @RESPATH@/chrome/pdfjs/*
+ @RESPATH@/defaults/pref/PdfJsDefaultPrefs.js
++@RESPATH@/defaults/pref/frx-locale.js
+ 
+ ; shell icons
+ #ifdef XP_UNIX

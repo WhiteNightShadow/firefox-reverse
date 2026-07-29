@@ -930,7 +930,7 @@ function toolTable() {
     ),
     T(
       "env_create",
-      "新建一个隔离环境，自动创建 env.json/fingerprint.json/proxy.json/profile/traces/control。",
+      "新建一个 Firefox 隔离环境，自动创建 env.json/fingerprint.json/proxy.json/profile/traces/control。浏览器版本和系统与当前 Firefox Reverse 保持一致，地区语言默认中国大陆简体中文。",
       {
         type: "object",
         properties: {
@@ -940,14 +940,15 @@ function toolTable() {
             type: "object",
             description: "可选；传入时新建后立即按该组选项生成 fingerprint.json",
             properties: {
-              os: { type: "string", enum: ["windows", "macos", "linux"] },
-              firefoxVersion: { type: "string" },
               language: { type: "string" },
+              languages: { type: "array", items: { type: "string" } },
+              locale: { type: "string", description: "地区标识，如 zh-CN" },
               resolution: { type: "string", description: "如 1920x1080" },
               timezone: { type: "string" },
+              acceptLanguage: { type: "string" },
               devicePixelRatio: { type: "number" },
               hardwareConcurrency: { type: "integer" },
-              randomize: { type: "boolean", description: "true 时从内置桌面组合池随机生成一组参数" },
+              randomize: { type: "boolean", description: "true 时随机生成分辨率、DPR 和 CPU 核数；不会随机浏览器内核、系统或地区语言" },
             },
           },
         },
@@ -1029,7 +1030,7 @@ function toolTable() {
     ),
     T(
       "env_generate_fingerprint",
-      "按 Firefox 桌面参数生成一致的 fingerprint.json。支持 os/firefoxVersion/language/languages/resolution/timezone/devicePixelRatio/hardwareConcurrency。",
+      "为已有环境重新生成 Firefox fingerprint.json。浏览器版本和系统固定匹配当前 Firefox Reverse；默认中国大陆简体中文，可自定义语言、地区和时区。",
       {
         type: "object",
         properties: {
@@ -1037,15 +1038,15 @@ function toolTable() {
           options: {
             type: "object",
             properties: {
-              os: { type: "string", enum: ["windows", "macos", "linux"] },
-              firefoxVersion: { type: "string" },
               language: { type: "string" },
               languages: { type: "array", items: { type: "string" } },
+              locale: { type: "string", description: "地区标识，如 zh-CN" },
               resolution: { type: "string", description: "如 1920x1080" },
               timezone: { type: "string", description: "如 Asia/Shanghai" },
+              acceptLanguage: { type: "string" },
               devicePixelRatio: { type: "number" },
               hardwareConcurrency: { type: "integer" },
-              randomize: { type: "boolean", description: "true 时从内置桌面组合池随机生成一组参数" },
+              randomize: { type: "boolean", description: "true 时只随机非身份类桌面参数" },
             },
           },
         },
@@ -1085,7 +1086,7 @@ function toolTable() {
     ),
     T(
       "env_import",
-      "导入完整环境 JSON。支持 {name,id,fingerprint,proxy,generateOptions} 或 {env, fingerprint, proxy}；默认新建环境，若 id 已存在必须传 overwrite:true。",
+      "导入完整环境 JSON。支持 {name,id,fingerprint,proxy,generateOptions} 或 {env, fingerprint, proxy}；新环境只接受 Firefox 指纹，若 id 已存在必须传 overwrite:true。",
       {
         type: "object",
         properties: {

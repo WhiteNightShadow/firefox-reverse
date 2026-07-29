@@ -20,6 +20,8 @@ const PROCESS_OUTPUT_TAIL_CHARS = 8192;
 const PROCESS_ALIVE = "alive";
 const PROCESS_DEAD = "dead";
 const PROCESS_UNKNOWN = "unknown";
+const DEFAULT_ENV_REGION = "cn";
+const FIREFOX_ONLY_POLICY = "firefox-only-v1";
 const ENV_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const CURRENT_PROCESS_DIR_NAME = ".current-process";
 const CURRENT_PROCESS_ID = "current-process";
@@ -51,10 +53,6 @@ const AUTOMATION_STEALTH_PREFS = {
   "media.navigator.permission.disabled": false,
   "media.navigator.streams.fake": false,
 };
-// BrowserScan 这类站会用 CSS/JS/WebAPI 特性矩阵反推 Chromium 版本。
-// 现阶段 Chrome-like 覆盖还没补到 153 的完整特性面，默认生成先收敛到本地实测更稳的兼容版本；
-// 用户手动填写 chromeVersion 时不受这个 cap 限制。
-const DEFAULT_CHROME_FEATURE_COMPAT_MAJOR = 150;
 let timerModuleCache;
 
 function nowISO() {
@@ -217,12 +215,6 @@ function browserFamilyFromUA(userAgent) {
   return "unknown";
 }
 
-function chromeVersionFromUA(userAgent, fallback = "128.0.0.0") {
-  const ua = String(userAgent || "");
-  const m = ua.match(/(?:Chrome|Chromium|Edg|OPR)\/([0-9.]+)/i);
-  return m ? chromeFullVersion(m[1], majorVersion(fallback, 128)) : fallback;
-}
-
 function normalizeBrowserFamily(value, fallback = "firefox") {
   const v = String(value || "").trim().toLowerCase();
   if (v === "chrome" || v === "chromium" || v === "blink" || v === "chrome-like" || v === "chromelike") {
@@ -232,6 +224,28 @@ function normalizeBrowserFamily(value, fallback = "firefox") {
     return "firefox";
   }
   return fallback;
+}
+
+function browserFamilyFromFingerprint(fingerprint) {
+  const userAgents = [
+    unwrapField(fingerprint?.navigator?.userAgent, ""),
+    unwrapField(fingerprint?.http?.userAgent, ""),
+  ].filter(Boolean);
+  const userAgentFamilies = userAgents.map(browserFamilyFromUA);
+  const nonFirefoxFamily = userAgentFamilies.find(family => family !== "firefox" && family !== "unknown");
+  if (nonFirefoxFamily) {
+    return nonFirefoxFamily;
+  }
+  if (userAgentFamilies.includes("firefox")) {
+    return "firefox";
+  }
+  const sourceFamily = String(
+    fingerprint?.source?.browser || fingerprint?.source?.normalizedBrowser || ""
+  ).trim();
+  if (sourceFamily) {
+    return normalizeBrowserFamily(sourceFamily, "unknown");
+  }
+  return "unknown";
 }
 
 function osFromUA(userAgent, fallback = "windows") {
@@ -856,31 +870,8 @@ export class EnvironmentBackend {
   }
 
   _randomGenerateOptions() {
-    const os = pick(["windows", "windows", "windows", "macos", "macos", "linux"], "windows");
-    const localePools = {
-      windows: [
-        { language: "en-US", timezone: "America/New_York" },
-        { language: "en-US", timezone: "America/Los_Angeles" },
-        { language: "zh-CN", timezone: "Asia/Shanghai" },
-        { language: "ja-JP", timezone: "Asia/Tokyo" },
-        { language: "de-DE", timezone: "Europe/Berlin" },
-        { language: "fr-FR", timezone: "Europe/Paris" },
-      ],
-      macos: [
-        { language: "en-US", timezone: "America/Los_Angeles" },
-        { language: "en-US", timezone: "America/New_York" },
-        { language: "zh-CN", timezone: "Asia/Shanghai" },
-        { language: "ja-JP", timezone: "Asia/Tokyo" },
-        { language: "en-GB", timezone: "Europe/London" },
-      ],
-      linux: [
-        { language: "en-US", timezone: "America/New_York" },
-        { language: "en-US", timezone: "America/Chicago" },
-        { language: "de-DE", timezone: "Europe/Berlin" },
-        { language: "fr-FR", timezone: "Europe/Paris" },
-        { language: "zh-CN", timezone: "Asia/Shanghai" },
-      ],
-    };
+    const defaults = this._detectDefaults();
+    const os = defaults.os;
     const screenPools = {
       windows: ["1366x768", "1440x900", "1536x864", "1600x900", "1920x1080", "2560x1440"],
       macos: ["1440x900", "1512x982", "1680x1050", "1728x1117", "1920x1080", "2560x1440"],
@@ -891,28 +882,72 @@ export class EnvironmentBackend {
       macos: [1, 2, 2],
       linux: [1, 1, 1.25],
     };
-    const version = normalizeVersion(safe(() => Services.appinfo.version, ""), "128.0");
-    const major = Math.min(
-      clampInt(String(version).split(".")[0], 100, 999, 128),
-      DEFAULT_CHROME_FEATURE_COMPAT_MAJOR
-    );
-    const locale = pick(localePools[os], localePools.windows[0]);
+    const language = "zh-CN";
+    const languages = normalizeLanguages(language, null);
     return {
-      browser: "chromium",
+      browser: "firefox",
       os,
-      chromeVersion: `${major}.0.0.0`,
-      firefoxVersion: pick([String(major), `${major}.0`, `${Math.max(100, major - 1)}.0`], version),
-      language: locale.language,
+      firefoxVersion: defaults.firefoxVersion,
+      language,
+      languages,
+      locale: language,
       resolution: pick(screenPools[os], "1920x1080"),
-      timezone: locale.timezone,
+      timezone: "Asia/Shanghai",
+      acceptLanguage: acceptLanguageFrom(languages),
+      region: DEFAULT_ENV_REGION,
       devicePixelRatio: pick(dprPools[os], 1),
       hardwareConcurrency: pick([4, 6, 8, 8, 12, 16], 8),
     };
   }
 
+  _firefoxGenerateOptions(options = {}) {
+    const defaults = this._detectDefaults();
+    const input = options && typeof options === "object" && !Array.isArray(options) ? { ...options } : {};
+    const language = String(input.language || input.locale || "zh-CN").trim() || "zh-CN";
+    const languages = normalizeLanguages(language, input.languages);
+    const locale = String(input.locale || language).trim() || language;
+    const timezone = String(input.timezone || "Asia/Shanghai").trim() || "Asia/Shanghai";
+    const acceptLanguage = String(input.acceptLanguage || acceptLanguageFrom(languages)).trim();
+    const navigatorOptions = { ...(input.navigator || {}) };
+    const httpOptions = { ...(input.http || {}) };
+    const webglOptions = { ...(input.webgl || {}) };
+    const tlsOptions = { ...(input.tls || {}) };
+
+    for (const key of ["userAgent", "appVersion", "productSub", "vendor", "userAgentData", "plugins", "mimeTypes", "oscpu", "buildID"]) {
+      delete navigatorOptions[key];
+    }
+    for (const key of ["userAgent", "secChUa", "secChUaMobile", "secChUaPlatform", "secChUaFullVersionList", "secChUaArch", "secChUaBitness", "secChUaModel", "secChUaPlatformVersion"]) {
+      delete httpOptions[key];
+    }
+    for (const key of ["vendor", "renderer", "unmaskedVendor", "unmaskedRenderer"]) {
+      delete webglOptions[key];
+    }
+    for (const key of ["chromeVersion", "chromiumVersion", "userAgent", "platform", "version"]) {
+      delete input[key];
+    }
+
+    return {
+      ...input,
+      browser: "firefox",
+      browserFamily: "firefox",
+      os: defaults.os,
+      firefoxVersion: defaults.firefoxVersion,
+      language,
+      languages,
+      locale,
+      timezone,
+      acceptLanguage,
+      region: language.toLowerCase() === "zh-cn" && locale.toLowerCase() === "zh-cn" && timezone === "Asia/Shanghai" ? DEFAULT_ENV_REGION : "custom",
+      navigator: navigatorOptions,
+      http: httpOptions,
+      webgl: webglOptions,
+      tls: { ...tlsOptions, mode: "firefox-default" },
+    };
+  }
+
   _buildFingerprint(env, options = {}, source = { type: "generated" }) {
     const defaults = this._detectDefaults();
-    const randomOptions = options && options.randomize ? this._randomGenerateOptions() : {};
+    const randomOptions = options && options.randomize ? this._randomGenerateOptions(options) : {};
     const merged = { ...defaults, ...randomOptions, ...options };
     const ua = this._uaParts(merged);
     const navigatorOptions = merged.navigator && typeof merged.navigator === "object" ? merged.navigator : {};
@@ -993,6 +1028,7 @@ export class EnvironmentBackend {
           timezone,
           devicePixelRatio: dpr,
           hardwareConcurrency: hc,
+          ...(merged.region ? { region: String(merged.region) } : {}),
           ...(options && options.randomize ? { randomize: true } : {}),
         },
         ...(source.path ? { path: source.path } : {}),
@@ -1028,9 +1064,11 @@ export class EnvironmentBackend {
         doNotTrack: field(configField(navigatorOptions, "doNotTrack", null), configField(navigatorOptions, "doNotTrack", null) != null),
         oscpu: field(configString(navigatorOptions, "oscpu", ""), configField(navigatorOptions, "oscpu", null) != null),
         buildID: field(configString(navigatorOptions, "buildID", ""), configField(navigatorOptions, "buildID", null) != null),
-        userAgentData: field(configJSON(navigatorOptions, "userAgentData", defaultUserAgentData), isChromium || configField(navigatorOptions, "userAgentData", null) != null),
         plugins: field(configArray(navigatorOptions, "plugins", chromePlugins)),
         mimeTypes: field(configArray(navigatorOptions, "mimeTypes", chromeMimeTypes)),
+        ...(isChromium
+          ? { userAgentData: field(configJSON(navigatorOptions, "userAgentData", defaultUserAgentData)) }
+          : {}),
       },
       screen: {
         enabled: true,
@@ -1059,14 +1097,18 @@ export class EnvironmentBackend {
       http: {
         userAgent: field(userAgent),
         acceptLanguage: field(acceptLanguage),
-        secChUa: field(configString(httpOptions, "secChUa", isChromium ? secChUaFromBrands(chromeBrandInfo.brands) : ""), isChromium || configField(httpOptions, "secChUa", null) != null),
-        secChUaMobile: field(configString(httpOptions, "secChUaMobile", "?0"), isChromium || configField(httpOptions, "secChUaMobile", null) != null),
-        secChUaPlatform: field(configString(httpOptions, "secChUaPlatform", isChromium ? `"${ua.uaPlatform}"` : ""), isChromium || configField(httpOptions, "secChUaPlatform", null) != null),
-        secChUaFullVersionList: field(configString(httpOptions, "secChUaFullVersionList", isChromium ? secChUaFromBrands(chromeBrandInfo.fullVersionList) : ""), isChromium || configField(httpOptions, "secChUaFullVersionList", null) != null),
-        secChUaArch: field(configString(httpOptions, "secChUaArch", isChromium ? '"x86"' : ""), isChromium || configField(httpOptions, "secChUaArch", null) != null),
-        secChUaBitness: field(configString(httpOptions, "secChUaBitness", isChromium ? '"64"' : ""), isChromium || configField(httpOptions, "secChUaBitness", null) != null),
-        secChUaModel: field(configString(httpOptions, "secChUaModel", isChromium ? '""' : ""), isChromium || configField(httpOptions, "secChUaModel", null) != null),
-        secChUaPlatformVersion: field(configString(httpOptions, "secChUaPlatformVersion", isChromium ? `"${defaultUserAgentData.platformVersion}"` : ""), isChromium || configField(httpOptions, "secChUaPlatformVersion", null) != null),
+        ...(isChromium
+          ? {
+              secChUa: field(configString(httpOptions, "secChUa", secChUaFromBrands(chromeBrandInfo.brands))),
+              secChUaMobile: field(configString(httpOptions, "secChUaMobile", "?0")),
+              secChUaPlatform: field(configString(httpOptions, "secChUaPlatform", `"${ua.uaPlatform}"`)),
+              secChUaFullVersionList: field(configString(httpOptions, "secChUaFullVersionList", secChUaFromBrands(chromeBrandInfo.fullVersionList))),
+              secChUaArch: field(configString(httpOptions, "secChUaArch", '"x86"')),
+              secChUaBitness: field(configString(httpOptions, "secChUaBitness", '"64"')),
+              secChUaModel: field(configString(httpOptions, "secChUaModel", '""')),
+              secChUaPlatformVersion: field(configString(httpOptions, "secChUaPlatformVersion", `"${defaultUserAgentData.platformVersion}"`)),
+            }
+          : {}),
       },
       webgl: {
         enabled: configBool(webglOptions, "enabled", true),
@@ -1568,14 +1610,17 @@ export class EnvironmentBackend {
       await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
     }
     const ts = nowISO();
-    const requestedBrowser = generateOptions
-      ? normalizeBrowserFamily(generateOptions.browser || generateOptions.browserFamily, generateOptions.randomize ? "chromium" : "firefox")
-      : "firefox";
+    const requestedOptions = {
+      randomize: generateOptions?.randomize !== false,
+      ...(generateOptions || {}),
+    };
+    const generationOptions = this._firefoxGenerateOptions(requestedOptions);
     const env = {
       schemaVersion: SCHEMA_VERSION,
       id: envId,
       name: finalName,
-      browserFamily: requestedBrowser,
+      browserFamily: "firefox",
+      fingerprintPolicy: FIREFOX_ONLY_POLICY,
       createdAt: ts,
       updatedAt: ts,
       rootPath: p.rootPath,
@@ -1590,9 +1635,9 @@ export class EnvironmentBackend {
       seedMode: "persistent",
       source: {
         type: generateOptions ? "generated" : "generated-default",
-        browser: requestedBrowser,
+        browser: "firefox",
         createdAt: ts,
-        ...(generateOptions ? { options: generateOptions } : {}),
+        options: generationOptions,
       },
       processLabel: null,
       runtime: {
@@ -1607,9 +1652,11 @@ export class EnvironmentBackend {
     };
     env.processLabel = processLabelFor(env);
     env.runtime.processLabel = env.processLabel;
-    const fingerprint = generateOptions
-      ? this._buildFingerprint(env, generateOptions, { type: "generated" })
-      : this._defaultFingerprint(env);
+    const fingerprint = this._buildFingerprint(
+      env,
+      generationOptions,
+      { type: generateOptions ? "generated" : "generated-default" }
+    );
     await this._writeJSON(p.fingerprintPath, fingerprint);
     await this._writeJSON(p.proxyPath, this._defaultProxy());
     const runtimeConfig = await this._syncProfileRuntimeConfig(env);
@@ -2434,6 +2481,11 @@ export class EnvironmentBackend {
     if (!data || typeof data !== "object" || Array.isArray(data)) {
       throw new Error("config must be a JSON object");
     }
+    const configType = String(type || "fingerprint").toLowerCase();
+    const configBrowser = configType === "fingerprint" ? browserFamilyFromFingerprint(data) : "firefox";
+    if (env.fingerprintPolicy === FIREFOX_ONLY_POLICY && configBrowser !== "firefox" && configBrowser !== "unknown") {
+      throw new Error("this environment only accepts Firefox fingerprint configuration");
+    }
     if (!data.schemaVersion) {
       data.schemaVersion = SCHEMA_VERSION;
     }
@@ -2490,13 +2542,17 @@ export class EnvironmentBackend {
     if (exists && overwrite !== true) {
       throw new Error("environment already exists; pass overwrite:true to replace its configs");
     }
+    const importedBrowser = payload.fingerprint ? browserFamilyFromFingerprint(payload.fingerprint) : "firefox";
+    if (!exists && payload.fingerprint && importedBrowser !== "firefox") {
+      throw new Error("new environments only accept Firefox fingerprint JSON; Chrome-like imports are no longer supported");
+    }
 
     let env;
     if (!exists) {
       await this.create({
         id: envId,
         name: finalName,
-        generateOptions: payload.generateOptions || { randomize: true, browser: payload.data.browser || payload.data.browserFamily || "chromium" },
+        generateOptions: payload.generateOptions || { randomize: true },
       });
       env = await this._loadEnv(envId);
     } else {
@@ -2505,13 +2561,24 @@ export class EnvironmentBackend {
         env.name = finalName;
       }
     }
+    if (
+      exists &&
+      env.fingerprintPolicy === FIREFOX_ONLY_POLICY &&
+      payload.fingerprint &&
+      importedBrowser !== "firefox" &&
+      importedBrowser !== "unknown"
+    ) {
+      throw new Error("this environment only accepts Firefox fingerprint configuration");
+    }
 
     const ts = nowISO();
     if (payload.fingerprint) {
       payload.fingerprint.schemaVersion = payload.fingerprint.schemaVersion || SCHEMA_VERSION;
       payload.fingerprint.updatedAt = ts;
       await this._writeJSON(env.fingerprintPath, payload.fingerprint);
-      env.browserFamily = payload.fingerprint.source?.browser || payload.fingerprint.source?.normalizedBrowser || env.browserFamily || "chromium";
+      env.browserFamily = exists
+        ? payload.fingerprint.source?.browser || payload.fingerprint.source?.normalizedBrowser || env.browserFamily || "firefox"
+        : "firefox";
     }
     if (payload.proxy) {
       payload.proxy.schemaVersion = payload.proxy.schemaVersion || SCHEMA_VERSION;
@@ -2546,10 +2613,11 @@ export class EnvironmentBackend {
       throw new Error("id required");
     }
     const env = await this._loadEnv(String(id));
-    const fingerprint = this._buildFingerprint(env, options, { type: "generated" });
+    const generationOptions = this._firefoxGenerateOptions(options);
+    const fingerprint = this._buildFingerprint(env, generationOptions, { type: "generated" });
     await this._writeJSON(env.fingerprintPath, fingerprint);
-    env.browserFamily = fingerprint.source?.browser || normalizeBrowserFamily(options.browser || options.browserFamily, env.browserFamily || "firefox");
-    env.source = { type: "generated", browser: env.browserFamily, updatedAt: nowISO(), options };
+    env.browserFamily = "firefox";
+    env.source = { type: "generated", browser: "firefox", updatedAt: nowISO(), options: generationOptions };
     await this._saveEnv(env);
     return { ok: true, id: env.id, path: env.fingerprintPath, fingerprint, environment: shortEnv(env) };
   }
@@ -2800,44 +2868,31 @@ export class EnvironmentBackend {
     const storage = capture && capture.storage ? capture.storage : {};
     const capturedUA = unwrapField(nav.userAgent, unwrapField(http.userAgent, ""));
     const capturedBrowser = browserFamilyFromUA(capturedUA);
-    const targetBrowser = capturedBrowser === "chromium" ? "chromium" : "firefox";
-    const firefoxCompatible = targetBrowser === "firefox" && capturedBrowser === "firefox";
     const defaults = this._detectDefaults();
-    const importedOS = osFromUA(capturedUA, defaults.os);
-    const firefoxVersion = normalizeVersion(safe(() => Services.appinfo.version, ""), "128.0");
-    const chromeVersion = chromeVersionFromUA(capturedUA, `${majorVersion(firefoxVersion, 128)}.0.0.0`);
-    const firefoxUA = this._uaParts({ os: importedOS, firefoxVersion });
-    const chromeUA = this._uaParts({ os: importedOS, browser: "chromium", chromeVersion });
-    const targetUA = targetBrowser === "chromium" ? chromeUA : firefoxUA;
+    const capturedOS = osFromUA(capturedUA, defaults.os);
+    const preserveNativeDetails = capturedBrowser === "firefox" && capturedOS === defaults.os;
+    const firefoxVersion = defaults.firefoxVersion;
+    const firefoxUA = this._uaParts({ os: defaults.os, firefoxVersion });
+    const capturedLanguage = unwrapField(nav.language, unwrapField(intl.locale, "zh-CN"));
+    const capturedTimezone = unwrapField(intl.timezone, unwrapField(intl.timeZone, "Asia/Shanghai"));
     return this._buildFingerprint(
       env,
       {
         enabled: true,
-        browser: targetBrowser,
-        os: importedOS,
+        browser: "firefox",
+        os: defaults.os,
         firefoxVersion,
-        chromeVersion,
-        userAgent: targetBrowser === "chromium" ? capturedUA || chromeUA.userAgent : firefoxCompatible ? capturedUA : firefoxUA.userAgent,
-        platform: unwrapField(nav.platform, targetUA.platform),
-        language: unwrapField(nav.language, unwrapField(intl.locale, "en-US")),
+        userAgent: firefoxUA.userAgent,
+        platform: firefoxUA.platform,
+        language: capturedLanguage,
         languages: unwrapField(nav.languages, null),
         navigator: {
-          appCodeName: unwrapField(nav.appCodeName, "Mozilla"),
-          appName: unwrapField(nav.appName, "Netscape"),
-          appVersion: unwrapField(nav.appVersion, ""),
-          product: unwrapField(nav.product, "Gecko"),
-          productSub: unwrapField(nav.productSub, "20100101"),
-          vendor: targetBrowser === "chromium" ? unwrapField(nav.vendor, "Google Inc.") : firefoxCompatible ? unwrapField(nav.vendor, "") : "",
-          vendorSub: unwrapField(nav.vendorSub, ""),
           maxTouchPoints: unwrapField(nav.maxTouchPoints, null),
           cookieEnabled: unwrapField(nav.cookieEnabled, true),
           pdfViewerEnabled: unwrapField(nav.pdfViewerEnabled, true),
           doNotTrack: unwrapField(nav.doNotTrack, null),
-          oscpu: firefoxCompatible ? unwrapField(nav.oscpu, null) : null,
-          buildID: firefoxCompatible ? unwrapField(nav.buildID, null) : null,
-          userAgentData: targetBrowser === "chromium" ? unwrapField(nav.userAgentData, null) : null,
-          plugins: unwrapField(nav.plugins, []),
-          mimeTypes: unwrapField(nav.mimeTypes, []),
+          plugins: preserveNativeDetails ? unwrapField(nav.plugins, []) : [],
+          mimeTypes: preserveNativeDetails ? unwrapField(nav.mimeTypes, []) : [],
         },
         resolution: {
           width: unwrapField(scr.width, 1920),
@@ -2858,25 +2913,15 @@ export class EnvironmentBackend {
           outerHeight: unwrapField(win.outerHeight, null),
         },
         hardwareConcurrency: unwrapField(nav.hardwareConcurrency, 8),
-        timezone: unwrapField(intl.timezone, unwrapField(intl.timeZone, "UTC")),
-        locale: unwrapField(intl.locale, unwrapField(nav.language, "en-US")),
+        timezone: capturedTimezone,
+        locale: unwrapField(intl.locale, capturedLanguage),
         intl: {
           calendar: unwrapField(intl.calendar, ""),
           numberingSystem: unwrapField(intl.numberingSystem, ""),
           timezoneOffset: unwrapField(intl.timezoneOffset, null),
         },
         acceptLanguage: unwrapField(http.acceptLanguage, null),
-        http: {
-          secChUa: unwrapField(http.secChUa, null),
-          secChUaMobile: unwrapField(http.secChUaMobile, null),
-          secChUaPlatform: unwrapField(http.secChUaPlatform, null),
-          secChUaFullVersionList: unwrapField(http.secChUaFullVersionList, null),
-          secChUaArch: unwrapField(http.secChUaArch, null),
-          secChUaBitness: unwrapField(http.secChUaBitness, null),
-          secChUaModel: unwrapField(http.secChUaModel, null),
-          secChUaPlatformVersion: unwrapField(http.secChUaPlatformVersion, null),
-        },
-        webgl: {
+        webgl: preserveNativeDetails ? {
           vendor: unwrapField(webgl.vendor, ""),
           renderer: unwrapField(webgl.renderer, ""),
           unmaskedVendor: unwrapField(webgl.unmaskedVendor, ""),
@@ -2903,7 +2948,7 @@ export class EnvironmentBackend {
           maxVertexTextureImageUnits: unwrapField(webgl.maxVertexTextureImageUnits, null),
           maxVertexUniformVectors: unwrapField(webgl.maxVertexUniformVectors, null),
           extensions: unwrapField(webgl.extensions, null),
-        },
+        } : {},
         canvas: {
           mode: "native",
           hash: unwrapField(canvas.hash, ""),
@@ -2924,8 +2969,8 @@ export class EnvironmentBackend {
       {
         ...source,
         capturedBrowser,
-        normalizedBrowser: targetBrowser,
-        normalizedFromNonFirefox: capturedBrowser !== targetBrowser,
+        normalizedBrowser: "firefox",
+        normalizedFromNonFirefox: capturedBrowser !== "firefox",
       }
     );
   }
@@ -2980,7 +3025,7 @@ export class EnvironmentBackend {
       path: finalPath || null,
     });
     await this._writeJSON(env.fingerprintPath, fingerprint);
-    env.browserFamily = fingerprint.source?.browser || fingerprint.source?.normalizedBrowser || env.browserFamily || "firefox";
+    env.browserFamily = "firefox";
     env.source = {
       type: "imported-capture",
       browser: env.browserFamily,

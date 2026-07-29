@@ -298,6 +298,39 @@ function setTop(obj, key, value) {
   return next;
 }
 
+function applyChinaLocale(fingerprint) {
+  let next = clone(fingerprint);
+  next = setField(next, "navigator", "language", "zh-CN");
+  next = setField(next, "navigator", "languages", ["zh-CN", "zh", "en-US", "en"]);
+  next = setField(next, "intl", "locale", "zh-CN");
+  next = setField(next, "intl", "timezone", "Asia/Shanghai");
+  next = setField(next, "intl", "timezoneOffset", -480);
+  next = setField(next, "http", "acceptLanguage", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");
+  next.source = next.source || {};
+  next.source.options = {
+    ...(next.source.options || {}),
+    language: "zh-CN",
+    timezone: "Asia/Shanghai",
+    region: "cn",
+  };
+  return next;
+}
+
+function syncLocaleMetadata(fingerprint) {
+  const next = clone(fingerprint);
+  const language = String(fieldValue(next, "navigator", "language", "zh-CN") || "zh-CN");
+  const locale = String(fieldValue(next, "intl", "locale", language) || language);
+  const timezone = String(fieldValue(next, "intl", "timezone", "Asia/Shanghai") || "Asia/Shanghai");
+  next.source = next.source || {};
+  next.source.options = {
+    ...(next.source.options || {}),
+    language,
+    timezone,
+    region: language.toLowerCase() === "zh-cn" && locale.toLowerCase() === "zh-cn" && timezone === "Asia/Shanghai" ? "cn" : "custom",
+  };
+  return next;
+}
+
 function toText(obj) {
   try {
     return JSON.stringify(obj || {}, null, 2);
@@ -377,8 +410,8 @@ function FingerprintForm({ fingerprint, setFingerprint }) {
       <div className="env-editor__grid">
         <TextField label="User-Agent" value={fieldValue({ navigator: nav }, "navigator", "userAgent")} onChange={v => set("navigator", "userAgent", v)} />
         <Field label="platform" value={fieldValue({ navigator: nav }, "navigator", "platform")} onChange={v => set("navigator", "platform", v)} />
-        <Field label="language" value={fieldValue({ navigator: nav }, "navigator", "language")} onChange={v => set("navigator", "language", v)} />
-        <Field label="languages" value={(fieldValue({ navigator: nav }, "navigator", "languages", []) || []).join(",")} onChange={v => set("navigator", "languages", parseList(v))} />
+        <Field label="首选语言" value={fieldValue({ navigator: nav }, "navigator", "language")} onChange={v => set("navigator", "language", v)} />
+        <Field label="语言列表" value={(fieldValue({ navigator: nav }, "navigator", "languages", []) || []).join(",")} onChange={v => set("navigator", "languages", parseList(v))} />
         <Field label="hardwareConcurrency" type="number" value={fieldValue({ navigator: nav }, "navigator", "hardwareConcurrency", 8)} onChange={v => set("navigator", "hardwareConcurrency", v)} />
         <label className="env-check env-check--field">
           <input type="checkbox" checked={fieldValue({ navigator: nav }, "navigator", "webdriver", false) === true} onChange={e => set("navigator", "webdriver", e.target.checked)} />
@@ -391,10 +424,10 @@ function FingerprintForm({ fingerprint, setFingerprint }) {
         <Field label="colorDepth" type="number" value={fieldValue({ screen }, "screen", "colorDepth", 24)} onChange={v => set("screen", "colorDepth", v)} />
         <Field label="pixelDepth" type="number" value={fieldValue({ screen }, "screen", "pixelDepth", 24)} onChange={v => set("screen", "pixelDepth", v)} />
         <Field label="devicePixelRatio" type="number" value={fieldValue({ window: win }, "window", "devicePixelRatio", 1)} onChange={v => set("window", "devicePixelRatio", v)} />
-        <Field label="Intl locale" value={fieldValue({ intl }, "intl", "locale")} onChange={v => set("intl", "locale", v)} />
-        <Field label="Intl timezone" value={fieldValue({ intl }, "intl", "timezone")} onChange={v => set("intl", "timezone", v)} />
+        <Field label="地区（Locale）" value={fieldValue({ intl }, "intl", "locale")} onChange={v => set("intl", "locale", v)} />
+        <Field label="时区" value={fieldValue({ intl }, "intl", "timezone")} onChange={v => set("intl", "timezone", v)} />
         <TextField label="HTTP User-Agent" value={fieldValue({ http }, "http", "userAgent")} onChange={v => set("http", "userAgent", v)} />
-        <Field label="Accept-Language" value={fieldValue({ http }, "http", "acceptLanguage")} onChange={v => set("http", "acceptLanguage", v)} />
+        <Field label="请求语言" value={fieldValue({ http }, "http", "acceptLanguage")} onChange={v => set("http", "acceptLanguage", v)} />
       </div>
 
       <div className="env-editor__grid">
@@ -579,10 +612,10 @@ export default function EnvironmentPane({ env, onClose }) {
     try {
       const res = await env.create({
         name: name.trim() || undefined,
-        generateOptions: { randomize: true, browser: "chromium" },
+        generateOptions: { randomize: true },
       });
       setName("");
-      setNotice("已一键新建环境");
+      setNotice("已新建 Firefox 中国大陆环境");
       await refresh(res.environment?.id || "");
     } catch (e) {
       setError((e && e.message) || String(e));
@@ -699,7 +732,7 @@ export default function EnvironmentPane({ env, onClose }) {
     setError("");
     setNotice("");
     try {
-      const config = fromJson ? JSON.parse(fpText) : fingerprint;
+      const config = syncLocaleMetadata(fromJson ? JSON.parse(fpText) : fingerprint);
       const isCurrent = selectedId === CURRENT_PROCESS_TARGET;
       const currentApi = isCurrent ? await getCurrentProcessApi("writeCurrentProcessConfig") : null;
       if (isCurrent && !currentApi) {
@@ -823,7 +856,7 @@ export default function EnvironmentPane({ env, onClose }) {
 
       <div className="env-pane__toolbar">
         <input type="text" value={name} placeholder="环境名称" onChange={e => setName(e.target.value)} />
-        <button type="button" className="is-primary" onClick={createEnv} disabled={busy}>
+        <button type="button" className="is-primary" onClick={createEnv} disabled={busy} title="Firefox · 中国大陆 · 简体中文">
           一键新建环境
         </button>
       </div>
@@ -986,6 +1019,7 @@ export default function EnvironmentPane({ env, onClose }) {
             <>
               <FingerprintForm fingerprint={fingerprint} setFingerprint={setFingerprint} />
               <div className="env-detail__actions">
+                <button type="button" onClick={() => setFingerprint(fp => applyChinaLocale(fp))} disabled={busy || !fingerprint}>设为中国大陆·简体中文</button>
                 <button type="button" onClick={() => saveFingerprint(false)} disabled={busy || !fingerprint}>保存指纹</button>
               </div>
             </>

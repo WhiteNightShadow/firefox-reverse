@@ -104,6 +104,33 @@ try {
   const fp1 = await backend.readConfig({ id, type: "fingerprint" });
   assert.equal(fp1.config.enabled, true);
   assert.equal(fp1.config.navigator.webdriver.value, false);
+  assert.equal(fp1.config.source.browser, "firefox");
+  assert.match(fp1.config.navigator.userAgent.value, /Firefox\/128\.0/);
+  assert.equal(fp1.config.navigator.language.value, "zh-CN");
+  assert.equal(fp1.config.intl.timezone.value, "Asia/Shanghai");
+  assert.equal(Object.hasOwn(fp1.config.navigator, "userAgentData"), false);
+  assert.equal(Object.hasOwn(fp1.config.http, "secChUa"), false);
+
+  const chineseRandom = await backend.generateFingerprint({
+    id,
+    options: { browser: "chromium", chromeVersion: "150.0.0.0", randomize: true },
+  });
+  assert.equal(chineseRandom.fingerprint.source.browser, "firefox");
+  assert.match(chineseRandom.fingerprint.navigator.userAgent.value, /Firefox\/128\.0/);
+  assert.doesNotMatch(chineseRandom.fingerprint.navigator.userAgent.value, /Chrome\//);
+  assert.equal(chineseRandom.fingerprint.navigator.language.value, "zh-CN");
+  assert.deepEqual(chineseRandom.fingerprint.navigator.languages.value, ["zh-CN", "zh", "en-US", "en"]);
+  assert.equal(chineseRandom.fingerprint.intl.locale.value, "zh-CN");
+  assert.equal(chineseRandom.fingerprint.intl.timezone.value, "Asia/Shanghai");
+  assert.equal(chineseRandom.fingerprint.http.acceptLanguage.value, "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");
+  assert.equal(chineseRandom.fingerprint.source.options.region, "cn");
+
+  const staleGlobalRequest = await backend.generateFingerprint({
+    id,
+    options: { browser: "chromium", randomize: true, region: "global" },
+  });
+  assert.equal(staleGlobalRequest.fingerprint.source.browser, "firefox");
+  assert.equal(staleGlobalRequest.fingerprint.source.options.region, "cn");
 
   const generated = await backend.generateFingerprint({
     id,
@@ -119,11 +146,29 @@ try {
       hardwareConcurrency: 12,
     },
   });
-  assert.equal(generated.fingerprint.navigator.platform.value, "Linux x86_64");
-  assert.match(generated.fingerprint.navigator.userAgent.value, /Chrome\/150\.0\.0\.0/);
-  assert.equal(generated.fingerprint.navigator.vendor.value, "Google Inc.");
-  assert.match(generated.fingerprint.http.secChUa.value, /Google Chrome/);
+  assert.equal(generated.fingerprint.source.browser, "firefox");
+  assert.equal(generated.fingerprint.navigator.platform.value, "MacIntel");
+  assert.match(generated.fingerprint.navigator.userAgent.value, /Firefox\/128\.0/);
+  assert.equal(generated.fingerprint.navigator.vendor.value, "");
+  assert.equal(Object.hasOwn(generated.fingerprint.navigator, "userAgentData"), false);
+  assert.equal(Object.hasOwn(generated.fingerprint.http, "secChUa"), false);
   assert.equal(generated.fingerprint.intl.timezone.value, "Asia/Shanghai");
+
+  const customLocale = await backend.generateFingerprint({
+    id,
+    options: {
+      language: "en-GB",
+      languages: ["en-GB", "en"],
+      locale: "en-GB",
+      timezone: "Europe/London",
+    },
+  });
+  assert.equal(customLocale.fingerprint.source.browser, "firefox");
+  assert.equal(customLocale.fingerprint.source.options.region, "custom");
+  assert.equal(customLocale.fingerprint.navigator.language.value, "en-GB");
+  assert.deepEqual(customLocale.fingerprint.navigator.languages.value, ["en-GB", "en"]);
+  assert.equal(customLocale.fingerprint.intl.locale.value, "en-GB");
+  assert.equal(customLocale.fingerprint.intl.timezone.value, "Europe/London");
 
   const captured = await backend.captureFingerprint({ id });
   assert.ok(captured.path.endsWith(".json"));
@@ -131,6 +176,35 @@ try {
   const imported = await backend.importFingerprint({ id });
   assert.equal(imported.fingerprint.navigator.platform.value, "MacIntel");
   assert.equal(imported.fingerprint.window.devicePixelRatio.value, 2);
+  assert.equal(imported.fingerprint.source.normalizedBrowser, "firefox");
+
+  const importedChromeCapture = await backend.importFingerprint({
+    id,
+    capture: {
+      navigator: {
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36",
+        platform: "Win32",
+        language: "zh-CN",
+        languages: ["zh-CN", "zh"],
+        vendor: "Google Inc.",
+        userAgentData: { brands: [{ brand: "Google Chrome", version: "150" }] },
+      },
+      screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040 },
+      window: { devicePixelRatio: 1 },
+      intl: { locale: "zh-CN", timezone: "Asia/Shanghai" },
+      http: { secChUa: '"Google Chrome";v="150"' },
+      webgl: { vendor: "WebKit", renderer: "WebKit WebGL", unmaskedVendor: "Google Inc." },
+    },
+  });
+  assert.equal(importedChromeCapture.fingerprint.source.capturedBrowser, "chromium");
+  assert.equal(importedChromeCapture.fingerprint.source.normalizedBrowser, "firefox");
+  assert.equal(importedChromeCapture.fingerprint.source.normalizedFromNonFirefox, true);
+  assert.match(importedChromeCapture.fingerprint.navigator.userAgent.value, /Firefox\/128\.0/);
+  assert.equal(importedChromeCapture.fingerprint.navigator.platform.value, "MacIntel");
+  assert.equal(importedChromeCapture.fingerprint.navigator.vendor.value, "");
+  assert.equal(Object.hasOwn(importedChromeCapture.fingerprint.navigator, "userAgentData"), false);
+  assert.equal(Object.hasOwn(importedChromeCapture.fingerprint.http, "secChUa"), false);
+  assert.equal(importedChromeCapture.fingerprint.webgl.vendor.value, "Mozilla");
 
   await backend.writeConfig({ id, type: "proxy", config: { schemaVersion: 1, enabled: false, default: { type: "direct" } } });
   const proxy = await backend.readConfig({ id, type: "proxy" });
@@ -146,7 +220,26 @@ try {
   assert.equal(importedEnv.created, true);
   assert.ok(importedEnv.environment.id);
   const importedFp = await backend.readConfig({ id: importedEnv.id, type: "fingerprint" });
-  assert.match(importedFp.config.navigator.userAgent.value, /Chrome\/150\.0\.0\.0/);
+  assert.match(importedFp.config.navigator.userAgent.value, /Firefox\/128\.0/);
+
+  await assert.rejects(
+    () => backend.importEnvironment({
+      text: JSON.stringify({
+        name: "Rejected Chrome JSON",
+        fingerprint: {
+          schemaVersion: 1,
+          source: { browser: "chromium" },
+          navigator: {
+            userAgent: {
+              enabled: true,
+              value: "Mozilla/5.0 Chrome/150.0.0.0 Safari/537.36",
+            },
+          },
+        },
+      }),
+    }),
+    /only accept Firefox fingerprint JSON/
+  );
 
   const overwritten = await backend.importEnvironment({
     id: importedEnv.id,
@@ -162,6 +255,50 @@ try {
   });
   assert.equal(overwritten.overwritten, true);
   assert.equal(overwritten.environment.name, "Imported JSON Renamed");
+
+  const legacyRoot = path.join(root, "legacy-compatibility");
+  const legacyBackend = new EnvironmentBackend({ root: legacyRoot });
+  const legacyId = (await legacyBackend.create({ name: "Legacy Chrome Environment" })).environment.id;
+  const legacyMetadata = await legacyBackend._loadEnv(legacyId);
+  delete legacyMetadata.fingerprintPolicy;
+  await legacyBackend._saveEnv(legacyMetadata);
+  await legacyBackend.writeConfig({
+    id: legacyId,
+    type: "fingerprint",
+    config: {
+      schemaVersion: 1,
+      enabled: true,
+      source: { browser: "chromium", type: "historical" },
+      navigator: {
+        userAgent: { enabled: true, value: "Mozilla/5.0 Chrome/150.0.0.0 Safari/537.36" },
+        vendor: { enabled: true, value: "Google Inc." },
+      },
+    },
+  });
+  const legacyBefore = (await legacyBackend.readConfig({ id: legacyId, type: "fingerprint" })).config;
+  const constrainedNew = await legacyBackend.create({
+    name: "Firefox Only",
+    generateOptions: { browser: "chromium", chromeVersion: "150.0.0.0", randomize: true },
+  });
+  const constrainedFingerprint = (await legacyBackend.readConfig({
+    id: constrainedNew.environment.id,
+    type: "fingerprint",
+  })).config;
+  const legacyOpenEnv = await legacyBackend._loadEnv(legacyId);
+  const legacyRuntimeConfig = await legacyBackend._syncProfileRuntimeConfig(legacyOpenEnv);
+  await legacyBackend._writeProfilePrefs(legacyOpenEnv, null, legacyRuntimeConfig);
+  const legacyAfter = (await legacyBackend.readConfig({ id: legacyId, type: "fingerprint" })).config;
+  assert.equal(constrainedFingerprint.source.browser, "firefox");
+  assert.match(constrainedFingerprint.navigator.userAgent.value, /Firefox\/128\.0/);
+  await assert.rejects(
+    () => legacyBackend.writeConfig({
+      id: constrainedNew.environment.id,
+      type: "fingerprint",
+      config: legacyBefore,
+    }),
+    /only accepts Firefox fingerprint configuration/
+  );
+  assert.deepEqual(legacyAfter, legacyBefore);
 
   const windowsRoot = path.join(root, "windows-runtime");
   const commandSearches = [];

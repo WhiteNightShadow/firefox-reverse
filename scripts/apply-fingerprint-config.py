@@ -47,6 +47,17 @@ def patch_file(path, transformations):
         open(path, "w", encoding="utf-8").write(content)
 
 
+def migrate_if_present(path, desc, old, new):
+    content = open(path, encoding="utf-8").read()
+    if new in content:
+        print(f"  [skip] {desc} (already applied)")
+        return
+    if old not in content:
+        return
+    open(path, "w", encoding="utf-8").write(content.replace(old, new, 1))
+    print(f"  [done] {desc}")
+
+
 print("==> modules/libpref/moz.build")
 patch_file(
     os.path.join(ROOT, "modules/libpref/moz.build"),
@@ -723,8 +734,41 @@ patch_file(
 
 
 print("==> dom/base/nsScreen.cpp")
+screen_cpp = os.path.join(ROOT, "dom/base/nsScreen.cpp")
+migrate_if_present(
+    screen_cpp,
+    "limit existing screen.pixelDepth override to content documents",
+    "  if (FrxFingerprintConfig::GetScreenPixelDepth(&frxPixelDepth)) {\n",
+    "  if (ShouldApplyFrxScreenFingerprint(GetOwnerWindow()) &&\n"
+    "      FrxFingerprintConfig::GetScreenPixelDepth(&frxPixelDepth)) {\n",
+)
+migrate_if_present(
+    screen_cpp,
+    "limit existing screen.colorDepth override to content documents",
+    "  if (FrxFingerprintConfig::GetScreenColorDepth(&frxColorDepth)) {\n",
+    "  if (ShouldApplyFrxScreenFingerprint(GetOwnerWindow()) &&\n"
+    "      FrxFingerprintConfig::GetScreenColorDepth(&frxColorDepth)) {\n",
+)
+migrate_if_present(
+    screen_cpp,
+    "limit existing screen rect override to content documents",
+    "  if (FrxFingerprintConfig::GetScreenWidth(&frxWidth) &&\n"
+    "      FrxFingerprintConfig::GetScreenHeight(&frxHeight)) {\n",
+    "  if (ShouldApplyFrxScreenFingerprint(GetOwnerWindow()) &&\n"
+    "      FrxFingerprintConfig::GetScreenWidth(&frxWidth) &&\n"
+    "      FrxFingerprintConfig::GetScreenHeight(&frxHeight)) {\n",
+)
+migrate_if_present(
+    screen_cpp,
+    "limit existing screen available rect override to content documents",
+    "  if (FrxFingerprintConfig::GetScreenAvailWidth(&frxAvailWidth) &&\n"
+    "      FrxFingerprintConfig::GetScreenAvailHeight(&frxAvailHeight)) {\n",
+    "  if (ShouldApplyFrxScreenFingerprint(GetOwnerWindow()) &&\n"
+    "      FrxFingerprintConfig::GetScreenAvailWidth(&frxAvailWidth) &&\n"
+    "      FrxFingerprintConfig::GetScreenAvailHeight(&frxAvailHeight)) {\n",
+)
 patch_file(
-    os.path.join(ROOT, "dom/base/nsScreen.cpp"),
+    screen_cpp,
     [
         (
             "include FrxFingerprintConfig.h in nsScreen.cpp",
@@ -732,11 +776,27 @@ patch_file(
             '#include "mozilla/dom/Document.h"\n#include "mozilla/dom/FrxFingerprintConfig.h"\n',
         ),
         (
+            "include nsIPrincipal.h in nsScreen.cpp",
+            '#include "nsIDocShellTreeItem.h"\n',
+            '#include "nsIDocShellTreeItem.h"\n#include "nsIPrincipal.h"\n',
+        ),
+        (
+            "keep FRX screen overrides out of browser chrome",
+            "nsScreen::~nsScreen() = default;\n\n",
+            "nsScreen::~nsScreen() = default;\n\n"
+            "static bool ShouldApplyFrxScreenFingerprint(\n"
+            "    nsPIDOMWindowInner* aOwner) {\n"
+            "  Document* doc = aOwner ? aOwner->GetExtantDoc() : nullptr;\n"
+            "  return doc && !doc->NodePrincipal()->IsSystemPrincipal();\n"
+            "}\n\n",
+        ),
+        (
             "override screen.pixelDepth",
             "int32_t nsScreen::PixelDepth() {\n  // Return 24 to prevent fingerprinting.\n",
             "int32_t nsScreen::PixelDepth() {\n"
             "  int32_t frxPixelDepth = 0;\n"
-            "  if (FrxFingerprintConfig::GetScreenPixelDepth(&frxPixelDepth)) {\n"
+            "  if (ShouldApplyFrxScreenFingerprint(GetOwnerWindow()) &&\n"
+            "      FrxFingerprintConfig::GetScreenPixelDepth(&frxPixelDepth)) {\n"
             "    return frxPixelDepth;\n"
             "  }\n\n"
             "  // Return 24 to prevent fingerprinting.\n",
@@ -746,7 +806,8 @@ patch_file(
             "nsPIDOMWindowOuter* nsScreen::GetOuter() const {\n",
             "int32_t nsScreen::ColorDepth() {\n"
             "  int32_t frxColorDepth = 0;\n"
-            "  if (FrxFingerprintConfig::GetScreenColorDepth(&frxColorDepth)) {\n"
+            "  if (ShouldApplyFrxScreenFingerprint(GetOwnerWindow()) &&\n"
+            "      FrxFingerprintConfig::GetScreenColorDepth(&frxColorDepth)) {\n"
             "    return frxColorDepth;\n"
             "  }\n"
             "  return PixelDepth();\n"
@@ -759,7 +820,8 @@ patch_file(
             "CSSIntRect nsScreen::GetRect() {\n"
             "  int32_t frxWidth = 0;\n"
             "  int32_t frxHeight = 0;\n"
-            "  if (FrxFingerprintConfig::GetScreenWidth(&frxWidth) &&\n"
+            "  if (ShouldApplyFrxScreenFingerprint(GetOwnerWindow()) &&\n"
+            "      FrxFingerprintConfig::GetScreenWidth(&frxWidth) &&\n"
             "      FrxFingerprintConfig::GetScreenHeight(&frxHeight)) {\n"
             "    return {0, 0, frxWidth, frxHeight};\n"
             "  }\n\n"
@@ -771,7 +833,8 @@ patch_file(
             "CSSIntRect nsScreen::GetAvailRect() {\n"
             "  int32_t frxAvailWidth = 0;\n"
             "  int32_t frxAvailHeight = 0;\n"
-            "  if (FrxFingerprintConfig::GetScreenAvailWidth(&frxAvailWidth) &&\n"
+            "  if (ShouldApplyFrxScreenFingerprint(GetOwnerWindow()) &&\n"
+            "      FrxFingerprintConfig::GetScreenAvailWidth(&frxAvailWidth) &&\n"
             "      FrxFingerprintConfig::GetScreenAvailHeight(&frxAvailHeight)) {\n"
             "    return {0, 0, frxAvailWidth, frxAvailHeight};\n"
             "  }\n\n"
@@ -782,8 +845,16 @@ patch_file(
 
 
 print("==> dom/base/nsGlobalWindowInner.cpp")
+global_window_cpp = os.path.join(ROOT, "dom/base/nsGlobalWindowInner.cpp")
+migrate_if_present(
+    global_window_cpp,
+    "limit existing devicePixelRatio override to content callers",
+    "  if (FrxFingerprintConfig::GetDevicePixelRatio(&frxDevicePixelRatio)) {\n",
+    "  if (aCallerType == CallerType::NonSystem &&\n"
+    "      FrxFingerprintConfig::GetDevicePixelRatio(&frxDevicePixelRatio)) {\n",
+)
 patch_file(
-    os.path.join(ROOT, "dom/base/nsGlobalWindowInner.cpp"),
+    global_window_cpp,
     [
         (
             "include FrxFingerprintConfig.h in nsGlobalWindowInner.cpp",
@@ -796,7 +867,8 @@ patch_file(
             "double nsGlobalWindowInner::GetDevicePixelRatio(CallerType aCallerType,\n                                                ErrorResult& aError) {\n"
             "  ENSURE_ACTIVE_DOCUMENT(aError, 0.0);\n\n"
             "  double frxDevicePixelRatio = 0.0;\n"
-            "  if (FrxFingerprintConfig::GetDevicePixelRatio(&frxDevicePixelRatio)) {\n"
+            "  if (aCallerType == CallerType::NonSystem &&\n"
+            "      FrxFingerprintConfig::GetDevicePixelRatio(&frxDevicePixelRatio)) {\n"
             "    return frxDevicePixelRatio;\n"
             "  }\n\n",
         ),

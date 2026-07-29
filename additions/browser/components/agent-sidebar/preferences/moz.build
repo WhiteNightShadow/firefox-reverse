@@ -1,0 +1,12 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# Agent sidebar modules are installed below dist/bin/browser, but default
+# preferences must live at the application root to be packaged and loaded.
+DIST_SUBDIR = ""
+FINAL_TARGET = "dist/bin"
+
+FINAL_TARGET_FILES.defaults.pref += [
+    "frx-locale.js",
+]

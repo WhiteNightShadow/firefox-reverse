@@ -29,6 +29,8 @@ EXTRA_JS_MODULES.agentsidebar += [
     "modules/WorkspaceBackend.sys.mjs",
 ]
 
+DIRS += ["preferences"]
+
 JAR_MANIFESTS += ["jar.mn"]
 
 with Files("**"):

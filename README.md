@@ -55,11 +55,12 @@
 
 - 一个环境对应一个**独立 Firefox profile + 独立浏览器进程 + 独立 Marionette 端口**，Cookie、历史记录、LocalStorage、缓存和配置互不混用。
 - 在侧边栏中可新建、重命名、打开、关闭、删除和导入环境，并查看运行状态、端口、profile 与当前主进程指纹。
-- 支持一键生成或粘贴导入 `fingerprint.json`，也可修改当前主进程指纹并一键还原默认；配置在进程启动时由 C++ 层读取。
-- 当前 C++ 配置覆盖面包括 Navigator、Screen、DPR、语言/时区、UA 与 Accept-Language、UA-CH 以及 WebGL unmasked vendor/renderer 等字段。
+- 新建环境只生成与当前 Gecko 内核一致的 Firefox 指纹，浏览器版本和系统跟随实际构建；默认中国大陆简体中文，也可编辑语言、地区与时区。
+- 支持粘贴导入 `fingerprint.json`，非 Firefox 采集结果会规范化为 Firefox 身份；也可修改当前主进程指纹并一键还原默认，配置在进程启动时由 C++ 层读取。
+- 当前 C++ 配置覆盖面包括 Navigator、Screen、DPR、语言/时区、UA 与 Accept-Language，以及 WebGL unmasked vendor/renderer 等字段。
 - 环境能力同时暴露为内置 `env_*` 工具；`frx-director-mcp` 通过对应的 `frx_env_*` MCP 工具查询、创建、导入和启动指定环境。
 
-> 当前采用**环境级隔离**，不是标签页级切换。Chrome-like 配置是在 Gecko 上统一覆盖一批 JS / HTTP 可见字段，并不会把 Firefox 内核变成 Chromium，也不承诺绕过所有站点检测。指纹配置按进程启动读取，修改运行中环境后需关闭并重新打开才会完整生效。
+> 当前采用**环境级隔离**，不是标签页级切换。新建和重新生成不再产出 Chrome-like 指纹，避免浏览器声明与 Gecko 内核能力不一致；历史环境不会被自动迁移或重写。指纹配置按进程启动读取，修改运行中环境后需关闭并重新打开才会完整生效。
 
 ---
 
@@ -278,7 +279,7 @@ cd upstream && ./mach build && ./mach package
 - **我的 Key / 数据会上传吗？** Key 保存在本地并由 Firefox-Reverse 直连你选择的模型服务，不经过项目作者的中转服务器。Agent 工作时会按任务需要把提示词、页面片段和工具结果发送给该模型服务；敏感任务请使用你信任或自托管的兼容端点。
 - **环境之间真的隔离吗？** 每个环境拥有独立 profile、进程和 Marionette 端口，Cookie、历史记录、收藏、LocalStorage 与缓存分别持久化。它们仍运行在同一台操作系统上，不等同于虚拟机级隔离。
 - **为什么保存指纹后页面没有立刻变化？** C++ 配置按进程启动读取。普通环境需要关闭后重新打开；当前主进程需要完整退出并重新启动 Firefox-Reverse。
-- **能完美伪装成 Chrome 吗？** 不能这样承诺。当前可统一配置一批 Navigator、Screen、Intl、HTTP headers、UA-CH 和 WebGL 暴露值，但底层仍是 Gecko，TLS、渲染细节及尚未覆盖的 API 仍可能被组合识别。
+- **还能新建 Chrome-like 环境吗？** 不再支持。新建、重新生成和采集导入都会收敛为与当前内核一致的 Firefox 身份；已经存在的历史环境文件保持原样，不会被自动改写。
 - **可以由外部 AI 管理环境吗？** 可以。内置 Agent 具备 18 个 `env_*` 工具；配套 `frx-director-mcp` 提供 `frx_env_*` 工具用于列表、新建、打开、关闭、删除与导入，并可用 `FRX_ENV_ID` 绑定指定环境启动。
 - **全自动和 AI辅助选哪个？** 目标清晰、信任模型 → 全自动；复杂 / 想把控方向 / 想学 → AI辅助。
 - **能保证破解任何站点吗？** 不能。强保护（深度 JSVMP / 自带密钥的 WASM）依然很难；本工具是把分析效率拉满，不是银弹。
@@ -296,6 +297,13 @@ cd upstream && ./mach build && ./mach package
 ---
 
 ## 📝 版本更新记录
+
+### v0.22.4（2026-07-29）
+- **新环境回归 Firefox 指纹**：新建、重新生成和外部采集导入只产出与当前 Gecko 版本及真实操作系统一致的 Firefox 身份，不再新建 Chrome-like 环境。
+- **中国大陆中文默认值**：新环境默认 `zh-CN`、`Asia/Shanghai` 和简体中文语言组，环境详情仍可自定义语言、地区与时区；浏览器界面和右键菜单随安装包提供简体中文资源。
+- **原生菜单坐标修复**：指纹中的 `screen.*` 与 `devicePixelRatio` 只覆盖网页内容，不再污染浏览器 chrome/XUL 的真实显示器坐标；修复多屏和缩放场景下右键菜单远离鼠标的问题。
+- **历史环境保持兼容**：已有环境不自动迁移、不覆盖原 `fingerprint.json`，原有 profile、Cookie、收藏、历史记录和自动化链路继续沿用。
+- **环境接口同步**：内置 Agent 与 `frx-director-mcp` 的新建环境参数统一支持语言、语言组、locale 和 timezone，并补充 Firefox-only 回归测试。
 
 ### v0.22.3（2026-07-15）
 - **自定义模型思考等级**：自定义 OpenAI 兼容端点新增 `自动 / none / minimal / low / medium / high / xhigh / max` 选项；“自动”保持原请求行为，显式等级才发送 `reasoning_effort`，Anthropic 协议不会误传该字段。
