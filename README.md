@@ -376,14 +376,6 @@ Firefox‑Reverse Key 直连你选的模型，**Key 只存本地、不经第三�
 
 ---
 
-## 🙌 贡献者
-
-感谢社区成员参与需求共建与体验改进：
-
-- [@QIWEB](https://github.com/QIWEB) —— 在 [Issue #7](https://github.com/WhiteNightShadow/firefox-reverse/issues/7) 提出会话导入导出、多组模型账号配置与手动取消任务边界建议，相关能力已在 `v0.23.0` 实现。
-
----
-
 ## 📮 反馈 / 联系
 
 使用中遇到问题、想反馈 bug、或交流逆向思路，欢迎加微信或进群反馈：
