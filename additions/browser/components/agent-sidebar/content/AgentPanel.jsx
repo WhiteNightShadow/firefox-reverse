@@ -20,6 +20,8 @@ const SYSTEM = `你是 firefox-reverse 浏览器内置的 JS 逆向与自动化�
 
 【做逆向：先 skill_get】做签名/加密参数逆向前，**先调一次 \`skill_get\`** 把方法论（一页流：决策树→常规执行链 6 步→工具速查）拉进上下文，并自动释放 node 补环境/请求脚手架到工作目录（fs_copy 拿现成改）。开工也先 \`notes_get\` 看本站历史。
 
+【通用 Skill】当用户说“使用/按照某个 Skill”时，先用 \`skill_list\` 查可用技能，再用 \`skill_get({name})\` 读取完整说明；需要其 references/assets 时按需调用 \`skill_read_resource\`。不要把 Skill 当成可绕过工具确认的自动执行代码。
+
 【先判难度·简单站先走快车道】抓到接口**先看目标参数"长什么样"**(长度/字符集/是否 base64/有没有同发毫秒时间戳)——多数是**标准算法**(MD5/SHA/HMAC/AES/DES)，**别急着扣代码**：\`signer_trace\`/\`webapi_trace\` 抓 signer **真实入参** → 本地 \`crypto\` 对同一入参跑「候选算法×拼接模板」与真实值**逐字节比**，对上即收工(一行混淆都不用读)。**hook 不到入参 或 确认非官方算法**才降档到"扣最小片段进 vm→WASM→JSVMP"。trace **先 arm 再触发**(首屏就发的接口先开 trace 再 \`page_navigate\` 重载，否则只抓到 init 噪声)。详见 skill_get 决策树 ①→⑤。
 
 【两阶段（详见 skill_get）】① **Node 可用版**：定位+\`scripts_save(toWorkspace)\` 落 signer → \`webapi_trace\`/\`webapi_query\` 抓指纹 → 用 \`net_get\` 抓**完整请求当模版**、逐步剥参数定位"真正的门" → \`npm_install\` 补环境只生成加密参数、其余稳定值(cookie/token)可从浏览器拿 → **以本地实打目标接口、返回有效数据为准**(不是"签名看着对")。② **白盒纯算**：\`jsvmp_trace\` 看 VM + 监控 node 链路 → 纯 .js/.py 逐字节对比。
@@ -253,7 +255,7 @@ const _CC = typeof Components !== "undefined" ? Components.classes : typeof Cc !
 const _CI = typeof Components !== "undefined" ? Components.interfaces : typeof Ci !== "undefined" ? Ci : null;
 const _SVC = typeof Services !== "undefined" ? Services : null;
 
-export default function AgentPanel({ buildClient, conversations, store, router, runAgentTurn, session, isVisionModel, workspace, notes, toolNames = [], onOpenEnvironment, onOpenSettings, hidden = false }) {
+export default function AgentPanel({ buildClient, conversations, store, router, runAgentTurn, session, isVisionModel, workspace, notes, skill, toolNames = [], onOpenEnvironment, onOpenSettings, hidden = false }) {
   const [messages, setMessages] = useState([]); // 仅 user/assistant
   const [threads, setThreads] = useState([]); // 摘要列表
   const [currentId, setCurrentId] = useState(null);
@@ -264,6 +266,8 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const [pendingConfirm, setPendingConfirm] = useState(null);
   const [liveSteps, setLiveSteps] = useState([]); // 本回合进行中的过程步骤（累积，不覆盖）
   const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [cancellationPending, setCancellationPending] = useState(false);
   const [workspaceDir, setWorkspaceDir] = useState(null); // 当前会话绑定的工作目录
   const [mode, setMode] = useState(null); // 本会话执行模式："auto"=全自动一条龙 / "assist"=AI辅助逐阶段 / null=未选（首次新建会话让用户选）
   const [files, setFiles] = useState([]); // 工作目录文件列表（展开时填充）
@@ -342,6 +346,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         if (!cancelled && t) {
           setCurrentId(t.id);
           setMessages(t.messages || []);
+          setCancellationPending(t.cancellationPending === true);
           bindWorkspace(effectiveWorkspace(t));
           setMode((t && t.mode) || null);
           refreshThreads();
@@ -433,7 +438,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           conversations
             .getThread(currentId)
             .then(t => {
-              if (t) setMessages(t.messages);
+              if (t) {
+                setMessages(t.messages);
+                setCancellationPending(t.cancellationPending === true);
+              }
             })
             .catch(() => {});
         }
@@ -460,7 +468,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         conversations
           .getThread(currentId)
           .then(t => {
-            if (t) setMessages(t.messages);
+            if (t) {
+              setMessages(t.messages);
+              setCancellationPending(t.cancellationPending === true);
+            }
           })
           .catch(() => {});
         setLiveSteps([]);
@@ -772,6 +783,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       return;
     }
     setError(null);
+    setNotice(null);
     const userMsg = { role: "user", content: text };
     setMessages([...messages, userMsg]); // 乐观显示；发给模型的权威历史下面从持久化 store 读
     setInput("");
@@ -822,13 +834,26 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       } catch {
         /* 笔记可选，取不到不影响 */
       }
+      // 只注入 Skill 元数据，正文由 Agent 按需 skill_get，避免每轮把整个知识库塞进上下文。
+      try {
+        const catalog = skill && skill.list
+          ? await skill.list({}, { workspaceRoot: workspaceDir || null })
+          : null;
+        if (catalog && catalog.ok && Array.isArray(catalog.skills) && catalog.skills.length) {
+          const lines = catalog.skills.slice(0, 30).map(s => `- ${s.name}: ${s.description || "无描述"}`);
+          sys += `\n\n【当前可用 Skills】\n${lines.join("\n")}\n用户指定 Skill 时先 skill_get 读取正文。`;
+        }
+      } catch {
+        /* Skill 目录不可读不影响普通对话 */
+      }
       if (session && router) {
         const confirmMode = !!(store && store.getConfirmTools && store.getConfirmTools());
         setBusy(true); // → 触发轮询 useEffect 流式刷 UI
         // 引擎在常驻模块跑：切侧栏面板重载也不中断；UI 由轮询驱动(见上面 useEffect)，
         // done/error 由引擎自己落盘，故这里**不 await、不 finalize**。
         // assist=AI辅助逐阶段：引擎不跨回合自动续（每个 turn 结束交回用户等其选方向）。
-        session.run(tid, { systemPrompt: sys, convo, confirmMode, assist: effMode === "assist", maxRounds: 80, maxPerTool: 40,
+        // run() 返回 Promise；同步启动后由常驻 session 自己收尾。catch 防止启动前异常成为未处理 rejection。
+        void session.run(tid, { systemPrompt: sys, convo, confirmMode, assist: effMode === "assist", maxRounds: 80, maxPerTool: 40,
           // 工作目录随会话注入到每条工具调用的 ctx，WorkspaceBackend 优先使用 ctx.workspaceRoot，
           // 实现多窗口/多会话并发时各自操作各自的目录、互不干扰。
           workspaceRoot: workspaceDir || null,
@@ -836,14 +861,24 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           // webapi/jsvmp trace/signer_trace/whitebox)优先打**本窗口**的当前 tab，而非"全局聚焦窗口"，
           // 两个浏览器窗口并发跑各自的 Agent 时互不打错 tab。topChromeWindow 不随焦点变。
           win: (typeof window !== "undefined" && window.browsingContext && window.browsingContext.topChromeWindow) || null,
-        });
+        }).catch(e => setError((e && e.message) || String(e)));
       } else {
         // 无 session 兜底（不跨重载）：直接 chat。
         setBusy(true);
+        let cancelledBoundary = false;
+        try {
+          cancelledBoundary = await conversations.consumeCancellationBoundary?.(tid);
+          await conversations.setThreadTurnStatus?.(tid, "running");
+        } catch {}
+        if (cancelledBoundary) {
+          sys += "\n\n【手动取消边界】上一项任务已被用户明确取消。不要自动恢复旧任务；只有最新消息明确要求继续时才可继续。";
+        }
         const content = (await buildClient().chat([{ role: "system", content: sys }, ...convo])).content;
         const am = { role: "assistant", content };
         setMessages([...convo, am]);
         await conversations.appendMessage(tid, am);
+        await conversations.setThreadTurnStatus?.(tid, "completed");
+        setCancellationPending(false);
         setBusy(false);
         refreshThreads();
       }
@@ -858,8 +893,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     try {
       if (session && currentId) {
         session.stop(currentId);
+        setCancellationPending(true);
       } else if (abortRef.current) {
         abortRef.current.abort();
+        setCancellationPending(true);
       }
     } catch {
       /* ignore */
@@ -873,6 +910,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     }
     setCurrentId(t.id);
     setMessages([]);
+    setCancellationPending(false);
     setError(null);
     setShowHistory(false);
     bindWorkspace(effectiveWorkspace(t));
@@ -917,6 +955,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     if (t) {
       setCurrentId(t.id);
       setMessages(t.messages);
+      setCancellationPending(t.cancellationPending === true);
       setError(null);
       bindWorkspace(effectiveWorkspace(t));
       setMode((t && t.mode) || null);
@@ -932,6 +971,59 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
 
   openThreadRef.current = openThread; // 每渲染更新，供「自动跟随」定时器调用最新闭包
   uiStateRef.current = { msgs: messages.length, input }; // 每渲染更新，供自动跟随判定"面板是否真正空闲中性"
+
+  function pickConversationFile(mode, title, defaultName, callback) {
+    try {
+      if (!_CC || !_CI || !_SVC) {
+        throw new Error("文件选择器不可用");
+      }
+      const host = _SVC.wm.getMostRecentWindow("navigator:browser");
+      const fp = _CC["@mozilla.org/filepicker;1"].createInstance(_CI.nsIFilePicker);
+      fp.init(host.browsingContext, title, mode);
+      fp.appendFilter("Firefox Reverse 会话", "*.frx-chat.json");
+      fp.appendFilters(_CI.nsIFilePicker.filterAll);
+      if (defaultName) {
+        fp.defaultString = defaultName;
+        fp.defaultExtension = "json";
+      }
+      fp.open(rv => {
+        const accepted =
+          rv === _CI.nsIFilePicker.returnOK ||
+          rv === _CI.nsIFilePicker.returnReplace;
+        if (!accepted || !fp.file?.path) return;
+        Promise.resolve(callback(fp.file.path)).catch(e => {
+          setError((e && e.message) || String(e));
+        });
+      });
+    } catch (e) {
+      setError((e && e.message) || String(e));
+    }
+  }
+
+  async function exportCurrentThread() {
+    if (!currentId || busy || !_CI?.nsIFilePicker || !conversations.exportThreadToFile) return;
+    const t = await conversations.getThread(currentId);
+    const safeName = String(t?.title || "conversation").replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
+    pickConversationFile(
+      _CI.nsIFilePicker.modeSave,
+      "导出当前会话",
+      `${safeName || "conversation"}.frx-chat.json`,
+      async path => {
+        await conversations.exportThreadToFile(currentId, path);
+        setNotice("当前会话已导出。文件不包含模型配置中的 Key、工作目录、环境绑定或运行状态；对话正文会原样保留。");
+      }
+    );
+  }
+
+  function importConversation() {
+    if (!_CI?.nsIFilePicker || !conversations.importThreadFromFile) return;
+    pickConversationFile(_CI.nsIFilePicker.modeOpen, "导入会话", "", async path => {
+      const t = await conversations.importThreadFromFile(path);
+      await refreshThreads();
+      await openThread(t.id);
+      setNotice("会话已作为新对话导入；不会自动执行历史内容，也未绑定本机目录或浏览器环境。");
+    });
+  }
 
   async function deleteThread(id, ev) {
     ev.stopPropagation();
@@ -983,6 +1075,19 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         >
           ⚡ 外部(MCP)正在驱动另一个会话（{extRunning.nSteps} 步）· 点击实时跟随
         </button>
+      )}
+
+      {notice && (
+        <div className="agent-panel__notice">
+          <span>{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} title="关闭">×</button>
+        </div>
+      )}
+
+      {cancellationPending && !busy && (
+        <div className="agent-cancel-boundary">
+          上一项任务已手动取消。下一条消息默认按新任务处理；只有明确说“继续上一项任务”才会恢复。
+        </div>
       )}
 
       <div className="agent-ws">
@@ -1052,7 +1157,11 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         <div className="agent-history">
           <div className="agent-history__head">
             <span>历史对话（{threads.length}）</span>
-            <button type="button" onClick={() => setShowHistory(false)} title="关闭">×</button>
+            <span className="agent-history__tools">
+              <button type="button" onClick={importConversation} title="从 JSON 文件导入为新会话">导入</button>
+              <button type="button" onClick={exportCurrentThread} disabled={!currentId || busy} title={busy ? "当前任务结束或停止后再导出" : "导出当前会话为 JSON"}>导出</button>
+              <button type="button" className="agent-history__close" onClick={() => setShowHistory(false)} title="关闭">×</button>
+            </span>
           </div>
           <div className="agent-history__list">
             {threads.length === 0 && <div className="agent-history__empty">暂无历史</div>}

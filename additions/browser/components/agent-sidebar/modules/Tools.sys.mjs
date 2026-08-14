@@ -721,13 +721,45 @@ function toolTable() {
       (b, a, ctx) => b.workspace.npmInstall(a, ctx)
     ),
 
-    // ───────── ⑧ 逆向方法论（内置 skill 全文，开工按需拉取） ─────────
+    // ───────── ⑧ Skills（内置逆向方法论 + 用户/工作区通用 Skill） ─────────
+    T(
+      "skill_list",
+      "列出当前可用 Skills。来源包括浏览器内置、~/.firefox-reverse/skills，以及工作目录下 .agents/skills 和 .firefox-reverse/skills。" +
+        "只返回名称/描述；用户指定某 Skill 时先查列表，再用 skill_get 按名读取正文。",
+      { type: "object", properties: {} },
+      b => b.skill && b.skill.list,
+      (b, a, ctx) => b.skill.list(a, ctx)
+    ),
     T(
       "skill_get",
-      "读取内置的**逆向方法论全文**。**开工逆向前先调一次**——尤其看 §3 反爬三分(选路径)、§4 阶段一(Node 可用版,以本地实打目标接口返回有效数据为准)、§6 决策树(同类报错≥3 次就换路线、别绕圈)。系统提示只有短核心,完整流程/红线/工具映射在这里。",
-      { type: "object", properties: {} },
+      "按名称读取 Skill 的完整 SKILL.md。name 省略时保持旧行为：返回内置逆向方法论，并释放逆向脚手架。" +
+        "用户说“使用某 Skill”时先 skill_list 确认名称，再调用本工具。",
+      {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Skill 名称；省略=内置 reverse-engineering（兼容旧 skill_get）" },
+          offset: { type: "integer", description: "可选：从此字符偏移读取，适合大 Skill 分段" },
+          limit: { type: "integer", description: "可选：本段字符数，最大 16000；配合返回的 nextOffset 继续" },
+        },
+      },
       b => b.skill && b.skill.get,
       (b, a, ctx) => b.skill.get(a, ctx)
+    ),
+    T(
+      "skill_read_resource",
+      "读取指定 Skill 目录内的 references/assets 等文本资源。先 skill_get 查看 resources 列表；路径必须是 Skill 内安全相对路径。",
+      {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Skill 名称" },
+          path: { type: "string", description: "资源相对路径，如 references/api.md" },
+          offset: { type: "integer", description: "可选：从此字符偏移读取" },
+          limit: { type: "integer", description: "可选：本段字符数，最大 16000" },
+        },
+        required: ["name", "path"],
+      },
+      b => b.skill && b.skill.readResource,
+      (b, a, ctx) => b.skill.readResource(a, ctx)
     ),
 
     // ───────── ⑨ 逆向进展笔记（跨会话按站点记"验证过的突破点/坑"） ─────────

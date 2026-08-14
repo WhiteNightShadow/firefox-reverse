@@ -63,6 +63,26 @@ requestBody = JSON.parse(anthropicClient.buildRequest([{ role: "user", content: 
 check("Anthropic 不误发 OpenAI reasoning_effort", requestBody.reasoning_effort, undefined);
 cs.setCustomProtocol("openai");
 
+// ---- 命名模型配置：同渠道多账号切换后 buildClient 必须读取各自 Key/URL/模型 ----
+const accountA = cs.getActiveModelProfile();
+cs.updateModelProfile(accountA.id, { name: "渠道 A", apiKey: "key-a", model: "model-a" });
+const accountB = cs.createModelProfile({
+  name: "渠道 B",
+  provider: "custom",
+  apiKey: "key-b",
+  baseUrl: "https://second.example.com/v1",
+  protocol: "openai",
+  model: "model-b",
+  reasoningEffort: "medium",
+});
+let profileClient = buildClientFromStore(cs);
+check("命名配置 B 读取独立 Key", profileClient.apiKey, "key-b");
+check("命名配置 B 读取独立端点", profileClient.endpoint, "https://second.example.com/v1/chat/completions");
+check("命名配置 B 读取独立模型", profileClient.model, "model-b");
+cs.setActiveModelProfileId(accountA.id);
+profileClient = buildClientFromStore(cs);
+check("切回命名配置 A", [profileClient.apiKey, profileClient.model], ["key-a", "model-a"]);
+
 // ---- mock server ----
 const MODELS = { data: [{ id: "m-alpha" }, { id: "m-beta" }] };
 const server = http.createServer((req, res) => {

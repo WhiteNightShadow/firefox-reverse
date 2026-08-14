@@ -19,6 +19,10 @@ const { setTimeout: _setTimeout, clearTimeout: _clearTimeout } = ChromeUtils.imp
   "resource://gre/modules/Timer.sys.mjs"
 );
 const NOTIFY_THROTTLE_MS = 50; // 流式 delta/reasoning 最多 ~20 次/秒推给 UI——避免每 token 跨 realm 调用把内容进程压垮
+const CANCELLED_TURN_BOUNDARY =
+  "【手动取消边界】上一项任务已被用户明确手动取消。此前未完成事项只能作为历史背景，" +
+  "不得自动恢复、补做或继续调用工具。请把最新一条用户消息视为新的独立请求；" +
+  "只有当最新消息明确要求‘继续/恢复上一项任务’时，才可以接着执行被取消的任务。";
 
 let _router = null;
 function router() {
@@ -369,6 +373,20 @@ export const agentSession = {
       } catch {
         /* ignore */
       }
+      // 若正停在“等待用户确认工具”阶段，AbortSignal 本身不会释放 confirm Promise。
+      // 主动按拒绝收口，确保手动停止能立即越过确认点并进入统一的 cancelled 收尾。
+      if (s.pendingConfirm && typeof s.pendingConfirm.resolve === "function") {
+        const resolve = s.pendingConfirm.resolve;
+        s.pendingConfirm = null;
+        try {
+          resolve(false);
+        } catch {
+          /* ignore */
+        }
+      }
+      s.aborted = true;
+      void conversationStore.setThreadTurnStatus(threadId, "cancelled").catch(() => {});
+      notify(s);
     }
   },
   /**
@@ -408,10 +426,22 @@ export const agentSession = {
 
     let vision = false;
     try {
+      // 取消边界只消费一次，且仅影响手动停止后的下一轮。正常回合和同一回合内的自动续跑完全不变。
+      let hadCancellationBoundary = false;
+      try {
+        hadCancellationBoundary = await conversationStore.consumeCancellationBoundary(threadId);
+        await conversationStore.setThreadTurnStatus(threadId, "running");
+      } catch {
+        /* 状态元数据失败不阻断 Agent */
+      }
+      if (hadCancellationBoundary) {
+        systemPrompt = String(systemPrompt || "") + "\n\n" + CANCELLED_TURN_BOUNDARY;
+      }
       const client = buildClientFromStore(configStore);
       try {
-        const pid = configStore.getActiveProvider && configStore.getActiveProvider();
-        const model = pid && configStore.getModel && configStore.getModel(pid);
+        const active = configStore.getActiveModelProfile && configStore.getActiveModelProfile();
+        const pid = (active && active.provider) || (configStore.getActiveProvider && configStore.getActiveProvider());
+        const model = (active && active.model) || (pid && configStore.getModel && configStore.getModel(pid));
         vision = !!(isVisionModel && isVisionModel(model));
       } catch {
         /* 取不到当不支持视觉 */
@@ -552,11 +582,17 @@ export const agentSession = {
           "只有给出可独立实跑的产物、或真需要我提供你拿不到的东西（登录态/账号/验证码/纯业务决策）时才停。",
       });
       } // end for(;;) —— 全自动续跑
+      s.aborted = ac.signal.aborted || (res && res.stopReason === "aborted");
       // res.content 为空时（工具结尾轮/被截断轮）从 steps 的 text 段兜底，
       // 保证落盘的 assistant 消息一定带正文 → 下一轮历史里这轮不会是空白＝不失忆。
       s.content = res.content || textFromSteps(s.steps) || "";
       // 落盘最终消息（引擎自己存，UI 不在场也不丢）
       await this._persist(threadId, s.content, s.steps);
+      try {
+        await conversationStore.setThreadTurnStatus(threadId, s.aborted ? "cancelled" : "completed");
+      } catch {
+        /* 状态元数据失败不影响已完成结果 */
+      }
     } catch (e) {
       s.aborted = ac.signal.aborted;
       const note = s.aborted
@@ -566,6 +602,11 @@ export const agentSession = {
       s.content = note;
       if (s.steps.length || s.aborted) {
         await this._persist(threadId, note, s.steps);
+      }
+      try {
+        await conversationStore.setThreadTurnStatus(threadId, s.aborted ? "cancelled" : "failed");
+      } catch {
+        /* 状态元数据失败不影响中断收尾 */
       }
     } finally {
       s.running = false;

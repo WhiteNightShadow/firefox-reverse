@@ -48,8 +48,8 @@ export function getBackends() {
   // 任务级「沉淀式记忆」账本：已确认事实/已否决死路落 <工作目录>/.frx-ledger.ndjson + ledger.md，
   // 引擎每轮+压缩后整本注入上下文（治压缩后重新发现/重走死路）。remember 工具写、digest 注入、mergeHandoff 自动沉淀。
   const ledger = new LedgerBackend({ workspace });
-  // 逆向方法论全文（skill_get）：随浏览器内置，开工按需拉进上下文。
-  const skill = new SkillBackend({ workspace }); // skill_get 时把内置脚手架释放到工作目录
+  // 通用 SkillRegistry：内置逆向方法论 + 用户/工作区 SKILL.md；正文按需读取。
+  const skill = new SkillBackend({ workspace }); // 无参数 skill_get 仍释放原内置脚手架
   // 环境管理：一个环境一个 profile + 一个独立 Firefox 进程。UI 和 MCP 共用同一套 env manifest。
   const env = new EnvironmentBackend();
 

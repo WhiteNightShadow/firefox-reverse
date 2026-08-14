@@ -24,6 +24,7 @@ SELFTESTS=(
   selftest-mozbuild.mjs
   selftest-providers.mjs
   selftest-conversations.mjs
+  selftest-skills.mjs
   selftest-stream.mjs
   selftest-retry.mjs
   selftest-anthropic.mjs

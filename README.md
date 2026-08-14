@@ -21,7 +21,7 @@
 
 <br>
 
-[**📥 下载安装（Releases）**](../../releases)　·　[快速开始](#-快速开始5-步)　·　[指纹环境](#-使用指纹环境可选)　·　[工具大全](#-工具大全64)　·　[从源码构建](#-从源码构建)
+[**📥 下载安装（Releases）**](../../releases)　·　[快速开始](#-快速开始5-步)　·　[指纹环境](#-使用指纹环境可选)　·　[工具大全](#-工具大全66)　·　[从源码构建](#-从源码构建)
 
 </div>
 
@@ -45,9 +45,13 @@
 
 <img src="docs/agent-sidebar-guide-20260715.png" width="100%" alt="Firefox-Reverse 内置 AI Agent 侧边栏、星光入口和环境管理入口指引">
 
-- Agent 常驻浏览器侧边栏，当前精确注册 **64 个工具**，覆盖页面操作、网络抓包、代码搜索、Cookie、WebAPI trace、JSVMP、WASM、文件读写、环境管理与 Node/Python 实打验证。
+- Agent 常驻浏览器侧边栏，当前精确注册 **66 个工具**，覆盖页面操作、网络抓包、代码搜索、Cookie、WebAPI trace、JSVMP、WASM、文件读写、Skills、环境管理与 Node/Python 实打验证。
 - 支持**全自动**与**AI辅助**两种工作方式：既可以让 worker 独立推进，也可以由人或外部 MCP director 分阶段领航。
 - 工作目录、会话、阶段结论与生成脚本均落在本地；切换标签页或收起侧边栏不会中断正在运行的父进程 Agent。
+- 历史抽屉支持单会话 `.frx-chat.json` 导入/导出；导入会创建静止的新会话，不会自动执行历史任务，也不会携带 API Key、工作目录和环境绑定。
+- 模型设置支持命名配置，同一渠道可以保存多组账号、端点、模型与思考等级，后续直接从历史配置切换。
+- 手动停止会留下明确的取消边界，下一条消息默认按新任务处理；只有明确要求继续时才恢复上一项任务。
+- 支持从用户目录和工作区发现通用 `SKILL.md`，用户说“使用某个 Skill”后，Agent 会按需读取方法与附加资源。
 
 ### 指纹环境管理
 
@@ -71,10 +75,10 @@
 
 | 系统 | 文件 | 安装 |
 |---|---|---|
-| **Windows** | `firefox-*.win64.zip` | 解压，双击 `firefox.exe`（若 SmartScreen 拦截 → 「更多信息」→「仍要运行」）|
+| **Windows** | `firefox-reverse-v*-windows-x86_64-installer.exe` 或 `.zip` | 运行安装器，或解压 ZIP 后双击 `firefox.exe`（若 SmartScreen 拦截 → 「更多信息」→「仍要运行」）|
 | **macOS (Apple Silicon)** | `firefox-reverse-*-macos-arm64.dmg` | 打开 → 拖进「应用程序」；**首次打开若提示「已损坏」见下方 ⚠️** |
 | **macOS (Intel)** | `firefox-reverse-*-macos-x86_64.dmg` | 适用于 Intel Mac（macOS 10.15+）；安装方式同上 |
-| **Linux (x86_64)** | `firefox-*.linux-x86_64.tar.xz` | 解压，运行 `./firefox` |
+| **Linux (x86_64)** | `firefox-reverse-v*-linux-x86_64.tar.xz` | 解压，运行 `./firefox` |
 | **Linux (ARM64)** | `firefox-reverse-*-linux-arm64.tar.xz` | 适用于 ARM64 / AArch64 Linux；解压，运行 `./firefox` |
 
 > ⚠️ **macOS 首次打开提示「"Firefox Reverse" 已损坏，无法打开」？** 这**不是真的损坏** —— 本浏览器是自签名应用、未做 Apple 付费公证（$99/年），从浏览器下载后会被系统打上「隔离」标记，Apple Silicon 上就报这个。打开「终端」执行一行去掉隔离即可正常打开：
@@ -86,9 +90,10 @@
 **② 打开 AI 侧边栏**
 启动浏览器 → 点击浏览器**右上角的 Firefox‑Reverse 星光图标**，打开 Agent 面板。若图标暂时不可见，先点地址栏左侧的侧栏按钮展开侧栏。
 
-**③ 配置一个大模型 Key**（用一次配一次，存本地）
-点面板右上角 ⚙️ 设置 → 选一个模型供应商，填上你的 API Key：
+**③ 配置模型账号**（配置一次，后续直接切换）
+点面板右上角 ⚙️ 设置 → 新建或选择一个命名配置，再填写供应商、API Key 和模型：
 - 支持 **DeepSeek**、**智谱 GLM**、**Kimi（Moonshot）**、**MiniMax**、**通义千问（Qwen）**、**Claude**、**OpenAI**，或任何 **OpenAI / Anthropic 协议兼容**的自定义端点（填 baseUrl + token + 模型名即可）。
+- 同一个渠道可以保存多个账号，例如“GPT 工作账号”“GPT 个人账号”，选择后从下一轮对话开始生效。
 
 > 💡 **模型选型建议**：简单 / 小站点用便宜模型（如 DeepSeek）即可上手；遇到复杂 / 大站点，弱模型在长链路里容易走弯路——这类目标建议用「自定义模型」端点接入 **Opus 4.8 或最新旗舰模型**，逆向推进更稳、少绕路。
 
@@ -135,12 +140,14 @@
 
 ## ✨ 核心亮点
 
-- **🧠 内置自主 Agent** —— 不是聊天框，是能连续调用 64 个工具、自己跑完「抓包→定位→验证→补环境→实打」全流程的逆向智能体。
+- **🧠 内置自主 Agent** —— 不是聊天框，是能连续调用 66 个工具、自己跑完「抓包→定位→验证→补环境→实打」全流程的逆向智能体。
 - **🪪 指纹环境隔离** —— 一个环境一个 profile + 独立进程，支持环境 CRUD、指纹生成/导入、主进程指纹与 MCP 指定环境启动。
 - **🔬 引擎层观测工具** —— 签名器入参、JSVMP 逐指令、WASM import 边界、浏览器真值 vs Node 复刻的分支差分深入 C++ 引擎，减少页面内 hook 和反调试对分析过程的干扰。
 - **🎛 两种工作模式** —— 全自动一条龙 / AI辅助逐阶段（你领航），按会话持久化、随时切换。
 - **🌐 站点无关** —— 面向**通用** JS / JSVMP / WASM / 签名逆向，不为任何特定网站定制；案例只是测试样例。
 - **🔌 任意大模型** —— DeepSeek / 智谱GLM / Kimi / MiniMax / 通义千问 / Claude / OpenAI 及任意 OpenAI/Anthropic 协议兼容端点，Key 保存在本地并直连所选服务。
+- **🗂 会话与配置迁移** —— 单会话 JSON 导入/导出，模型账号按命名配置保存和切换；导出的会话文件不包含模型 API Key。
+- **🧰 通用 Skills** —— 从 `~/.firefox-reverse/skills`、工作区 `.agents/skills` 和 `.firefox-reverse/skills` 发现 `SKILL.md`，按任务需要加载正文和 references。
 - **💾 跨会话记忆** —— 确认过的事实 / 踩过的坑沉淀进内置 SQLite，下次不再兜圈。
 - **🧩 常驻引擎** —— 对话引擎跑在父进程系统模块，切换标签页或收起侧边栏不会中断，多窗口工作目录互相隔离。
 
@@ -176,9 +183,9 @@ Agent 的推进遵循一条务实路线——**先拿到能用的，再追求吃
 
 ---
 
-## 🧰 工具大全（64）
+## 🧰 工具大全（66）
 
-当前版本由 `Tools.sys.mjs` 精确注册 **64 个工具**，下表与代码声明一一对应：
+当前版本由 `Tools.sys.mjs` 精确注册 **66 个工具**，下表与代码声明一一对应：
 
 | 类别 | 工具 | 说明 |
 |---|---|---|
@@ -194,7 +201,7 @@ Agent 的推进遵循一条务实路线——**先拿到能用的，再追求吃
 | **通用 JS trace（1）** | `js_trace` | AST 插桩配合 Node 执行，逐函数追踪普通 JavaScript |
 | **执行 / 文件（8）** | `run_node` `run_python` `npm_install` `fs_read` `fs_write` `fs_list` `fs_copy` `fs_mkdir` | 在工作目录执行脚本、安装依赖与管理文件 |
 | **Cookie 管理（1）** | `cookies` | 通过引擎 Cookie 管理器列出、设置和删除 Cookie，包括 httpOnly Cookie |
-| **方法论 / 记忆（5）** | `skill_get` `notes_add` `notes_get` `remember` `recall` | 获取内置方法论，记录会话笔记并维护跨会话记忆 |
+| **Skills / 记忆（7）** | `skill_list` `skill_get` `skill_read_resource` `notes_add` `notes_get` `remember` `recall` | 发现并读取本机/工作区 Skill，兼容内置逆向方法论，记录会话笔记并维护跨会话记忆 |
 | **指纹环境（18）** | `env_current` `env_current_process` `env_read_current_process_config` `env_write_current_process_config` `env_reset_current_process_default` `env_list` `env_status` `env_create` `env_update` `env_open` `env_close` `env_read_config` `env_write_config` `env_generate_fingerprint` `env_capture_fingerprint` `env_import_fingerprint` `env_import` `env_delete` | 查询当前环境和主进程，管理环境生命周期，读写/生成/采集/导入指纹配置 |
 
 ---
@@ -230,7 +237,7 @@ bash scripts/apply-patches.sh
 cd upstream && ./mach build && ./mach package
 ```
 
-- 侧边栏与父进程后端：`additions/browser/components/agent-sidebar/`；React UI、Agent 引擎、64 个工具声明和 `EnvironmentBackend.sys.mjs` 均在此维护，前端通过 `npm run build` 生成 bundle。
+- 侧边栏与父进程后端：`additions/browser/components/agent-sidebar/`；React UI、Agent 引擎、66 个工具声明和 `EnvironmentBackend.sys.mjs` 均在此维护，前端通过 `npm run build` 生成 bundle。
 - 指纹配置层：`additions/dom/base/FrxFingerprintConfig.*`、`NavigatorUAData.*` 及 `scripts/apply-fingerprint-config.py` 写入的 Gecko / Necko 接入点。
 - 引擎观测层：`additions/js/...` 的 SpiderMonkey trace 与 `additions/dom/bindings/...` 的 WebAPI trace。
 - 环境数据不写进仓库或构建目录，运行时默认落在 `~/.firefox-reverse/environments`。
@@ -250,7 +257,7 @@ cd upstream && ./mach build && ./mach package
 │                                                                          │
 │  常驻引擎（父进程系统模块, .sys.mjs）                                     │
 │  ├ AgentSession / AgentLoop   会话、工具循环、上下文压缩                  │
-│  ├ ToolRouter / Tools         64 个工具的声明与路由                       │
+│  ├ ToolRouter / Tools         66 个工具的声明与路由                       │
 │  ├ EnvironmentBackend         环境 CRUD、配置、进程与端口状态             │
 │  └ ConfigStore / Memory       本地配置与 SQLite 跨会话记忆                │
 │                                                                          │
@@ -298,6 +305,13 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
+### v0.23.0（2026-08-14）
+- **会话迁移**：历史抽屉支持单会话 `.frx-chat.json` 导入/导出；导入会生成新的静止会话，不携带模型配置中的 API Key、工作目录、环境绑定和运行状态，也不会自动重放历史任务（对话正文及其中用户自行粘贴的内容会保留）。
+- **多账号模型配置**：模型设置支持命名配置的新建、复制、删除和即时切换，同一个 GPT/DeepSeek/Anthropic 渠道可以分别保存多组账号、端点、模型和思考等级；旧版当前配置自动迁移并继续兼容。
+- **手动取消边界**：停止任务后持久记录 `cancelled` 状态，下一条消息默认作为新任务，不再自动续做已取消事项；用户明确说“继续上一项任务”时仍可恢复。
+- **通用 Skills**：新增 `skill_list`、按名 `skill_get` 和 `skill_read_resource`，发现用户目录及工作区 `.agents/skills` / `.firefox-reverse/skills`；无参数 `skill_get` 保持原内置逆向方法论行为。
+- **多端发布**：同步提供 macOS Apple Silicon / Intel、Windows x86_64、Linux x86_64 / ARM64 安装包与统一 SHA256 校验文件。
+
 ### v0.22.4（2026-07-29）
 - **新环境回归 Firefox 指纹**：新建、重新生成和外部采集导入只产出与当前 Gecko 版本及真实操作系统一致的 Firefox 身份，不再新建 Chrome-like 环境。
 - **中国大陆中文默认值**：新环境默认 `zh-CN`、`Asia/Shanghai` 和简体中文语言组，环境详情仍可自定义语言、地区与时区；浏览器界面和右键菜单随安装包提供简体中文资源。
@@ -335,7 +349,7 @@ cd upstream && ./mach build && ./mach package
 - **新增模型**：Kimi（Moonshot，`kimi-k2.6`）、MiniMax（`MiniMax-M3`）、通义千问（Qwen，`qwen3-max`）—— 连同原有 DeepSeek / 智谱 GLM / Claude / OpenAI，主流大模型基本覆盖。
 - **MCP 外部驱动可见性**：新增 `AgentSession.listRunning()` + 侧栏「空闲自动跟随 / 忙时横幅」——外部（如 MCP director）驱动的会话能在侧栏**自动切到、实时流式、并显示绑定的工作目录**（配套 [frx-director-mcp](https://github.com/WhiteNightShadow/frx-director-mcp) 成本拆分玩法，见「两种工作模式」）。
 - **「停止」即时生效（框架级修复）**：`run_node` / `run_python` 卡住时点停止会**立刻杀掉子进程**（之前要干等到超时才结束）；`run_node` 默认超时 **300s → 30s**（正常 JS 加载足够，hang 住能更快释放）。
-- **工具补齐（当时）**：加入密码学常量识别、引擎层闭包真值读取、document-start hook 和结构无关派发器探测，工具数由 40+ 扩展到 **44+**；派发器探测后来合并进 JSVMP 工具链，当前版本以「工具大全」中的 **64 个**为准。
+- **工具补齐（当时）**：加入密码学常量识别、引擎层闭包真值读取、document-start hook 和结构无关派发器探测，工具数由 40+ 扩展到 **44+**；派发器探测后来合并进 JSVMP 工具链，当前版本以「工具大全」中的 **66 个**为准。
 - **方法论 / 健壮性**：简单站「快车道」判型（先 hook 对比标准算法、不硬扣混淆）、`page_eval` 全权 + 大输出 `saveTo` 落盘、SSR 站识别、长任务护栏对强模型软化（硬限制转软提示、随上下文窗口缩放）。
 
 ### v0.17 – v0.18（2026-06-08 起）

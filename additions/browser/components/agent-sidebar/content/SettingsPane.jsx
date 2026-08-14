@@ -1,136 +1,236 @@
-import React, { useState, useRef } from "react";
-// providers 由宿主注入（index.jsx 运行时用 ChromeUtils 加载 providers.sys.mjs 后传入），
-// 使本组件零静态依赖 .sys.mjs，便于 esbuild 打包成干净 bundle。
+import React, { useRef, useState } from "react";
 
-/**
- * 设置面板：选 provider、填 API Key/Token、选/填模型，保存到注入的 ConfigStore。
- * 「自定义」provider 额外支持：协议(OpenAI/Anthropic) + Base URL + 从端点拉取模型列表。
- *
- * @param {object} props
- * @param {object} props.store               ConfigStore 实例（宿主注入）
- * @param {Array}  props.providers           provider 元数据列表
- * @param {(baseUrl:string,token:string)=>Promise<string[]>} [props.fetchModels]
- * @param {() => void} [props.onClose]
- */
+function legacyProfile(store, providers) {
+  const provider = store.getActiveProvider();
+  const p = providers.find(x => x.id === provider) || providers[0];
+  return {
+    id: "legacy",
+    name: `${p?.label || provider} 配置`,
+    provider,
+    apiKey: store.getApiKey(provider),
+    model: store.getModel(provider) || p?.defaultModel || "",
+    baseUrl: store.getCustomBaseUrl ? store.getCustomBaseUrl() : "",
+    protocol: store.getCustomProtocol ? store.getCustomProtocol() : "openai",
+    reasoningEffort: store.getCustomReasoningEffort ? store.getCustomReasoningEffort() : "auto",
+  };
+}
+
+/** 模型配置管理：同一 provider 可保存多组账号/端点，选择历史配置即可切换。 */
 export default function SettingsPane({ store, providers, fetchModels, onClose }) {
-  const [provider, setProvider] = useState(store.getActiveProvider());
-  const current = providers.find((p) => p.id === provider) || providers[0];
-  const [apiKey, setApiKey] = useState(store.getApiKey(provider));
-  const [model, setModel] = useState(store.getModel(provider) || current.defaultModel);
+  const initialProfiles = store.listModelProfiles
+    ? store.listModelProfiles()
+    : [legacyProfile(store, providers)];
+  const initialId = store.getActiveModelProfileId
+    ? store.getActiveModelProfileId()
+    : initialProfiles[0].id;
+  const initial = initialProfiles.find(p => p.id === initialId) || initialProfiles[0];
+
+  const [profiles, setProfiles] = useState(initialProfiles);
+  const [profileId, setProfileId] = useState(initial.id);
+  const [profileName, setProfileName] = useState(initial.name);
+  const [provider, setProvider] = useState(initial.provider);
+  const [apiKey, setApiKey] = useState(initial.apiKey || "");
+  const [model, setModel] = useState(initial.model || "");
+  const [customUrl, setCustomUrl] = useState(initial.baseUrl || "");
+  const [customProtocol, setCustomProtocol] = useState(initial.protocol || "openai");
+  const [customReasoningEffort, setCustomReasoningEffort] = useState(initial.reasoningEffort || "auto");
   const [confirmTools, setConfirmTools] = useState(store.getConfirmTools ? store.getConfirmTools() : false);
-  const [customUrl, setCustomUrl] = useState(store.getCustomBaseUrl ? store.getCustomBaseUrl() : "");
-  const [customProtocol, setCustomProtocol] = useState(store.getCustomProtocol ? store.getCustomProtocol() : "openai");
-  const [customReasoningEffort, setCustomReasoningEffort] = useState(
-    store.getCustomReasoningEffort ? store.getCustomReasoningEffort() : "auto"
-  );
   const [fetchedModels, setFetchedModels] = useState([]);
   const [fetchMsg, setFetchMsg] = useState("");
-  const [manual, setManual] = useState(false); // 自定义：手动输入模型名（端点 /v1/models 没列出的，如 claude-*）
-  const [saved, setSaved] = useState(false);
+  const [manual, setManual] = useState(false);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
 
+  const current = providers.find(p => p.id === provider) || providers[0];
   const isCustom = provider === "custom";
-  // 在途拉取守卫：拉取期间切 provider / 重复点按钮时，过期响应直接丢弃（否则旧 provider 的
-  // 模型列表会塞进新 provider 的下拉，保存后聊天必错模型名）
   const providerRef = useRef(provider);
   providerRef.current = provider;
   const fetchSeqRef = useRef(0);
 
-  function onProviderChange(id) {
-    setProvider(id);
-    setApiKey(store.getApiKey(id));
-    const p = providers.find((x) => x.id === id);
-    setModel(store.getModel(id) || p?.defaultModel || "");
+  function refreshProfiles(preferId) {
+    if (!store.listModelProfiles) return;
+    const next = store.listModelProfiles();
+    setProfiles(next);
+    if (preferId) setProfileId(preferId);
+  }
+
+  function loadProfile(p, message = "") {
+    if (!p) return;
+    setProfileId(p.id);
+    setProfileName(p.name || "模型配置");
+    setProvider(p.provider || "deepseek");
+    setApiKey(p.apiKey || "");
+    setModel(p.model || "");
+    setCustomUrl(p.baseUrl || "");
+    setCustomProtocol(p.protocol || "openai");
+    setCustomReasoningEffort(p.reasoningEffort || "auto");
     setFetchedModels([]);
     setFetchMsg("");
     setManual(false);
-    setSaved(false);
+    setError("");
+    setStatus(message);
+  }
+
+  function chooseProfile(id) {
+    try {
+      const p = store.setActiveModelProfileId
+        ? store.setActiveModelProfileId(id)
+        : profiles.find(x => x.id === id);
+      loadProfile(p, "已切换，下一轮对话使用此配置");
+    } catch (e) {
+      setError((e && e.message) || String(e));
+    }
+  }
+
+  function createProfile() {
+    if (!store.createModelProfile) return;
+    try {
+      const p = store.createModelProfile({
+        name: `${current?.label || "模型"} 新配置`,
+        provider,
+        apiKey: "",
+        model: model || current?.defaultModel || "",
+        baseUrl: isCustom ? customUrl : "",
+        protocol: isCustom ? customProtocol : "openai",
+        reasoningEffort: isCustom ? customReasoningEffort : "auto",
+      });
+      refreshProfiles(p.id);
+      loadProfile(p, "已新建配置，请填写账号信息后保存");
+    } catch (e) {
+      setError((e && e.message) || String(e));
+    }
+  }
+
+  function duplicateProfile() {
+    if (!store.duplicateModelProfile) return;
+    try {
+      const p = store.duplicateModelProfile(profileId);
+      refreshProfiles(p.id);
+      loadProfile(p, "已复制配置，可修改名称或账号后保存");
+    } catch (e) {
+      setError((e && e.message) || String(e));
+    }
+  }
+
+  function deleteProfile() {
+    if (!store.deleteModelProfile || profiles.length <= 1) return;
+    try {
+      if (typeof window !== "undefined" && !window.confirm(`删除模型配置“${profileName}”？`)) return;
+      store.deleteModelProfile(profileId);
+      const next = store.listModelProfiles();
+      const activeId = store.getActiveModelProfileId();
+      setProfiles(next);
+      loadProfile(next.find(p => p.id === activeId) || next[0], "配置已删除");
+    } catch (e) {
+      setError((e && e.message) || String(e));
+    }
+  }
+
+  function onProviderChange(id) {
+    const p = providers.find(x => x.id === id);
+    setProvider(id);
+    setApiKey("");
+    setModel(p?.defaultModel || "");
+    setFetchedModels([]);
+    setFetchMsg("");
+    setManual(false);
+    setStatus("");
   }
 
   function save() {
-    store.setActiveProvider(provider);
-    store.setApiKey(provider, apiKey);
-    store.setModel(provider, model);
-    if (isCustom) {
-      store.setCustomBaseUrl && store.setCustomBaseUrl(customUrl);
-      store.setCustomProtocol && store.setCustomProtocol(customProtocol);
-      store.setCustomReasoningEffort && store.setCustomReasoningEffort(customReasoningEffort);
+    try {
+      let p;
+      const values = {
+        name: profileName,
+        provider,
+        apiKey,
+        model,
+        baseUrl: isCustom ? customUrl : "",
+        protocol: isCustom ? customProtocol : "openai",
+        reasoningEffort: isCustom ? customReasoningEffort : "auto",
+      };
+      if (store.updateModelProfile) {
+        p = store.updateModelProfile(profileId, values);
+        store.setActiveModelProfileId(p.id);
+        refreshProfiles(p.id);
+      } else {
+        store.setActiveProvider(provider);
+        store.setApiKey(provider, apiKey);
+        store.setModel(provider, model);
+        if (isCustom) {
+          store.setCustomBaseUrl?.(customUrl);
+          store.setCustomProtocol?.(customProtocol);
+          store.setCustomReasoningEffort?.(customReasoningEffort);
+        }
+        p = { ...values, id: profileId };
+      }
+      store.setConfirmTools?.(confirmTools);
+      loadProfile(p, "已保存并设为当前配置");
+    } catch (e) {
+      setError((e && e.message) || String(e));
     }
-    if (store.setConfirmTools) {
-      store.setConfirmTools(confirmTools);
-    }
-    setSaved(true);
   }
 
   async function doFetchModels() {
-    if (!fetchModels) {
-      return;
-    }
+    if (!fetchModels) return;
     const seq = ++fetchSeqRef.current;
     const forProvider = provider;
     const stale = () => seq !== fetchSeqRef.current || providerRef.current !== forProvider;
     setFetchMsg("获取中…");
     try {
-      // 自定义用用户填的 Base URL；内置 provider 用其官方 baseUrl（模型列表动态拉取，内置列表仅兜底）
       const list = await fetchModels(isCustom ? customUrl : current.baseUrl, apiKey);
-      if (stale()) {
-        return;
-      }
+      if (stale()) return;
       setFetchedModels(list);
       setManual(false);
       if (isCustom && customProtocol === "anthropic") {
-        const cl = list.filter((x) => /claude/i.test(x));
-        setFetchMsg(
-          cl.length
-            ? `动态获取到 ${cl.length} 个 Claude 模型`
-            : `该端点 /v1/models 未列出 Claude（仅返回 ${list.length} 个其它模型），已用内置 Claude 列表；其它版本可「手动输入」`
-        );
+        const claude = list.filter(x => /claude/i.test(x));
+        setFetchMsg(claude.length ? `获取到 ${claude.length} 个 Claude 模型` : "端点未列出 Claude，已使用内置列表");
       } else {
         setFetchMsg(`获取到 ${list.length} 个模型`);
-        if (!model && list.length) {
-          setModel(list[0]);
-        }
+        if (!model && list.length) setModel(list[0]);
       }
     } catch (e) {
-      if (stale()) {
-        return;
-      }
-      setFetchMsg("失败：" + ((e && e.message) || e));
+      if (!stale()) setFetchMsg("失败：" + ((e && e.message) || e));
     }
-    setSaved(false);
   }
 
-  // 自定义端点模型来源：
-  // - OpenAI 协议：用「获取模型列表」拉取结果。
-  // - Anthropic 协议：若端点 /v1/models 真列出了 Claude 模型 → 用拉取到的(动态)；否则回退内置 Claude 列表。
-  const fetchedClaude = fetchedModels.filter((x) => /claude/i.test(x));
-  const customModels =
-    customProtocol === "anthropic"
-      ? fetchedClaude.length
-        ? fetchedClaude
-        : current.anthropicModels || []
-      : fetchedModels;
-  // 内置 provider：拉取成功用动态列表，否则回退内置硬编码列表
-  const modelOptions = isCustom ? customModels : fetchedModels.length ? fetchedModels : current.models;
+  const fetchedClaude = fetchedModels.filter(x => /claude/i.test(x));
+  const customModels = customProtocol === "anthropic"
+    ? (fetchedClaude.length ? fetchedClaude : current.anthropicModels || [])
+    : fetchedModels;
+  const modelOptions = isCustom ? customModels : (fetchedModels.length ? fetchedModels : current.models);
 
   return (
     <div className="settings-pane">
       <header className="settings-pane__bar">
         <span>设置</span>
-        {onClose && (
-          <button type="button" onClick={onClose} title="关闭">
-            ×
-          </button>
-        )}
+        {onClose && <button type="button" onClick={onClose} title="关闭">×</button>}
       </header>
+
+      <section className="settings-pane__section">
+        <div className="settings-pane__section-title">模型配置</div>
+        <div className="settings-pane__profilebar">
+          <select value={profileId} onChange={e => chooseProfile(e.target.value)} title="选择已保存的模型账号配置">
+            {profiles.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          <button type="button" onClick={createProfile}>新建</button>
+          {store.duplicateModelProfile && <button type="button" onClick={duplicateProfile}>复制</button>}
+          <button type="button" onClick={deleteProfile} disabled={profiles.length <= 1}>删除</button>
+        </div>
+        <span className="settings-pane__hint">选择后立即用于下一轮对话；修改表单后请“保存并使用”。</span>
+      </section>
+
+      <label className="settings-pane__field">
+        配置名称
+        <input type="text" value={profileName} maxLength={60} onChange={e => { setProfileName(e.target.value); setStatus(""); }} />
+      </label>
 
       <label className="settings-pane__field">
         模型提供方
-        <select value={provider} onChange={(e) => onProviderChange(e.target.value)}>
-          {providers.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
+        <select value={provider} onChange={e => onProviderChange(e.target.value)}>
+          {providers.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
         </select>
       </label>
 
@@ -138,58 +238,28 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         <>
           <label className="settings-pane__field">
             协议
-            <select
-              value={customProtocol}
-              onChange={(e) => {
-                setCustomProtocol(e.target.value);
-                setManual(false);
-                setFetchMsg("");
-                setSaved(false);
-              }}
-            >
+            <select value={customProtocol} onChange={e => { setCustomProtocol(e.target.value); setFetchedModels([]); setManual(false); setStatus(""); }}>
               <option value="openai">OpenAI 兼容（/v1/chat/completions）</option>
               <option value="anthropic">Anthropic 兼容（/v1/messages）</option>
             </select>
           </label>
           <label className="settings-pane__field">
             Base URL
-            <input
-              type="text"
-              value={customUrl}
-              placeholder="http://host:port  或  https://api.example.com"
-              onChange={(e) => {
-                setCustomUrl(e.target.value);
-                setSaved(false);
-              }}
-            />
+            <input type="text" value={customUrl} placeholder="https://api.example.com" onChange={e => { setCustomUrl(e.target.value); setStatus(""); }} />
           </label>
         </>
       )}
 
       <label className="settings-pane__field">
         {isCustom ? "API Key / Token" : "API Key"}
-        <input
-          type="password"
-          value={apiKey}
-          placeholder="sk-..."
-          onChange={(e) => {
-            setApiKey(e.target.value);
-            setSaved(false);
-          }}
-        />
+        <input type="password" value={apiKey} placeholder="sk-..." onChange={e => { setApiKey(e.target.value); setStatus(""); }} />
       </label>
 
       {isCustom && customProtocol === "openai" && (
         <label className="settings-pane__field">
           思考等级
-          <select
-            value={customReasoningEffort}
-            onChange={(e) => {
-              setCustomReasoningEffort(e.target.value);
-              setSaved(false);
-            }}
-          >
-            <option value="auto">自动（使用模型或网关默认值）</option>
+          <select value={customReasoningEffort} onChange={e => { setCustomReasoningEffort(e.target.value); setStatus(""); }}>
+            <option value="auto">自动（模型或网关默认）</option>
             <option value="none">关闭（none）</option>
             <option value="minimal">极低（minimal）</option>
             <option value="low">低（low）</option>
@@ -198,151 +268,43 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
             <option value="xhigh">极高（xhigh）</option>
             <option value="max">最大（max）</option>
           </select>
-          <span className="settings-pane__hint">
-            仅对支持 reasoning_effort 的模型生效；不同模型支持的等级可能不同，接口报参数错误时请改回“自动”。
-          </span>
         </label>
-      )}
-
-      {isCustom && customProtocol === "anthropic" && (
-        <span className="settings-pane__hint">
-          Anthropic 的扩展思考使用不同配置结构，本版本由模型或网关默认控制。
-        </span>
       )}
 
       <label className="settings-pane__field">
         模型
-        {isCustom ? (
-          <>
-            <div className="settings-pane__modelrow">
-              {customModels.length > 0 && !manual ? (
-                <select
-                  className="settings-pane__grow"
-                  value={model}
-                  onChange={(e) => {
-                    if (e.target.value === "__manual__") {
-                      setManual(true);
-                      setModel("");
-                    } else {
-                      setModel(e.target.value);
-                    }
-                    setSaved(false);
-                  }}
-                >
-                  {model && !customModels.includes(model) && (
-                    <option value={model}>{model}（当前）</option>
-                  )}
-                  {customModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                  <option value="__manual__">✏️ 手动输入其它模型…</option>
-                </select>
-              ) : (
-                <input
-                  className="settings-pane__grow"
-                  type="text"
-                  value={model}
-                  placeholder={customProtocol === "anthropic" ? "如 claude-opus-4-7" : "点「获取模型列表」选择，或手填"}
-                  onChange={(e) => {
-                    setModel(e.target.value);
-                    setSaved(false);
-                  }}
-                />
-              )}
-              <button
-                type="button"
-                className="settings-pane__btn-ghost"
-                onClick={doFetchModels}
-                title="从 Base URL 拉取模型列表（自动探测 /models 与 /v1/models）"
-              >
-                获取模型列表
-              </button>
-            </div>
-            {fetchMsg && (
-              <span className="settings-pane__hint" style={{ whiteSpace: "pre-wrap" }}>
-                {fetchMsg}
-              </span>
-            )}
-            {customProtocol === "anthropic" && (
-              <span className="settings-pane__hint">Anthropic 端点已内置 Claude 模型可直接选；其它版本选「手动输入」。</span>
-            )}
-          </>
-        ) : (
-          <>
-            <div className="settings-pane__modelrow">
-              {modelOptions.length > 0 ? (
-                <select
-                  className="settings-pane__grow"
-                  value={model}
-                  onChange={(e) => {
-                    setModel(e.target.value);
-                    setSaved(false);
-                  }}
-                >
-                  {model && !modelOptions.includes(model) && (
-                    <option value={model}>{model}（当前）</option>
-                  )}
-                  {modelOptions.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  className="settings-pane__grow"
-                  type="text"
-                  value={model}
-                  placeholder="模型名"
-                  onChange={(e) => {
-                    setModel(e.target.value);
-                    setSaved(false);
-                  }}
-                />
-              )}
-              <button
-                type="button"
-                className="settings-pane__btn-ghost"
-                onClick={doFetchModels}
-                title="从该提供方端点动态拉取模型列表（内置列表仅作兜底）"
-              >
-                获取模型列表
-              </button>
-            </div>
-            {fetchMsg && (
-              <span className="settings-pane__hint" style={{ whiteSpace: "pre-wrap" }}>
-                {fetchMsg}
-              </span>
-            )}
-          </>
-        )}
+        <div className="settings-pane__modelrow">
+          {modelOptions.length > 0 && !manual ? (
+            <select className="settings-pane__grow" value={model} onChange={e => {
+              if (e.target.value === "__manual__") { setManual(true); setModel(""); }
+              else setModel(e.target.value);
+              setStatus("");
+            }}>
+              {model && !modelOptions.includes(model) && <option value={model}>{model}（当前）</option>}
+              {modelOptions.map(m => <option key={m} value={m}>{m}</option>)}
+              {isCustom && <option value="__manual__">手动输入其它模型…</option>}
+            </select>
+          ) : (
+            <input className="settings-pane__grow" type="text" value={model} placeholder="模型名" onChange={e => { setModel(e.target.value); setStatus(""); }} />
+          )}
+          <button type="button" className="settings-pane__btn-ghost" onClick={doFetchModels}>获取模型</button>
+        </div>
+        {fetchMsg && <span className="settings-pane__hint">{fetchMsg}</span>}
       </label>
 
-      <label className="settings-pane__field" style={{ flexDirection: "row", alignItems: "center", gap: "8px" }}>
-        <input
-          type="checkbox"
-          checked={confirmTools}
-          onChange={(e) => {
-            setConfirmTools(e.target.checked);
-            setSaved(false);
-          }}
-        />
-        改动型工具（执行JS/导航/网络/存JS/jsvmp）执行前需确认
+      <label className="settings-pane__field settings-pane__field--check">
+        <input type="checkbox" checked={confirmTools} onChange={e => { setConfirmTools(e.target.checked); setStatus(""); }} />
+        改动型工具执行前需确认
       </label>
 
+      {error && <div className="settings-pane__error">{error}</div>}
       <div className="settings-pane__actions">
-        <button type="button" onClick={save}>
-          保存
-        </button>
-        {saved && <span className="settings-pane__saved">已保存 ✓</span>}
+        <button type="button" onClick={save}>保存并使用</button>
+        {status && <span className="settings-pane__saved">{status}</span>}
       </div>
 
       <p className="settings-pane__note">
-        Key 明文存于浏览器 prefs，仅本机。自定义端点：Base URL 填 API 服务根地址（如
-        https://api.example.com 或 https://dashscope.aliyuncs.com/compatible-mode/v1，
-        不是文档/控制台页面）；已带 /v1 等版本段时不会重复叠加。
+        每条配置独立保存渠道、账号、模型和思考等级。Key 与旧版本一致，仅明文保存在本机浏览器 prefs，不会随会话导出。
       </p>
     </div>
   );

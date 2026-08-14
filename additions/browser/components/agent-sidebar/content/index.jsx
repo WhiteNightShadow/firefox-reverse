@@ -54,6 +54,7 @@ function loadModules() {
     fetchModels,
     workspace: backends.workspace, // 工作目录后端（侧边栏据此 setRoot/列文件）
     notes: backends.notes, // 逆向进展笔记后端（每轮把当前站点笔记摘要注入系统提示）
+    skill: backends.skill, // 通用 SkillRegistry（内置 + 用户目录 + 工作区目录，正文按需读取）
     env: backends.env, // 环境管理后端（手动环境管理页 + MCP 共用同一套 env_* 能力）
     toolNames: router.names(),
   };
@@ -76,6 +77,7 @@ function App({ mods }) {
         isVisionModel={mods.isVisionModel}
         workspace={mods.workspace}
         notes={mods.notes}
+        skill={mods.skill}
         toolNames={mods.toolNames}
         onOpenEnvironment={() => setView("environment")}
         onOpenSettings={() => setView("settings")}

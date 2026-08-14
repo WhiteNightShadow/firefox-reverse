@@ -239,7 +239,10 @@ export function listProviders() {
  * @returns {LlmClient}
  */
 export function buildClientFromStore(store, overrides = {}) {
-  const id = overrides.provider || store.getActiveProvider();
+  // vNext：优先使用当前命名模型配置；旧 ConfigStore getter 仍作为兼容兜底。
+  const profile =
+    !overrides.provider && store.getActiveModelProfile ? store.getActiveModelProfile() : null;
+  const id = overrides.provider || (profile && profile.provider) || store.getActiveProvider();
   const p = BUILTIN_PROVIDERS[id];
   if (!p) {
     throw new Error(`unknown provider: ${id}`);
@@ -249,11 +252,20 @@ export function buildClientFromStore(store, overrides = {}) {
   let chatPath = p.chatPath;
   let reasoningEffort = "auto";
   if (id === "custom") {
-    protocol = (store.getCustomProtocol && store.getCustomProtocol()) || "openai";
-    baseUrl = normalizeBaseUrl(overrides.baseUrl || (store.getCustomBaseUrl && store.getCustomBaseUrl()) || "");
+    protocol =
+      (profile && profile.protocol) ||
+      (store.getCustomProtocol && store.getCustomProtocol()) ||
+      "openai";
+    baseUrl = normalizeBaseUrl(
+      overrides.baseUrl ||
+        (profile && profile.baseUrl) ||
+        (store.getCustomBaseUrl && store.getCustomBaseUrl()) ||
+        ""
+    );
     chatPath = resolveChatPath(protocol, baseUrl);
     reasoningEffort = normalizeReasoningEffort(
       overrides.reasoningEffort ??
+        (profile && profile.reasoningEffort) ??
         (store.getCustomReasoningEffort && store.getCustomReasoningEffort()) ??
         "auto"
     );
@@ -265,8 +277,8 @@ export function buildClientFromStore(store, overrides = {}) {
     protocol,
     baseUrl,
     chatPath,
-    apiKey: overrides.apiKey || store.getApiKey(id),
-    model: overrides.model || store.getModel(id) || p.defaultModel,
+    apiKey: overrides.apiKey || (profile && profile.apiKey) || store.getApiKey(id),
+    model: overrides.model || (profile && profile.model) || store.getModel(id) || p.defaultModel,
     request: {
       // Anthropic extended thinking uses a different object shape and token
       // budget contract; do not translate an OpenAI-compatible level into it.
