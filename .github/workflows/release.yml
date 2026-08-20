@@ -1,6 +1,7 @@
 # Firefox-Reverse · 自动编译 + 发布到 Releases
 #
-# 触发：打 tag（v* 形如 v0.17.0）自动跑；也可手动 workflow_dispatch。
+# 触发：仅手动 workflow_dispatch。正式多端包先在 SSH 编译机验证，再决定是否运行本工作流；
+# 普通打 tag 不再自动创建一个与手工 Release 重复的草稿。
 #
 # 主路径 = 自托管 runner（标签 self-hosted）：复用编译机上已有的 Firefox 源码树，
 #   分别使用独立对象目录增量构建 macOS arm64 / x86_64 DMG，再上传 Release。
@@ -12,10 +13,12 @@
 name: Build & Release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "要创建/更新的 Release tag（例如 v0.23.2）"
+        type: string
+        required: true
       build_all:
         description: "同时尝试 GitHub 托管的 Windows/Linux 从零编译（实验性、很慢）"
         type: boolean
@@ -32,7 +35,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
       - id: meta
-        run: echo "tag=${GITHUB_REF_NAME:-manual-$(date +%Y%m%d%H%M)}" >> "$GITHUB_OUTPUT"
+        run: echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
