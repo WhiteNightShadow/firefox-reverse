@@ -3,11 +3,13 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const mozBuildPath = fileURLToPath(new URL("../moz.build", import.meta.url));
+const packagePath = fileURLToPath(new URL("../package.json", import.meta.url));
 const localePrefsPath = fileURLToPath(new URL("../preferences/frx-locale.js", import.meta.url));
 const localeMozBuildPath = fileURLToPath(new URL("../preferences/moz.build", import.meta.url));
 const fingerprintPatchPath = fileURLToPath(new URL("../../../../../scripts/apply-fingerprint-config.py", import.meta.url));
 const source = fs.readFileSync(mozBuildPath, "utf8");
 const localeMozBuild = fs.readFileSync(localeMozBuildPath, "utf8");
+const packageVersion = JSON.parse(fs.readFileSync(packagePath, "utf8")).version;
 const block = source.match(/EXTRA_JS_MODULES\.agentsidebar\s*\+=\s*\[([\s\S]*?)\n\]/);
 
 if (!block) {
@@ -50,6 +52,7 @@ if (!localeMozBuild.includes("FINAL_TARGET_FILES.defaults.pref")) {
 
 const localePrefs = fs.readFileSync(localePrefsPath, "utf8");
 for (const expected of [
+  `pref("extensions.firefox-reverse.version", "${packageVersion}")`,
   'pref("intl.locale.requested", "zh-CN")',
   'pref("intl.accept_languages", "zh-CN, zh, en-US, en")',
 ]) {
