@@ -171,6 +171,8 @@
 >   配套 MCP 仓库 → **[frx-director-mcp](https://github.com/WhiteNightShadow/frx-director-mcp)**（**开箱即用**：接好 MCP 后，把它 README 里的「🟢 一键贴给你的 AI」那**一整段复制给你的 director**，它会自己自检环境、缺啥用一句话引导你补齐、然后自动建目录 / 选 AI辅助 / 新建会话 / 下任务 / 读结论 / 回怼方向、循环到出结果——你只需在它问的时候给**目标站**）。
 >
 >   💡 **worker 模型选型（重要）**：MCP 这种长工具循环里，worker 务必用**标准 / 快速档**，推荐 **`deepseek-v4-flash`** —— 实测零漂移、约 2–3 分钟/阶段、配合最顺。**切勿用推理档**（如 `deepseek-v4-pro`）：推理档在长循环里易退化成「只吐纯文本计划、不再调用工具」而中断，是 worker 的首要失败模式。可在浏览器 Agent ⚙️ 设置里把 worker 设为该档，或让 director 在 `agent_start({ model: "deepseek-v4-flash" })` 里临时指定（同一个 Key、无需改配置）。
+>
+>   **Windows 工具接入自检**：若外部 AI 的函数列表里只有 `open_url`，这是宿主自己的工具，表示 `frx-director-mcp` 没有完成初始化；升级到 MCP `v0.3.5+`。正常顶层工具应包含 `frx_status`、`agent_tools`、`agent_call_tool`；`notes_add`、`net_get`、`page_click`、`run_node`、`fs_*` 等浏览器内核工具通过 `agent_tools` 查询并由 `agent_call_tool` 直调。
 
 ---
 
