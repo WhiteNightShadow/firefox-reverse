@@ -310,6 +310,7 @@ cd upstream && ./mach build && ./mach package
 ### v0.23.1（2026-08-20）
 - **Windows MCP 工具接入兼容**：配套 `frx-director-mcp v0.3.6` 将 stdio 注册提前到环境解析、端口分配和 Firefox 冷启动之前，修复外部 AI/CLI 超时后只剩宿主 `open_url` 的问题。
 - **66 工具目录一致性**：MCP 改为读取浏览器真实 backend 注册表，`agent_tools` 返回完整 66/66，并通过 `missingDeclared` 暴露打包或后端缺失；顶层 MCP 工具与浏览器内核工具的调用边界已在文档中明确。
+- **可核验发布标记**：安装包内置 `extensions.firefox-reverse.version=0.23.1`，五端统一使用新 BuildID；新增 `force-build-id-relink.sh`，避免增量构建只更新 ini、运行时 XUL 仍携带旧 BuildID。
 - **兼容性说明**：Firefox v0.23.0 浏览器包本身未丢工具，问题来自配套 MCP 的启动顺序与旧目录 stub；本版不改变指纹、profile、Agent 执行或 C++ 行为，仅同步版本、排障说明并重新验证多端安装包。
 
 ### v0.23.0（2026-08-14）

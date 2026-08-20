@@ -6,7 +6,7 @@
 
 | 日期 | 版本号 | 改版内容（一句话） |
 |------|--------|--------------------|
-| 2026-08-20 | v0.23.1 | **Windows MCP 工具注册兼容与多端复验**：确认 Firefox v0.23.0 Windows 包内 `Tools/ToolRouter/AgentSession/Backends` 完整，浏览器真实工具面为 66；根因是配套 `frx-director-mcp` 从初版起在 stdio 握手前等待浏览器，且旧 `agent_tools` 静态 backend stub 只能返回 38/66。配套 MCP v0.3.6 改为先注册 23 个顶层 MCP 工具，再异步解析 `FRX_ENV_ID`、分配端口和启动 Firefox；目录改读真实 backend 并增加 `missingDeclared`。本浏览器版本不改指纹、profile、Agent 或 C++ 行为，重新构建并复验 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64 产物。 |
+| 2026-08-20 | v0.23.1 | **Windows MCP 工具注册兼容与多端复验**：确认 Firefox v0.23.0 Windows 包内 `Tools/ToolRouter/AgentSession/Backends` 完整，浏览器真实工具面为 66；根因是配套 `frx-director-mcp` 从初版起在 stdio 握手前等待浏览器，且旧 `agent_tools` 静态 backend stub 只能返回 38/66。配套 MCP v0.3.6 改为先注册 23 个顶层 MCP 工具，再异步解析 `FRX_ENV_ID`、分配端口和启动 Firefox；目录改读真实 backend 并增加 `missingDeclared`。安装包新增 `extensions.firefox-reverse.version=0.23.1` 标记，五端统一新 BuildID，并新增 `force-build-id-relink.sh` 防止增量构建出现 ini 已更新但运行时 XUL 仍为旧 BuildID。本浏览器版本不改指纹、profile、Agent 或 C++ 行为，重新构建并复验 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64 产物。 |
 | 2026-08-14 | v0.23.0 | **可迁移会话、多账号模型配置、取消边界与通用 Skills**：单会话支持 `.frx-chat.json` 导入导出；同一模型渠道可保存多组命名账号/端点/模型配置；手动停止后持久记录 `cancelled`，下一条默认不恢复旧任务；新增 `skill_list`、按名 `skill_get`、`skill_read_resource`，工具总数更新为 66。发布 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64。 |
 | 2026-07-29 | v0.22.4 | **Firefox-only 指纹与简体中文默认值**：新环境只生成匹配 Gecko 内核的 Firefox 指纹，默认中国大陆、`zh-CN`、`Asia/Shanghai`；已有环境保持兼容。修复网页指纹 screen/DPR 覆盖污染 chrome 坐标导致右键菜单偏移，并补齐环境接口与品牌回归。 |
 | 2026-07-21 | v0.22.3（补充发布） | **新增 Linux ARM64 安装包**：增加 Linux x86_64 主机构建 AArch64 Firefox 的独立 mozconfig、构建脚本与产物校验脚本；发布原生 ARM64 ELF 压缩包并更新 SHA256 校验文件，供 ARM64 Linux / VPS 使用。本次不包含 Docker 镜像。 |
