@@ -6,6 +6,9 @@
 
 | 日期 | 版本号 | 改版内容（一句话） |
 |------|--------|--------------------|
+| 2026-08-20 | v0.23.1 | **Windows MCP 工具注册兼容与多端复验**：确认 Firefox v0.23.0 Windows 包内 `Tools/ToolRouter/AgentSession/Backends` 完整，浏览器真实工具面为 66；根因是配套 `frx-director-mcp` 从初版起在 stdio 握手前等待浏览器，且旧 `agent_tools` 静态 backend stub 只能返回 38/66。配套 MCP v0.3.6 改为先注册 23 个顶层 MCP 工具，再异步解析 `FRX_ENV_ID`、分配端口和启动 Firefox；目录改读真实 backend 并增加 `missingDeclared`。本浏览器版本不改指纹、profile、Agent 或 C++ 行为，重新构建并复验 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64 产物。 |
+| 2026-08-14 | v0.23.0 | **可迁移会话、多账号模型配置、取消边界与通用 Skills**：单会话支持 `.frx-chat.json` 导入导出；同一模型渠道可保存多组命名账号/端点/模型配置；手动停止后持久记录 `cancelled`，下一条默认不恢复旧任务；新增 `skill_list`、按名 `skill_get`、`skill_read_resource`，工具总数更新为 66。发布 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64。 |
+| 2026-07-29 | v0.22.4 | **Firefox-only 指纹与简体中文默认值**：新环境只生成匹配 Gecko 内核的 Firefox 指纹，默认中国大陆、`zh-CN`、`Asia/Shanghai`；已有环境保持兼容。修复网页指纹 screen/DPR 覆盖污染 chrome 坐标导致右键菜单偏移，并补齐环境接口与品牌回归。 |
 | 2026-07-21 | v0.22.3（补充发布） | **新增 Linux ARM64 安装包**：增加 Linux x86_64 主机构建 AArch64 Firefox 的独立 mozconfig、构建脚本与产物校验脚本；发布原生 ARM64 ELF 压缩包并更新 SHA256 校验文件，供 ARM64 Linux / VPS 使用。本次不包含 Docker 镜像。 |
 | 2026-07-15 | v0.22.3 | **自定义模型思考等级 + 品牌与 README 指引完善**：自定义 OpenAI 兼容端点新增 `reasoning_effort` 等级选择，默认 `auto` 不发送字段，显式等级时避开不兼容的 `temperature`，Anthropic 协议保持隔离；补齐配置持久化、参数归一化、provider/Anthropic/moz.build 回归测试。完善 Firefox-Reverse 新标签页、隐私窗口和 Windows 快捷方式品牌资源，并用当前构建重新截取 Agent 与指纹环境管理界面，增加入口和主要操作编号标记；发布 macOS ARM64、macOS Intel、Windows x86_64、Linux x86_64 四端产物与 SHA256。 |
 | 2026-07-13 | v0.22.2 | **Intel Mac 发布 + 指纹环境启动就绪修复**：新增 `x86_64-apple-darwin` 独立 mozconfig、Intel Mac（macOS 10.15+）DMG 和 arm64/x86_64 双架构发布流程；DMG 校验增加 Mach-O 架构断言，并新增 macOS ad-hoc 重签重打包脚本。环境打开流程改为在真实 Marionette TCP 握手成功后才写入 `running/ready`，端口通过 `MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS` 的 `marionette.port` 注入，移除无效的 `--marionette-port` 参数；持续消费子进程输出避免 pipe 回压，UI 启动后不再立刻触发 Windows 全量 `tasklist` 刷新。新增延迟就绪、进程提前退出、端口注入和输出消费回归测试。 |

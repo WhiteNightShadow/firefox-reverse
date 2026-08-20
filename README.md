@@ -172,7 +172,7 @@
 >
 >   💡 **worker 模型选型（重要）**：MCP 这种长工具循环里，worker 务必用**标准 / 快速档**，推荐 **`deepseek-v4-flash`** —— 实测零漂移、约 2–3 分钟/阶段、配合最顺。**切勿用推理档**（如 `deepseek-v4-pro`）：推理档在长循环里易退化成「只吐纯文本计划、不再调用工具」而中断，是 worker 的首要失败模式。可在浏览器 Agent ⚙️ 设置里把 worker 设为该档，或让 director 在 `agent_start({ model: "deepseek-v4-flash" })` 里临时指定（同一个 Key、无需改配置）。
 >
->   **Windows 工具接入自检**：若外部 AI 的函数列表里只有 `open_url`，这是宿主自己的工具，表示 `frx-director-mcp` 没有完成初始化；升级到 MCP `v0.3.5+`。正常顶层工具应包含 `frx_status`、`agent_tools`、`agent_call_tool`；`notes_add`、`net_get`、`page_click`、`run_node`、`fs_*` 等浏览器内核工具通过 `agent_tools` 查询并由 `agent_call_tool` 直调。
+>   **Windows 工具接入自检**：若外部 AI 的函数列表里只有 `open_url`，这是宿主自己的工具，表示 `frx-director-mcp` 没有完成初始化；升级到 MCP `v0.3.6+`。正常顶层工具应包含 `frx_status`、`agent_tools`、`agent_call_tool`；`notes_add`、`net_get`、`page_click`、`run_node`、`fs_*` 等浏览器内核工具通过 `agent_tools` 查询并由 `agent_call_tool` 直调。
 
 ---
 
@@ -306,6 +306,11 @@ cd upstream && ./mach build && ./mach package
 ---
 
 ## 📝 版本更新记录
+
+### v0.23.1（2026-08-20）
+- **Windows MCP 工具接入兼容**：配套 `frx-director-mcp v0.3.6` 将 stdio 注册提前到环境解析、端口分配和 Firefox 冷启动之前，修复外部 AI/CLI 超时后只剩宿主 `open_url` 的问题。
+- **66 工具目录一致性**：MCP 改为读取浏览器真实 backend 注册表，`agent_tools` 返回完整 66/66，并通过 `missingDeclared` 暴露打包或后端缺失；顶层 MCP 工具与浏览器内核工具的调用边界已在文档中明确。
+- **兼容性说明**：Firefox v0.23.0 浏览器包本身未丢工具，问题来自配套 MCP 的启动顺序与旧目录 stub；本版不改变指纹、profile、Agent 执行或 C++ 行为，仅同步版本、排障说明并重新验证多端安装包。
 
 ### v0.23.0（2026-08-14）
 - **会话迁移**：历史抽屉支持单会话 `.frx-chat.json` 导入/导出；导入会生成新的静止会话，不携带模型配置中的 API Key、工作目录、环境绑定和运行状态，也不会自动重放历史任务（对话正文及其中用户自行粘贴的内容会保留）。
