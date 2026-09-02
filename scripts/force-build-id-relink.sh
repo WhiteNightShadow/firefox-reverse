@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Force Gecko's generated toolkit build-id source/object and runtime library to
-# relink. Deleting only <objdir>/buildid.h can leave gToolkitBuildID stale in XUL.
+# Force Gecko's generated build metadata and runtime library to relink.
+# Deleting only <objdir>/buildid.h can leave gToolkitBuildID stale in XUL, while
+# keeping source-repo.h can leave SourceStamp pinned to an older release.
 
 set -euo pipefail
 
@@ -17,6 +18,9 @@ fi
 
 rm -f \
   "$objdir/buildid.h" \
+  "$objdir/source-repo.h" \
+  "$objdir/.deps/source-repo.h.stub" \
+  "$objdir/.deps/source-repo.h.pp" \
   "$objdir/toolkit/library/buildid.cpp" \
   "$objdir/toolkit/library/buildid.o" \
   "$objdir/toolkit/library/.deps/buildid.cpp.stub" \
@@ -29,5 +33,5 @@ for dir in "$objdir/toolkit/library/build" "$objdir/dist/bin"; do
     \( -name XUL -o -name libxul.so -o -name xul.dll \) -delete
 done
 
-echo "[force-build-id] cleared generated build-id and runtime library inputs: $objdir"
-echo "[force-build-id] rebuild with one explicit MOZ_BUILD_DATE, then verify both application.ini and runtime parentBuildID."
+echo "[force-build-id] cleared generated build metadata and runtime library inputs: $objdir"
+echo "[force-build-id] rebuild with explicit MOZ_BUILD_DATE/MOZ_SOURCE_CHANGESET, then verify application.ini and runtime parentBuildID."

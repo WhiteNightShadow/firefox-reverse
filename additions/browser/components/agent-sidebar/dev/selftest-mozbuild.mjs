@@ -10,6 +10,7 @@ const fingerprintPatchPath = fileURLToPath(new URL("../../../../../scripts/apply
 const agentUiPatchPath = fileURLToPath(new URL("../../../../../patches/agent-ui/0001-register-agent-sidebar.patch", import.meta.url));
 const releaseWorkflowPath = fileURLToPath(new URL("../../../../../.github/workflows/release.yml", import.meta.url));
 const bootstrapPath = fileURLToPath(new URL("../../../../../scripts/bootstrap.sh", import.meta.url));
+const buildRelinkPath = fileURLToPath(new URL("../../../../../scripts/force-build-id-relink.sh", import.meta.url));
 const source = fs.readFileSync(mozBuildPath, "utf8");
 const localeMozBuild = fs.readFileSync(localeMozBuildPath, "utf8");
 const packageVersion = JSON.parse(fs.readFileSync(packagePath, "utf8")).version;
@@ -116,6 +117,19 @@ for (const expected of [
 ]) {
   if (!bootstrap.includes(expected)) {
     console.error(`FAIL: bootstrap does not pin/fetch the Firefox baseline: ${expected}`);
+    process.exit(1);
+  }
+}
+
+const buildRelink = fs.readFileSync(buildRelinkPath, "utf8");
+for (const expected of [
+  '"$objdir/buildid.h"',
+  '"$objdir/source-repo.h"',
+  '"$objdir/.deps/source-repo.h.stub"',
+  '"$objdir/.deps/source-repo.h.pp"',
+]) {
+  if (!buildRelink.includes(expected)) {
+    console.error(`FAIL: build metadata relink misses generated input: ${expected}`);
     process.exit(1);
   }
 }

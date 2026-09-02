@@ -313,6 +313,7 @@ cd upstream && ./mach build && ./mach package
 
 ### v0.24.0-beta.2（2026-09-02）
 - **多端构建一致性修复**：补回干净 Firefox 基线中 Agent 侧栏的 `makeSidebar` 注册块，并增加构建门禁，避免长期增量源码树可见、全新源码树却缺少侧栏入口的差异。
+- **发布溯源一致性**：强制刷新各对象目录的 `buildid.h` 与 `source-repo.h`，避免增量构建出现新 BuildID 搭配旧 SourceStamp；五端产物必须同时匹配本次提交和统一 BuildID。
 - **兼容性**：不改变扩展工具、ContextProjection、历史会话、模型配置、指纹环境或 C++ 行为；beta.1 的功能与文件协议保持兼容。
 - **多端复验**：使用同一锁定基线重新构建并验证 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64 产物。
 
