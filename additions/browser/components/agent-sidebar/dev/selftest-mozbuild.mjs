@@ -96,7 +96,11 @@ const releaseWorkflow = fs.readFileSync(releaseWorkflowPath, "utf8");
 for (const expected of [
   "FIREFOX_REV: cebc55aab4d2661d1f6c2d1526362947ec4016c1",
   'GECKO_REMOTE: "https://github.com/mozilla-firefox/firefox.git"',
+  'MOZ_SOURCE_CHANGESET: ${{ github.sha }}',
   'git -C upstream fetch --depth 1 origin "$FIREFOX_REV"',
+  "./mach configure",
+  'scripts/force-build-id-relink.sh" "$UPSTREAM/${{ matrix.objdir }}"',
+  'grep -F "SourceStamp=$MOZ_SOURCE_CHANGESET"',
   "python firefox-reverse/scripts/apply-fingerprint-config.py upstream",
 ]) {
   if (!releaseWorkflow.includes(expected)) {
@@ -127,6 +131,8 @@ for (const expected of [
   '"$objdir/source-repo.h"',
   '"$objdir/.deps/source-repo.h.stub"',
   '"$objdir/.deps/source-repo.h.pp"',
+  'grep -aFq "$MOZ_SOURCE_CHANGESET" "$objdir/config.status"',
+  "run ./mach configure with the release metadata",
 ]) {
   if (!buildRelink.includes(expected)) {
     console.error(`FAIL: build metadata relink misses generated input: ${expected}`);

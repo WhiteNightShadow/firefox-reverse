@@ -31,6 +31,8 @@ env:
   # Firefox Reverse is intentionally pinned. Building arbitrary mozilla/main
   # revisions can silently change Marionette and internal Gecko contracts.
   FIREFOX_REV: cebc55aab4d2661d1f6c2d1526362947ec4016c1
+  MOZ_SOURCE_REPO: https://github.com/${{ github.repository }}
+  MOZ_SOURCE_CHANGESET: ${{ github.sha }}
 
 jobs:
   # ── 1. 建 Release（草稿）──
@@ -110,8 +112,11 @@ jobs:
             export MOZCONFIG="${{ matrix.mozconfig }}"
           fi
           export MOZ_BUILD_DATE="$(date -u +%Y%m%d%H%M%S)"
-          rm -f "${{ matrix.objdir }}/buildid.h"
+          ./mach configure
+          "$GITHUB_WORKSPACE/scripts/force-build-id-relink.sh" "$UPSTREAM/${{ matrix.objdir }}"
           ./mach build
+          grep -F "BuildID=$MOZ_BUILD_DATE" "${{ matrix.objdir }}/dist/bin/application.ini"
+          grep -F "SourceStamp=$MOZ_SOURCE_CHANGESET" "${{ matrix.objdir }}/dist/bin/application.ini"
           "$GITHUB_WORKSPACE/scripts/macos-adhoc-sign-apps.sh" "$UPSTREAM"
           ./mach package
 

@@ -16,6 +16,13 @@ if [[ ! -f "$objdir/config.status" || ! -d "$objdir/toolkit/library" ]]; then
   exit 1
 fi
 
+if [[ -n "${MOZ_SOURCE_CHANGESET:-}" ]] &&
+   ! grep -aFq "$MOZ_SOURCE_CHANGESET" "$objdir/config.status"; then
+  echo "[force-build-id] object configuration does not contain MOZ_SOURCE_CHANGESET=$MOZ_SOURCE_CHANGESET" >&2
+  echo "[force-build-id] run ./mach configure with the release metadata before this script" >&2
+  exit 1
+fi
+
 rm -f \
   "$objdir/buildid.h" \
   "$objdir/source-repo.h" \
@@ -34,4 +41,4 @@ for dir in "$objdir/toolkit/library/build" "$objdir/dist/bin"; do
 done
 
 echo "[force-build-id] cleared generated build metadata and runtime library inputs: $objdir"
-echo "[force-build-id] rebuild with explicit MOZ_BUILD_DATE/MOZ_SOURCE_CHANGESET, then verify application.ini and runtime parentBuildID."
+echo "[force-build-id] rebuild, then verify application.ini and runtime parentBuildID."
