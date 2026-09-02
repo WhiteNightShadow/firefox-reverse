@@ -7,6 +7,9 @@ const packagePath = fileURLToPath(new URL("../package.json", import.meta.url));
 const localePrefsPath = fileURLToPath(new URL("../preferences/frx-locale.js", import.meta.url));
 const localeMozBuildPath = fileURLToPath(new URL("../preferences/moz.build", import.meta.url));
 const fingerprintPatchPath = fileURLToPath(new URL("../../../../../scripts/apply-fingerprint-config.py", import.meta.url));
+const agentUiPatchPath = fileURLToPath(new URL("../../../../../patches/agent-ui/0001-register-agent-sidebar.patch", import.meta.url));
+const releaseWorkflowPath = fileURLToPath(new URL("../../../../../.github/workflows/release.yml", import.meta.url));
+const bootstrapPath = fileURLToPath(new URL("../../../../../scripts/bootstrap.sh", import.meta.url));
 const source = fs.readFileSync(mozBuildPath, "utf8");
 const localeMozBuild = fs.readFileSync(localeMozBuildPath, "utf8");
 const packageVersion = JSON.parse(fs.readFileSync(packagePath, "utf8")).version;
@@ -74,4 +77,45 @@ for (const expected of [
   }
 }
 
-console.log(`moz.build module order, zh-CN defaults, and chrome UI fingerprint isolation: OK (${entries.length} files)`);
+const agentUiPatch = fs.readFileSync(agentUiPatchPath, "utf8");
+for (const expected of [
+  'diff --git a/browser/components/moz.build b/browser/components/moz.build',
+  '+    "agent-sidebar",',
+  '+sidebar-menu-agent-label =',
+]) {
+  if (!agentUiPatch.includes(expected)) {
+    console.error(`FAIL: baseline Agent sidebar registration patch is incomplete: ${expected}`);
+    process.exit(1);
+  }
+}
+
+const releaseWorkflow = fs.readFileSync(releaseWorkflowPath, "utf8");
+for (const expected of [
+  "FIREFOX_REV: cebc55aab4d2661d1f6c2d1526362947ec4016c1",
+  'GECKO_REMOTE: "https://github.com/mozilla-firefox/firefox.git"',
+  'git -C upstream fetch --depth 1 origin "$FIREFOX_REV"',
+  "python firefox-reverse/scripts/apply-fingerprint-config.py upstream",
+]) {
+  if (!releaseWorkflow.includes(expected)) {
+    console.error(`FAIL: release workflow is not pinned/reproducible: ${expected}`);
+    process.exit(1);
+  }
+}
+if (releaseWorkflow.includes("apply-patches.sh ) || true")) {
+  console.error("FAIL: release workflow silently ignores patch failures");
+  process.exit(1);
+}
+
+const bootstrap = fs.readFileSync(bootstrapPath, "utf8");
+for (const expected of [
+  "UPSTREAM_REF:-cebc55aab4d2661d1f6c2d1526362947ec4016c1",
+  'git -C "$UPSTREAM_DIR" fetch --depth 1 origin "$UPSTREAM_REF"',
+  'git -C "$UPSTREAM_DIR" checkout --detach FETCH_HEAD',
+]) {
+  if (!bootstrap.includes(expected)) {
+    console.error(`FAIL: bootstrap does not pin/fetch the Firefox baseline: ${expected}`);
+    process.exit(1);
+  }
+}
+
+console.log(`moz.build order, parent registration, pinned release baseline, locale defaults, and fingerprint isolation: OK (${entries.length} files)`);

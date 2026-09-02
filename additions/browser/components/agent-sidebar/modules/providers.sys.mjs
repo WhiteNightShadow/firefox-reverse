@@ -275,10 +275,19 @@ export function buildClientFromStore(store, overrides = {}) {
   }
   return new LlmClient({
     protocol,
+    providerId: id,
     baseUrl,
     chatPath,
     apiKey: overrides.apiKey || (profile && profile.apiKey) || store.getApiKey(id),
     model: overrides.model || (profile && profile.model) || store.getModel(id) || p.defaultModel,
+    promptCacheMode:
+      overrides.promptCacheMode ||
+      (store.getPromptCacheMode && store.getPromptCacheMode()) ||
+      "auto",
+    promptCacheTtl:
+      overrides.promptCacheTtl ||
+      (store.getPromptCacheTtl && store.getPromptCacheTtl()) ||
+      "default",
     request: {
       // Anthropic extended thinking uses a different object shape and token
       // budget contract; do not translate an OpenAI-compatible level into it.

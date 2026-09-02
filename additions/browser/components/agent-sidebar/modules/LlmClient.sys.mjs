@@ -22,6 +22,12 @@ export const PROTOCOLS = Object.freeze({
   GEMINI: "gemini",
 });
 
+// Compatibility decisions live for the parent-process lifetime so an
+// OpenAI/Anthropic-compatible gateway that rejects optional fields is probed
+// only once per browser run, not once per user turn.
+const _cacheFieldRejectedEndpoints = new Set();
+const _streamUsageRejectedEndpoints = new Set();
+
 /* setTimeout/clearTimeout 解析：
  * - Node / chrome document：globalThis 上就有，直接用。
  * - Firefox system ESM(.sys.mjs)：globalThis 上没有 → 从 Timer.sys.mjs 取（仅此处、仅在缺失时碰
@@ -67,6 +73,9 @@ export class LlmClient {
    * @param {string} cfg.chatPath  e.g. "/v1/chat/completions"
    * @param {string} cfg.apiKey
    * @param {string} cfg.model
+   * @param {string} [cfg.providerId]
+   * @param {string} [cfg.promptCacheMode] "auto" | "off"
+   * @param {string} [cfg.promptCacheTtl]  "default" | "5m" | "1h"
    * @param {object} [cfg.request]  { timeout_ms, max_tokens, temperature, stream, reasoning_effort }
    */
   constructor(cfg) {
@@ -78,6 +87,15 @@ export class LlmClient {
     this.chatPath = cfg.chatPath || "/v1/chat/completions";
     this.apiKey = cfg.apiKey || "";
     this.model = cfg.model || "";
+    this.providerId = cfg.providerId || "custom";
+    this.promptCacheMode = cfg.promptCacheMode === "off" ? "off" : "auto";
+    this.promptCacheTtl =
+      cfg.promptCacheTtl === "5m" || cfg.promptCacheTtl === "1h"
+        ? cfg.promptCacheTtl
+        : "default";
+    this._compatKey = `${this.protocol}|${this.baseUrl}|${this.chatPath}`;
+    this._cacheFieldsRejected = _cacheFieldRejectedEndpoints.has(this._compatKey);
+    this._streamUsageRejected = _streamUsageRejectedEndpoints.has(this._compatKey);
     this.request = Object.assign(
       // max_tokens 默认 32768：思考型模型(DeepSeek reasoning_content) 做多步逆向时，reasoning 常吃满
       // 8192 → 还没产出工具调用就 finish_reason=length 截断（用户见过"最后只回一个 <"然后停）→ 过早结束。
@@ -94,8 +112,8 @@ export class LlmClient {
   /**
    * 构造请求（url + fetch init），不发送。抽出来便于 dry-run 自测与单元测试。
    * @param {ChatMessage[]} messages
-   * @param {object} [opts]  { tools, model, stream, reasoningEffort }
-   * @returns {{ url: string, init: object }}
+   * @param {object} [opts]  { tools, model, stream, reasoningEffort, maxTokens, cacheKey }
+   * @returns {{ url: string, init: object, cacheApplied: boolean }}
    */
   buildRequest(messages, opts = {}) {
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -108,6 +126,12 @@ export class LlmClient {
     if (!model) {
       throw new LlmError("buildRequest: model is required");
     }
+    const cacheKey = String(opts.cacheKey || "").trim().slice(0, 64);
+    const cacheEnabled =
+      this.promptCacheMode === "auto" &&
+      !this._cacheFieldsRejected &&
+      !opts.disablePromptCache &&
+      !!cacheKey;
 
     if (this.protocol === PROTOCOLS.OPENAI) {
       const reasoningEffort = normalizeReasoningEffort(
@@ -117,7 +141,7 @@ export class LlmClient {
         model,
         messages,
         stream: opts.stream ?? this.request.stream ?? false,
-        max_tokens: this.request.max_tokens,
+        max_tokens: opts.maxTokens ?? this.request.max_tokens,
       };
       if (reasoningEffort === "auto") {
         body.temperature = this.request.temperature;
@@ -127,8 +151,25 @@ export class LlmClient {
       if (opts.tools) {
         body.tools = opts.tools;
       }
+      const streamUsageApplied =
+        body.stream === true &&
+        !this._streamUsageRejected &&
+        !opts.disableStreamUsage;
+      if (streamUsageApplied) {
+        body.stream_options = { include_usage: true };
+      }
+      // DeepSeek and Qwen cache matching prefixes automatically and reject
+      // unknown OpenAI fields on some deployments. Only custom OpenAI-style
+      // endpoints receive prompt_cache_key; incompatible gateways are retried
+      // once without it by chat().
+      const cacheApplied = cacheEnabled && this.providerId === "custom";
+      if (cacheApplied) {
+        body.prompt_cache_key = cacheKey;
+      }
       return {
         url: this.endpoint,
+        cacheApplied,
+        streamUsageApplied,
         init: {
           method: "POST",
           headers: {
@@ -145,7 +186,7 @@ export class LlmClient {
       const { system, messages: amsgs } = toAnthropicMessages(messages);
       const body = {
         model,
-        max_tokens: this.request.max_tokens || 32768,
+        max_tokens: opts.maxTokens ?? this.request.max_tokens ?? 32768,
         messages: amsgs,
         stream: opts.stream ?? this.request.stream ?? false,
       };
@@ -160,10 +201,19 @@ export class LlmClient {
           return { name: f.name, description: f.description || "", input_schema: f.parameters || { type: "object", properties: {} } };
         });
       }
+      const cacheApplied = cacheEnabled;
+      if (cacheApplied) {
+        body.cache_control = {
+          type: "ephemeral",
+          // Automatic caching defaults to 5m. Only 1h needs an explicit TTL.
+          ...(this.promptCacheTtl === "1h" ? { ttl: "1h" } : {}),
+        };
+      }
       // anthropic 用 /v1/messages；既兼容官方(x-api-key)也兼容网关(Authorization: Bearer)。
       const path = /messages\/?$/.test(this.chatPath || "") ? this.chatPath : "/v1/messages";
       return {
         url: this.baseUrl + path,
+        cacheApplied,
         init: {
           method: "POST",
           headers: {
@@ -256,7 +306,9 @@ export class LlmClient {
       );
     }
     const streaming = typeof opts.onDelta === "function";
-    const { url, init } = this.buildRequest(messages, { ...opts, stream: streaming });
+    const requestOpts = { ...opts, stream: streaming };
+    let built = this.buildRequest(messages, requestOpts);
+    let optionalFieldFallbackUsed = false;
 
     // 瞬时错误（网关 5xx / 上游抖动 / 网络）自动重试，避免中转站后端偶发失败直接断掉整轮。
     const maxAttempts = 3;
@@ -290,7 +342,7 @@ export class LlmClient {
       }
       let resp;
       try {
-        resp = await fetch(url, { ...init, signal: ac.signal });
+        resp = await fetch(built.url, { ...built.init, signal: ac.signal });
         bump(); // 收到响应头 → 重置看门狗
       } catch (e) {
         stopWatch();
@@ -305,7 +357,7 @@ export class LlmClient {
           );
         }
         // 真·网络错误（连接重置/DNS 等）→ 退避重试
-        lastErr = new LlmError(`network error calling ${url}: ${e.message}`, { cause: e });
+        lastErr = new LlmError(`network error calling ${built.url}: ${e.message}`, { cause: e });
         if (attempt < maxAttempts) {
           await this._delay(500 * attempt);
           continue;
@@ -316,6 +368,31 @@ export class LlmClient {
       if (!resp.ok) {
         stopWatch();
         const errText = await resp.text().catch(() => "");
+        if (
+          (built.cacheApplied || built.streamUsageApplied) &&
+          !optionalFieldFallbackUsed &&
+          [400, 404, 422].includes(resp.status)
+        ) {
+          // OpenAI/Anthropic-compatible gateways frequently reject fields they
+          // do not proxy. Disable native cache fields for this client and retry
+          // the exact request once; user-visible behavior remains unchanged.
+          if (built.cacheApplied) {
+            this._cacheFieldsRejected = true;
+            _cacheFieldRejectedEndpoints.add(this._compatKey);
+          }
+          if (built.streamUsageApplied) {
+            this._streamUsageRejected = true;
+            _streamUsageRejectedEndpoints.add(this._compatKey);
+          }
+          optionalFieldFallbackUsed = true;
+          built = this.buildRequest(messages, {
+            ...requestOpts,
+            disablePromptCache: true,
+            disableStreamUsage: true,
+          });
+          attempt--;
+          continue;
+        }
         // 5xx / 网关·上游错误属瞬时（中转站后端抖动）→ 可重试；4xx 是请求/鉴权问题 → 不重试。
         const transient =
           [429, 500, 502, 503, 504].includes(resp.status) ||
@@ -358,7 +435,7 @@ export class LlmClient {
       try {
         return this.parseResponse(JSON.parse(text));
       } catch (e) {
-        throw new LlmError(`invalid JSON from ${url}`, { body: text.slice(0, 500), cause: e });
+        throw new LlmError(`invalid JSON from ${built.url}`, { body: text.slice(0, 500), cause: e });
       }
     }
     throw lastErr;
@@ -519,7 +596,11 @@ export class LlmClient {
         } catch {
           continue;
         }
-        if (ev.type === "content_block_start") {
+        if (ev.type === "message_start") {
+          if (ev.message && ev.message.usage) {
+            usage = { ...(usage || {}), ...ev.message.usage };
+          }
+        } else if (ev.type === "content_block_start") {
           const cb = ev.content_block || {};
           if (cb.type === "tool_use") {
             const tc = { id: cb.id, type: "function", function: { name: cb.name, arguments: "" } };
@@ -546,7 +627,7 @@ export class LlmClient {
             finishReason = ev.delta.stop_reason;
           }
           if (ev.usage) {
-            usage = ev.usage;
+            usage = { ...(usage || {}), ...ev.usage };
           }
         }
       }

@@ -61,6 +61,7 @@ const REASONING_FEEDBACK_CAP = 1200;
 // page_eval 触发请求/取不同时刻的值、page_click 交互。误把它们当空转拦掉，会逼模型绕路（实测踩到）。
 // 真正该熔断的是**纯只读查询**（jsvmp_query/net_list/fs_list/code_search…）反复拿同一结果。
 const REPEAT_EXEMPT = new Set([
+  "addons_manage",
   "page_scroll",
   "page_navigate",
   "page_click",
@@ -153,7 +154,7 @@ function segmentTranscript(msgs, fromIdx) {
 }
 
 /** 让模型把本回合执行记录浓缩成结构化交接摘要（单次 chat、无 tools、输出短）。 */
-async function summarizeForHandoff(client, msgs, fromIdx, signal) {
+async function summarizeForHandoff(client, msgs, fromIdx, signal, onUsage, cacheKey) {
   const transcript = segmentTranscript(msgs, fromIdx);
   if (!transcript) return "";
   const res = await client.chat(
@@ -161,8 +162,13 @@ async function summarizeForHandoff(client, msgs, fromIdx, signal) {
       { role: "system", content: HANDOFF_PROMPT },
       { role: "user", content: "以下是迄今的执行记录，据此输出交接摘要：\n\n" + transcript },
     ],
-    { signal }
+    { signal, maxTokens: 2048, cacheKey: cacheKey ? cacheKey + ":handoff" : "" }
   );
+  try {
+    onUsage && onUsage(res.usage, { phase: "handoff" });
+  } catch {
+    /* usage reporting never blocks the Agent */
+  }
   return (res && res.content ? String(res.content) : "").trim();
 }
 
@@ -294,7 +300,7 @@ function _isProgress(name, env) {
     return false;
   }
   // 写盘/落盘类工具成功 = 前进
-  if (/^(scripts_save|fs_write|fs_copy|fs_mkdir|wasm_disasm|jsvmp_split_dispatcher|jsvmp_disassemble|js_trace|notes_add)$/.test(name)) {
+  if (/^(addons_manage|scripts_save|fs_write|fs_copy|fs_mkdir|wasm_disasm|jsvmp_split_dispatcher|jsvmp_disassemble|js_trace|notes_add)$/.test(name)) {
     return true;
   }
   // run_node/run_python：**只有脚本真的跑成功**才算前进。"进程跑起来了"(env.ok)≠"脚本逻辑成功"——
@@ -375,6 +381,54 @@ function _msgSize(m) {
     n += 64;
   }
   return n;
+}
+
+const RUNTIME_CONTEXT_START = "⟪FRX_RUNTIME_CONTEXT_START⟫";
+const RUNTIME_CONTEXT_END = "⟪FRX_RUNTIME_CONTEXT_END⟫";
+
+function _stripRuntimeContext(content) {
+  if (typeof content !== "string" || !content.includes(RUNTIME_CONTEXT_START)) {
+    return content;
+  }
+  let out = content;
+  for (;;) {
+    const start = out.indexOf(RUNTIME_CONTEXT_START);
+    if (start < 0) break;
+    const end = out.indexOf(RUNTIME_CONTEXT_END, start);
+    out = end < 0
+      ? out.slice(0, start).trimEnd()
+      : (out.slice(0, start) + out.slice(end + RUNTIME_CONTEXT_END.length)).trim();
+  }
+  return out;
+}
+
+function _runtimeContext(dynamicContext, ledgerText) {
+  const parts = [];
+  if (dynamicContext && String(dynamicContext).trim()) {
+    parts.push(String(dynamicContext).trim());
+  }
+  if (ledgerText && String(ledgerText).trim()) {
+    parts.push(String(ledgerText).trim());
+  }
+  return parts.length
+    ? `${RUNTIME_CONTEXT_START}\n【本轮动态上下文】\n${parts.join("\n\n")}\n${RUNTIME_CONTEXT_END}`
+    : "";
+}
+
+function _withRuntimeContext(message, block) {
+  if (!message || !block) {
+    return message;
+  }
+  if (Array.isArray(message.content)) {
+    return {
+      ...message,
+      content: [...message.content, { type: "text", text: "\n\n" + block }],
+    };
+  }
+  return {
+    ...message,
+    content: String(message.content || "") + "\n\n" + block,
+  };
 }
 
 /**
@@ -461,6 +515,7 @@ export async function runAgentTurn(p) {
     router,
     messages,
     systemPrompt,
+    dynamicContext,
     maxRounds = 6,
     maxPerTool = 8,
     signal,
@@ -469,11 +524,15 @@ export async function runAgentTurn(p) {
     onDelta,
     onReasoning, // 思考型模型的 reasoning_content 增量回调（供 UI 展示"思考过程"）
     onCheckpoint, // 上下文压缩时回调(summary)：引擎据此把进展落盘成一条可见回复 + 重置实时步骤
+    onUsage, // (rawUsage, {phase})：统一统计由上层按 provider 规范化并持久化
+    persistToolArtifact, // 大工具结果落工作目录；返回 {path}，上下文只保留头尾与引用
     getLedger, // 取任务账本注入块的回调(async→string)：每轮开头+每次压缩后拼进系统提示，确认事实永不衰减
     confirm,
     autoApprove = false,
     assist = false, // AI辅助逐阶段模式：无工具的纯文字回复=正常收尾（停下报告+给方向），不当 drift 逼它继续
     vision = false, // 模型是否支持看图：true 时把截图等图像作为 user 图片消息回喂
+    contextStrategy = "legacy", // projected=小上下文+大结果折叠；legacy=旧行为，可随时回退
+    cacheKey = "",
   } = p || {};
 
   if (!client || typeof client.chat !== "function") {
@@ -494,10 +553,19 @@ export async function runAgentTurn(p) {
   // 单工具结果进上下文的截断上限：**随窗口缩放**（默认档 50k / 大模型 150k）。
   // ★修复旧 bug：以前这里写死 TOOL_RESULT_CAP=6000 又砍一刀，把 modelBudget 给大模型放大的 resultCap(150k) 架空了
   //   → 强模型实际只能看到每条结果 6KB。现在改用 _bud.resultCap，缩放真正生效。
-  const resultCap = (_bud && _bud.resultCap) || TOOL_RESULT_CAP;
+  const legacyResultCap = (_bud && _bud.resultCap) || TOOL_RESULT_CAP;
+  const resultCap =
+    contextStrategy === "projected"
+      ? Math.min(legacyResultCap, 12000)
+      : legacyResultCap;
   try {
     if (router && _bud.resultCap) {
-      router.maxChars = _bud.resultCap; // ToolRouter 侧也按窗口放大
+      // Projected mode needs the full envelope long enough to save an artifact,
+      // then AgentLoop folds it before the next model request.
+      router.maxChars =
+        contextStrategy === "projected"
+          ? Math.max(_bud.resultCap, 256 * 1024)
+          : _bud.resultCap;
     }
   } catch {
     /* router 无此字段也不影响 */
@@ -515,7 +583,7 @@ export async function runAgentTurn(p) {
   const sanitize = m => {
     const o = { role: m.role };
     if (m.content !== undefined) {
-      o.content = m.content;
+      o.content = _stripRuntimeContext(m.content);
     }
     if (m.tool_calls) {
       o.tool_calls = m.tool_calls;
@@ -532,9 +600,9 @@ export async function runAgentTurn(p) {
     return o;
   };
 
-  // 「始终注入账本」：把任务账本（已确认事实/已否决死路）拼到系统提示——每轮都在模型眼前，压缩后也重新拼
-  // （getLedger 取最新、含本回合 remember 的新事实）→ "动手前先看账本、确认过的别重新发现" 成为自然行为
-  // （retrieve-before-derive），不靠强制约束。baseSystem 单独留着，压缩重建时配最新账本重拼。
+  // Keep the system prompt byte-stable for provider prefix caching. Workspace,
+  // notes, skills, cancellation boundaries, and ledger snapshots are appended
+  // only to the current user task message.
   const baseSystem = systemPrompt || "";
   let ledgerText = "";
   try {
@@ -542,24 +610,34 @@ export async function runAgentTurn(p) {
   } catch {
     /* 账本可选，取不到不影响 */
   }
-  const sysWithLedger = baseSystem + (ledgerText ? "\n\n" + ledgerText : "");
-  let msgs = [];
-  if (sysWithLedger) {
-    msgs.push({ role: "system", content: sysWithLedger });
-  }
-  msgs.push(...messages.map(sanitize));
-
-  // 压缩用锚点：system（永远保留）+ 本回合任务（初始 msgs 里最后一条 user，即用户这次的请求）。
-  const systemMsg = msgs[0] && msgs[0].role === "system" ? msgs[0] : null;
-  let taskAnchor = null;
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === "user") {
-      taskAnchor = msgs[i];
+  const history = messages.map(sanitize);
+  let taskIndex = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === "user") {
+      taskIndex = i;
       break;
     }
   }
+  const rawTaskAnchor = taskIndex >= 0 ? history[taskIndex] : null;
+  let taskAnchor = _withRuntimeContext(
+    rawTaskAnchor,
+    _runtimeContext(dynamicContext, ledgerText)
+  );
+  if (taskIndex >= 0) {
+    history[taskIndex] = taskAnchor;
+  }
+  let msgs = [
+    ...(baseSystem ? [{ role: "system", content: baseSystem }] : []),
+    ...history,
+  ];
 
-  const tools = router.listSpecs();
+  // Stable order is part of the provider cache prefix.
+  const tools = router
+    .listSpecs()
+    .slice()
+    .sort((a, b) =>
+      String(a?.function?.name || "").localeCompare(String(b?.function?.name || ""))
+    );
   const allToolCalls = [];
   const toolCounts = {}; // 每个工具本回合调用次数（防打转）
   const failSigs = {}; // (工具+错误签名) → 次数（反绕圈：同错反复出现就提示换路线）
@@ -605,7 +683,14 @@ export async function runAgentTurn(p) {
         // LLM 摘要失败/超时再退回机械摘要，至少不丢压缩本身。
         let summary = "";
         try {
-          summary = await summarizeForHandoff(client, msgs, fromIdx, signal);
+          summary = await summarizeForHandoff(
+            client,
+            msgs,
+            fromIdx,
+            signal,
+            onUsage,
+            cacheKey
+          );
         } catch {
           /* 摘要调用失败 → 机械兜底 */
         }
@@ -629,10 +714,14 @@ export async function runAgentTurn(p) {
         } catch {
           /* 取不到就沿用上次的账本快照 */
         }
-        const freshSys = baseSystem + (freshLedger ? "\n\n" + freshLedger : "");
-        // 重建小上下文：system(含最新账本) + 任务锚点 + checkpoint(assistant) + 继续提示(user，保角色交替合法)
+        taskAnchor = _withRuntimeContext(
+          rawTaskAnchor,
+          _runtimeContext(dynamicContext, freshLedger)
+        );
+        // Rebuild a small context with the same stable system prefix. Dynamic
+        // runtime data remains attached to the task anchor.
         msgs = [
-          ...(freshSys ? [{ role: "system", content: freshSys }] : []),
+          ...(baseSystem ? [{ role: "system", content: baseSystem }] : []),
           taskAnchor,
           { role: "assistant", content: summary },
           {
@@ -649,7 +738,18 @@ export async function runAgentTurn(p) {
     }
 
     emit({ type: "round", round });
-    const res = await client.chat(trimContext(msgs, maxChars), { tools, signal, onDelta, onReasoning });
+    const res = await client.chat(trimContext(msgs, maxChars), {
+      tools,
+      signal,
+      onDelta,
+      onReasoning,
+      cacheKey,
+    });
+    try {
+      onUsage && onUsage(res.usage, { phase: "chat" });
+    } catch {
+      /* usage reporting never blocks the Agent */
+    }
 
     const toolCalls = res.toolCalls || [];
     if (toolCalls.length === 0) {
@@ -851,11 +951,32 @@ export async function runAgentTurn(p) {
       // 大结果只截给模型一个头部 + 可操作提示；完整内容仍在侧栏事件与落盘文件里，要细节让模型分段 fs_read。
       let contentStr = JSON.stringify(envText);
       if (contentStr.length > resultCap) {
-        const dropped = contentStr.length - resultCap;
+        const originalChars = contentStr.length;
+        let artifact = null;
+        if (typeof persistToolArtifact === "function") {
+          try {
+            artifact = await persistToolArtifact({
+              id: tc.id,
+              name,
+              content: contentStr,
+              chars: originalChars,
+            });
+          } catch {
+            /* artifact persistence is optional */
+          }
+        }
+        const reference = artifact?.path
+          ? `折叠前结果已保存到 ${artifact.path}；需要细节请用 fs_read 分段读取或 code_search 精确搜索。`
+          : "未设置工作目录或保存失败；需要细节请缩小查询范围后重新获取。";
+        const marker =
+          `\n…⟪旧工具输出已折叠，原始 ${originalChars} 字符。${reference}⟫…\n`;
+        const room = Math.max(1000, resultCap - marker.length);
+        const headChars = Math.floor(room * 0.65);
+        const tailChars = room - headChars;
         contentStr =
-          contentStr.slice(0, resultCap) +
-          `…⟪结果过大已截断 ${dropped} 字符（仅此条进上下文的部分）。别把大结果全塞进来：` +
-          `要看全量用 fs_read 的 offset/limit 分段读对应落盘文件，或用 code_search 精确搜，而不是重复整块读取。⟫`;
+          contentStr.slice(0, headChars) +
+          marker +
+          contentStr.slice(-tailChars);
       }
       // 反绕圈护栏：同一(工具+错误签名)累计到阈值 → 在结果里注入"换路线"硬提示（依据 skill §6 决策树）。
       const sig = _errSig(name, env);
@@ -930,7 +1051,17 @@ export async function runAgentTurn(p) {
   // 轮数用尽：不带工具再问一次，逼模型基于已有工具结果直接给结论，而不是空停。
   let summary = "";
   try {
-    const fin = await client.chat(trimContext(msgs, maxChars), { signal, onDelta, onReasoning });
+    const fin = await client.chat(trimContext(msgs, maxChars), {
+      signal,
+      onDelta,
+      onReasoning,
+      cacheKey,
+    });
+    try {
+      onUsage && onUsage(fin.usage, { phase: "final" });
+    } catch {
+      /* usage reporting never blocks the Agent */
+    }
     summary = fin.content || "";
   } catch {
     /* 总结失败就退回提示 */

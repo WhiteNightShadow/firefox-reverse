@@ -249,6 +249,12 @@ function fmtSize(n) {
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + "K";
   return (n / 1024 / 1024).toFixed(1) + "M";
 }
+function fmtTokens(n) {
+  const value = Number(n || 0);
+  if (value < 1000) return String(value);
+  if (value < 1000000) return (value / 1000).toFixed(value < 10000 ? 1 : 0) + "K";
+  return (value / 1000000).toFixed(1) + "M";
+}
 
 // chrome 特权全局（侧边栏文档 = chrome:// 系统 principal）。typeof 守卫，取不到则降级（按钮报错不崩）。
 const _CC = typeof Components !== "undefined" ? Components.classes : typeof Cc !== "undefined" ? Cc : null;
@@ -268,6 +274,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [cancellationPending, setCancellationPending] = useState(false);
+  const [usage, setUsage] = useState(null);
   const [workspaceDir, setWorkspaceDir] = useState(null); // 当前会话绑定的工作目录
   const [mode, setMode] = useState(null); // 本会话执行模式："auto"=全自动一条龙 / "assist"=AI辅助逐阶段 / null=未选（首次新建会话让用户选）
   const [files, setFiles] = useState([]); // 工作目录文件列表（展开时填充）
@@ -347,6 +354,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           setCurrentId(t.id);
           setMessages(t.messages || []);
           setCancellationPending(t.cancellationPending === true);
+          setUsage(t.usage || null);
           bindWorkspace(effectiveWorkspace(t));
           setMode((t && t.mode) || null);
           refreshThreads();
@@ -441,11 +449,13 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
               if (t) {
                 setMessages(t.messages);
                 setCancellationPending(t.cancellationPending === true);
+                setUsage(t.usage || null);
               }
             })
             .catch(() => {});
         }
         setLiveSteps(snap.steps);
+        setUsage(snap.usage || null);
         stepsRef.current = snap.steps;
         const rt = [...snap.steps].reverse().find(x => x.kind === "tool" && x.status === "running");
         setActiveTool(rt ? rt.name : null);
@@ -471,6 +481,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
             if (t) {
               setMessages(t.messages);
               setCancellationPending(t.cancellationPending === true);
+              setUsage(t.usage || null);
             }
           })
           .catch(() => {});
@@ -804,13 +815,16 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       } catch {
         /* 取不到就用乐观值 */
       }
-      // 系统提示：工作目录（动态）+ 当前站点历史笔记摘要（只读、不累积）。
-      let sys = workspaceDir
-        ? SYSTEM +
-          `\n\n【当前工作目录】${workspaceDir}\n用 fs_list/fs_read/fs_write 读写其中文件、run_node/run_python 在此目录执行脚本验证；jsvmp trace 自动镜像到其 jsvmp/ 子目录。把抓取的脚本、还原出的实现、笔记都存到这里。`
-        : SYSTEM +
-          `\n\n【当前工作目录】未设置。若任务需要读写文件或执行脚本，请提示用户点击侧边栏顶部「打开目录」选择一个本地目录。`;
-      sys += "\n\n【浏览器环境】环境隔离、指纹配置和 MCP 指定环境由 env_* 工具链处理；Agent 对话页不做环境选择。";
+      // Stable provider-cache prefix: only invariant policy stays in system.
+      // Workspace, notes, and Skill catalog are attached to the current user
+      // message by AgentLoop as dynamic context.
+      let sys = SYSTEM +
+        "\n\n【浏览器环境】环境隔离、指纹配置和 MCP 指定环境由 env_* 工具链处理；Agent 对话页不做环境选择。";
+      const dynamicParts = [
+        workspaceDir
+          ? `【当前工作目录】${workspaceDir}\n用 fs_list/fs_read/fs_write 读写其中文件、run_node/run_python 在此目录执行脚本验证；jsvmp trace 自动镜像到其 jsvmp/ 子目录。把抓取的脚本、还原出的实现、笔记都存到这里。`
+          : "【当前工作目录】未设置。若任务需要读写文件或执行脚本，请提示用户点击侧边栏顶部「打开目录」选择一个本地目录。",
+      ];
       // 模式注入：未选过 → 落定全自动（与"全自动就是当前模式"一致，并持久化，之后不再弹选择卡）。
       // 注意：直接用已解析的 tid 落库，**不要**走 chooseMode()——它内部会 currentId||ensureThread()，
       // 而此刻 setCurrentId 还没 flush（异步），会再建一条空线程并切走 currentId（run 却跑在原线程上）。
@@ -829,7 +843,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       try {
         const dg = notes && notes.digest ? await notes.digest({}) : "";
         if (dg) {
-          sys += `\n\n${dg}`;
+          dynamicParts.push(dg);
         }
       } catch {
         /* 笔记可选，取不到不影响 */
@@ -841,7 +855,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           : null;
         if (catalog && catalog.ok && Array.isArray(catalog.skills) && catalog.skills.length) {
           const lines = catalog.skills.slice(0, 30).map(s => `- ${s.name}: ${s.description || "无描述"}`);
-          sys += `\n\n【当前可用 Skills】\n${lines.join("\n")}\n用户指定 Skill 时先 skill_get 读取正文。`;
+          dynamicParts.push(`【当前可用 Skills】\n${lines.join("\n")}\n用户指定 Skill 时先 skill_get 读取正文。`);
         }
       } catch {
         /* Skill 目录不可读不影响普通对话 */
@@ -853,7 +867,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         // done/error 由引擎自己落盘，故这里**不 await、不 finalize**。
         // assist=AI辅助逐阶段：引擎不跨回合自动续（每个 turn 结束交回用户等其选方向）。
         // run() 返回 Promise；同步启动后由常驻 session 自己收尾。catch 防止启动前异常成为未处理 rejection。
-        void session.run(tid, { systemPrompt: sys, convo, confirmMode, assist: effMode === "assist", maxRounds: 80, maxPerTool: 40,
+        void session.run(tid, { systemPrompt: sys, dynamicContext: dynamicParts.join("\n\n"), convo, confirmMode, assist: effMode === "assist", maxRounds: 80, maxPerTool: 40,
           // 工作目录随会话注入到每条工具调用的 ctx，WorkspaceBackend 优先使用 ctx.workspaceRoot，
           // 实现多窗口/多会话并发时各自操作各自的目录、互不干扰。
           workspaceRoot: workspaceDir || null,
@@ -871,9 +885,20 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           await conversations.setThreadTurnStatus?.(tid, "running");
         } catch {}
         if (cancelledBoundary) {
-          sys += "\n\n【手动取消边界】上一项任务已被用户明确取消。不要自动恢复旧任务；只有最新消息明确要求继续时才可继续。";
+          dynamicParts.push("【手动取消边界】上一项任务已被用户明确取消。不要自动恢复旧任务；只有最新消息明确要求继续时才可继续。");
         }
-        const content = (await buildClient().chat([{ role: "system", content: sys }, ...convo])).content;
+        const fallbackConvo = convo.map(m => ({ role: m.role, content: m.content }));
+        for (let i = fallbackConvo.length - 1; i >= 0; i--) {
+          if (fallbackConvo[i].role === "user") {
+            fallbackConvo[i] = {
+              ...fallbackConvo[i],
+              content: String(fallbackConvo[i].content || "") +
+                "\n\n【本轮动态上下文】\n" + dynamicParts.join("\n\n"),
+            };
+            break;
+          }
+        }
+        const content = (await buildClient().chat([{ role: "system", content: sys }, ...fallbackConvo])).content;
         const am = { role: "assistant", content };
         setMessages([...convo, am]);
         await conversations.appendMessage(tid, am);
@@ -911,6 +936,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     setCurrentId(t.id);
     setMessages([]);
     setCancellationPending(false);
+    setUsage(null);
     setError(null);
     setShowHistory(false);
     bindWorkspace(effectiveWorkspace(t));
@@ -956,6 +982,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       setCurrentId(t.id);
       setMessages(t.messages);
       setCancellationPending(t.cancellationPending === true);
+      setUsage(t.usage || null);
       setError(null);
       bindWorkspace(effectiveWorkspace(t));
       setMode((t && t.mode) || null);
@@ -1117,6 +1144,15 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           </span>
           <span>{mode === "assist" ? "AI辅助" : mode === "auto" ? "全自动" : "选模式"}</span>
         </button>
+        <span
+          className="agent-ws__usage"
+          title={`输入 ${usage?.inputTokens || 0} · 输出 ${usage?.outputTokens || 0} · 缓存命中 ${usage?.cacheReadTokens || 0}`}
+        >
+          Token {fmtTokens(usage?.inputTokens)} / {fmtTokens(usage?.outputTokens)}
+          {usage?.inputTokens > 0 && usage?.cacheReadTokens > 0
+            ? ` · 缓存 ${Math.round((usage.cacheReadTokens / usage.inputTokens) * 100)}%`
+            : ""}
+        </span>
         {workspaceDir && (
           <span className="agent-ws__tools">
             <button
@@ -1203,7 +1239,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
             {mode && <>问点什么开始……</>}
             {toolNames.length > 0 && (
               <div className="agent-panel__tools-hint">
-                已接入 {toolNames.length} 个工具：执行JS / 网络捕获 / 存JS / 搜索 / 定位入口 / jsvmp
+                已接入 {toolNames.length} 个工具：页面 / 网络 / 代码 / 扩展 / 指纹环境 / JSVMP
               </div>
             )}
           </div>

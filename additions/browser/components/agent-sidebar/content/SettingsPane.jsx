@@ -35,6 +35,9 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
   const [customProtocol, setCustomProtocol] = useState(initial.protocol || "openai");
   const [customReasoningEffort, setCustomReasoningEffort] = useState(initial.reasoningEffort || "auto");
   const [confirmTools, setConfirmTools] = useState(store.getConfirmTools ? store.getConfirmTools() : false);
+  const [promptCacheMode, setPromptCacheMode] = useState(store.getPromptCacheMode ? store.getPromptCacheMode() : "auto");
+  const [promptCacheTtl, setPromptCacheTtl] = useState(store.getPromptCacheTtl ? store.getPromptCacheTtl() : "default");
+  const [contextStrategy, setContextStrategy] = useState(store.getContextStrategy ? store.getContextStrategy() : "projected");
   const [fetchedModels, setFetchedModels] = useState([]);
   const [fetchMsg, setFetchMsg] = useState("");
   const [manual, setManual] = useState(false);
@@ -165,6 +168,9 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         p = { ...values, id: profileId };
       }
       store.setConfirmTools?.(confirmTools);
+      store.setPromptCacheMode?.(promptCacheMode);
+      store.setPromptCacheTtl?.(promptCacheTtl);
+      store.setContextStrategy?.(contextStrategy);
       loadProfile(p, "已保存并设为当前配置");
     } catch (e) {
       setError((e && e.message) || String(e));
@@ -296,6 +302,38 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         <input type="checkbox" checked={confirmTools} onChange={e => { setConfirmTools(e.target.checked); setStatus(""); }} />
         改动型工具执行前需确认
       </label>
+
+      <section className="settings-pane__section">
+        <div className="settings-pane__section-title">上下文与缓存</div>
+        <label className="settings-pane__field settings-pane__field--check">
+          <input
+            type="checkbox"
+            checked={promptCacheMode === "auto"}
+            onChange={e => { setPromptCacheMode(e.target.checked ? "auto" : "off"); setStatus(""); }}
+          />
+          Provider 原生提示缓存
+        </label>
+        <label className="settings-pane__field">
+          缓存时长
+          <select
+            value={promptCacheTtl}
+            disabled={promptCacheMode === "off"}
+            onChange={e => { setPromptCacheTtl(e.target.value); setStatus(""); }}
+          >
+            <option value="default">Provider 默认</option>
+            <option value="5m">5 分钟</option>
+            <option value="1h">1 小时</option>
+          </select>
+        </label>
+        <label className="settings-pane__field">
+          长会话策略
+          <select value={contextStrategy} onChange={e => { setContextStrategy(e.target.value); setStatus(""); }}>
+            <option value="projected">持久化上下文投影（推荐）</option>
+            <option value="legacy">旧完整历史（兼容）</option>
+          </select>
+        </label>
+        <span className="settings-pane__hint">完整对话始终保留；切换策略从下一轮生效。</span>
+      </section>
 
       {error && <div className="settings-pane__error">{error}</div>}
       <div className="settings-pane__actions">

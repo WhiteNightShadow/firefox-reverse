@@ -8,6 +8,7 @@
  *   workspace 工作目录          (WorkspaceBackend, 文件读写 + node/python 执行)
  *   find    定位加密入口        (组合 net + code)
  */
+import { AddonBackend } from "./AddonBackend.sys.mjs";
 import { PageBackend } from "./PageBackend.sys.mjs";
 import { NetworkBackend } from "./NetworkBackend.sys.mjs";
 import { ScriptsBackend } from "./ScriptsBackend.sys.mjs";
@@ -52,6 +53,8 @@ export function getBackends() {
   const skill = new SkillBackend({ workspace }); // 无参数 skill_get 仍释放原内置脚手架
   // 环境管理：一个环境一个 profile + 一个独立 Firefox 进程。UI 和 MCP 共用同一套 env manifest。
   const env = new EnvironmentBackend();
+  // Firefox 扩展生命周期：AMO 搜索 + AddonManager 安装/启停/卸载/配置页。
+  const addons = new AddonBackend();
 
   const find = {
     /** 定位某加密/签名参数的入口：它出现在哪些请求 + 它的字面量在哪些已存 JS 里。 */
@@ -195,6 +198,6 @@ export function getBackends() {
     },
   };
 
-  _singleton = { page, net, scripts, code, jsvmp, webapi, workspace, notes, ledger, skill, env, find, cookies };
+  _singleton = { page, net, scripts, code, jsvmp, webapi, workspace, notes, ledger, skill, env, addons, find, cookies };
   return _singleton;
 }

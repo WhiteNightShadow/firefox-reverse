@@ -11,8 +11,15 @@ import { ToolRouter } from "./ToolRouter.sys.mjs";
 import { createBuiltinTools } from "./Tools.sys.mjs";
 import { getBackends } from "./Backends.sys.mjs";
 import { configStore } from "./ConfigStore.sys.mjs";
+import {
+  buildProjectionInput,
+  CONTEXT_PROJECTION_PROMPT,
+  CONTEXT_PROJECTION_VERSION,
+  planContextProjection,
+} from "./ContextProjection.sys.mjs";
 import { buildClientFromStore, isVisionModel } from "./providers.sys.mjs";
 import { conversationStore } from "./ConversationStore.sys.mjs";
+import { emptyUsage, mergeUsage, normalizeUsage } from "./Usage.sys.mjs";
 
 // system ESM 无 window.setTimeout；从 Timer.sys.mjs 取（用于流式通知节流）。
 const { setTimeout: _setTimeout, clearTimeout: _clearTimeout } = ChromeUtils.importESModule(
@@ -126,6 +133,10 @@ function newState() {
     _notifyTimer: null, // 节流定时器
     _lastNotify: 0, // 上次广播时刻
     checkpointSeq: 0, // 自增：每次上下文压缩落盘一条 checkpoint 回复就 +1，UI 据此重载并起新气泡
+    usage: emptyUsage(), // current run only; aggregate is persisted on the thread
+    lastUsage: null,
+    contextStrategy: "projected",
+    contextProjected: false,
   };
 }
 function getOrInit(threadId) {
@@ -176,6 +187,10 @@ function snapshot(s) {
     aborted: s.aborted,
     content: s.content,
     checkpointSeq: s.checkpointSeq || 0,
+    usage: { ...s.usage },
+    lastUsage: s.lastUsage ? { ...s.lastUsage } : null,
+    contextStrategy: s.contextStrategy || "projected",
+    contextProjected: s.contextProjected === true,
     pendingConfirm: s.pendingConfirm ? { id: s.pendingConfirm.id, name: s.pendingConfirm.name, args: s.pendingConfirm.args } : null,
   };
 }
@@ -392,12 +407,12 @@ export const agentSession = {
   /**
    * 启动一轮自主执行（异步、即发即跑，不阻塞 UI）。引擎在本模块跑、跨面板重载存活。
    * @param {string} threadId
-   * @param {object} p { systemPrompt, convo, confirmMode, maxRounds, maxPerTool, workspaceRoot, assist }
+   * @param {object} p { systemPrompt, dynamicContext, convo, confirmMode, maxRounds, maxPerTool, workspaceRoot, assist }
    *   workspaceRoot — 本轮绑定的工作目录绝对路径；注入到每条工具调用的 ctx，实现多窗口/多会话隔离。
    *   assist — true=AI辅助逐阶段模式：不跨回合自动续（每个 turn 结束即交回用户），且 AgentLoop 里
    *            无工具的纯文字回复当正常收尾（停下给方向）而非 drift 逼它继续。false=全自动一条龙（默认）。
    */
-  async run(threadId, { systemPrompt, convo, confirmMode = false, maxRounds = 120, maxPerTool = 40, workspaceRoot, win, assist = false } = {}) {
+  async run(threadId, { systemPrompt, dynamicContext = "", convo, confirmMode = false, maxRounds = 120, maxPerTool = 40, workspaceRoot, win, assist = false } = {}) {
     _runLog.push({ threadId, at: Date.now(), convoLen: Array.isArray(convo) ? convo.length : -1 });
     const s = getOrInit(threadId);
     if (s.running) {
@@ -415,6 +430,13 @@ export const agentSession = {
     s.pendingConfirm = null;
     s.approveAll = false;
     s.checkpointSeq = 0; // 新一轮自主执行：checkpoint 计数清零
+    s.usage = emptyUsage();
+    s.lastUsage = null;
+    s.contextStrategy =
+      configStore.getContextStrategy && configStore.getContextStrategy() === "legacy"
+        ? "legacy"
+        : "projected";
+    s.contextProjected = false;
     if (s._notifyTimer) {
       _clearTimeout(s._notifyTimer);
       s._notifyTimer = null;
@@ -435,9 +457,34 @@ export const agentSession = {
         /* 状态元数据失败不阻断 Agent */
       }
       if (hadCancellationBoundary) {
-        systemPrompt = String(systemPrompt || "") + "\n\n" + CANCELLED_TURN_BOUNDARY;
+        dynamicContext = String(dynamicContext || "") + "\n\n" + CANCELLED_TURN_BOUNDARY;
       }
       const client = buildClientFromStore(configStore);
+      const activeProfile =
+        (configStore.getActiveModelProfile && configStore.getActiveModelProfile()) || null;
+      const cacheKey = [
+        "frx-v1",
+        threadId,
+        activeProfile?.id || client.providerId || "provider",
+        client.model || "model",
+      ]
+        .join(":")
+        .replace(/[^a-zA-Z0-9._:-]+/g, "_")
+        .slice(0, 160);
+      const recordUsage = (raw, info = {}) => {
+        const normalized = normalizeUsage(raw, {
+          provider: client.providerId,
+          protocol: client.protocol,
+          model: client.model,
+          phase: info.phase || "chat",
+        });
+        if (!normalized.providerReported) {
+          return;
+        }
+        s.lastUsage = normalized;
+        s.usage = mergeUsage(s.usage, normalized);
+        notifyThrottled(s);
+      };
       try {
         const active = configStore.getActiveModelProfile && configStore.getActiveModelProfile();
         const pid = (active && active.provider) || (configStore.getActiveProvider && configStore.getActiveProvider());
@@ -453,7 +500,71 @@ export const agentSession = {
       const NON_TERMINAL = new Set(["max_rounds", "drift"]);
       const MAX_AUTO_RESTARTS = 24; // 8→24：长逆向任务的天花板别太低（24×120≈2880 轮）。只作防无限空转的最终兜底，
       // 真正的空转由 A2 同参同结果熔断 + 连续失败护栏 + drift 拦；任务在做实事就让它一直跑。
-      let turnMsgs = convo;
+      let turnMsgs = Array.isArray(convo) ? convo : [];
+      try {
+        const thread = await conversationStore.getThread(threadId);
+        if (thread && Array.isArray(thread.messages) && thread.messages.length) {
+          const fullMessages = thread.messages.map(message => ({
+            role: message.role,
+            content: message.content,
+          }));
+          if (s.contextStrategy === "projected") {
+            const plan = planContextProjection(fullMessages, thread.contextProjection);
+            if (plan) {
+              const source = buildProjectionInput(fullMessages, plan);
+              const projected = await client.chat(
+                [
+                  { role: "system", content: CONTEXT_PROJECTION_PROMPT },
+                  {
+                    role: "user",
+                    content:
+                      "Update the continuation record from this bounded source:\n\n" +
+                      source,
+                  },
+                ],
+                {
+                  signal: ac.signal,
+                  maxTokens: 2048,
+                  cacheKey: cacheKey + ":projection",
+                }
+              );
+              recordUsage(projected.usage, { phase: "projection" });
+              const summary = String(projected.content || "").trim();
+              if (summary) {
+                const now = Date.now();
+                await conversationStore.setContextProjection(threadId, {
+                  version: CONTEXT_PROJECTION_VERSION,
+                  summary,
+                  cutoff: plan.cutoff,
+                  sourceCount: plan.cutoff,
+                  createdAt: plan.previous?.createdAt || now,
+                  updatedAt: now,
+                  strategy: "projected",
+                });
+              }
+            }
+            turnMsgs = await conversationStore.getModelMessages(threadId, {
+              strategy: "projected",
+            });
+            const latest = await conversationStore.getThread(threadId);
+            s.contextProjected = !!latest?.contextProjection;
+          } else {
+            turnMsgs = fullMessages;
+          }
+        }
+      } catch (e) {
+        // Projection is an optimization. On summary/read/write failure, preserve
+        // the prior projection and continue with it (or full history if none).
+        try {
+          turnMsgs = await conversationStore.getModelMessages(threadId, {
+            strategy: s.contextStrategy,
+          });
+          const latest = await conversationStore.getThread(threadId);
+          s.contextProjected = !!latest?.contextProjection;
+        } catch {
+          turnMsgs = Array.isArray(convo) ? convo : [];
+        }
+      }
       let autoRestarts = 0;
       let driftStreak = 0;
       let res;
@@ -463,6 +574,7 @@ export const agentSession = {
         router: router(),
         messages: turnMsgs,
         systemPrompt,
+        dynamicContext,
         autoApprove: !confirmMode,
         assist, // AI辅助模式：无工具纯文字回复=正常收尾（停下给方向），不 drift 逼它继续
         vision,
@@ -481,6 +593,22 @@ export const agentSession = {
             return "";
           }
         },
+        contextStrategy: s.contextStrategy,
+        cacheKey,
+        onUsage: recordUsage,
+        persistToolArtifact:
+          workspaceRoot
+            ? async ({ id, name, content }) => {
+                const safeName = String(name || "tool").replace(/[^a-zA-Z0-9._-]+/g, "_");
+                const safeId = String(id || Date.now()).replace(/[^a-zA-Z0-9._-]+/g, "_");
+                const path = `.frx-context/tool-results/${Date.now()}_${safeName}_${safeId}.json`;
+                const saved = await getBackends().workspace.write(
+                  { path, content },
+                  { workspaceRoot, win: win || null }
+                );
+                return { path: saved?.path || path };
+              }
+            : null,
         onDelta: c => {
           pushDelta(s, c);
           notifyThrottled(s); // 高频→节流(~20/s)
@@ -609,6 +737,13 @@ export const agentSession = {
         /* 状态元数据失败不影响中断收尾 */
       }
     } finally {
+      try {
+        if (s.usage && s.usage.requests > 0) {
+          await conversationStore.addThreadUsage(threadId, s.usage);
+        }
+      } catch {
+        /* usage persistence never blocks final state */
+      }
       s.running = false;
       s.settled = true;
       s.abort = null;

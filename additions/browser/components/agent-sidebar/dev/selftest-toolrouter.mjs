@@ -158,10 +158,11 @@ const fullBackends = {
     mkdir: async () => ({ ok: true }), runNode: async () => ({ ok: true }), runPython: async () => ({ ok: true }),
   },
   find: { paramEntry: async () => ({ ok: true }) },
+  addons: { query: async () => ({ ok: true }), manage: async () => ({ ok: true }) },
 };
 const fr = new ToolRouter();
 fr.registerAll(createBuiltinTools(fullBackends));
-const expect = ["page_eval", "page_navigate", "page_info", "page_elements", "page_click", "page_type",
+const expect = ["addons_query", "addons_manage", "page_eval", "page_navigate", "page_info", "page_elements", "page_click", "page_type",
   "page_scroll", "page_screenshot", "net_capture", "net_list", "net_get",
   "scripts_list", "scripts_save", "scripts_capture_all", "code_search", "find_param_entry",
   "jsvmp_trace", "jsvmp_query", "jsvmp_status", "jsvmp_split_dispatcher", "jsvmp_disassemble",
@@ -170,7 +171,8 @@ const allNames = fr.names();
 const missing = expect.filter(n => !allNames.includes(n));
 ok(missing.length === 0, `全部 ${expect.length} 个工具注册（缺：${missing.join(",") || "无"}）`);
 ok(
-  fr.needsConfirm("page_eval") && fr.needsConfirm("page_click") && fr.needsConfirm("page_type") &&
+  fr.needsConfirm("addons_manage") && !fr.needsConfirm("addons_query") &&
+    fr.needsConfirm("page_eval") && fr.needsConfirm("page_click") && fr.needsConfirm("page_type") &&
     fr.needsConfirm("scripts_capture_all") &&
     !fr.needsConfirm("find_param_entry") && !fr.needsConfirm("net_list") &&
     !fr.needsConfirm("page_screenshot") && !fr.needsConfirm("page_elements"),

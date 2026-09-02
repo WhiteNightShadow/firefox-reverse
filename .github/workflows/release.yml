@@ -27,6 +27,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # Firefox Reverse is intentionally pinned. Building arbitrary mozilla/main
+  # revisions can silently change Marionette and internal Gecko contracts.
+  FIREFOX_REV: cebc55aab4d2661d1f6c2d1526362947ec4016c1
+
 jobs:
   # ── 1. 建 Release（草稿）──
   create-release:
@@ -40,6 +45,7 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           draft: true
+          prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
           name: "Firefox-Reverse ${{ steps.meta.outputs.tag }}"
           body: |
             Firefox-Reverse ${{ steps.meta.outputs.tag }} —— 内置 AI 逆向 Agent 的 Firefox。
@@ -78,6 +84,12 @@ jobs:
           npm ci || npm install
           npm run build
           test -f content/agent-sidebar.bundle.js   # 确保产物存在，否则后面 jar 打包会失败
+
+      - name: 校验锁定 Firefox 基线与 Agent 父级注册
+        run: |
+          set -e
+          test "$(git -C "$UPSTREAM" rev-parse HEAD)" = "$FIREFOX_REV"
+          grep -Fq '"agent-sidebar"' "$UPSTREAM/browser/components/moz.build"
 
       - name: 同步全部 additions 到源码树（复用已 bootstrap 的树，增量编）
         run: |
@@ -148,19 +160,30 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 350
     env:
-      GECKO_REMOTE: "https://github.com/mozilla/gecko-dev.git"
-      FIREFOX_REV: ${{ vars.FIREFOX_REV || 'main' }}
+      GECKO_REMOTE: "https://github.com/mozilla-firefox/firefox.git"
     steps:
       - uses: actions/checkout@v4
         with: { path: firefox-reverse }
       - name: 取 Firefox 源码
         shell: bash
-        run: git clone --depth 1 --branch "$FIREFOX_REV" "$GECKO_REMOTE" upstream || git clone --depth 1 "$GECKO_REMOTE" upstream
+        run: |
+          set -e
+          git init upstream
+          git -C upstream remote add origin "$GECKO_REMOTE"
+          git -C upstream fetch --depth 1 origin "$FIREFOX_REV"
+          git -C upstream checkout --detach FETCH_HEAD
+          test "$(git -C upstream rev-parse HEAD)" = "$FIREFOX_REV"
       - name: 应用 additions
         shell: bash
         run: |
-          rsync -a --exclude node_modules --exclude README.md firefox-reverse/additions/ upstream/ || cp -R firefox-reverse/additions/* upstream/
-          [ -f firefox-reverse/scripts/apply-patches.sh ] && ( cd firefox-reverse && bash scripts/apply-patches.sh ) || true
+          set -e
+          for module in agent-ui branding; do
+            for patch in firefox-reverse/patches/$module/*.patch; do
+              git -C upstream apply --index "$GITHUB_WORKSPACE/$patch"
+            done
+          done
+          cp -R firefox-reverse/additions/. upstream/
+          python firefox-reverse/scripts/apply-fingerprint-config.py upstream
           node firefox-reverse/scripts/check-branding-assets.mjs upstream
       - name: bootstrap + build + package
         shell: bash

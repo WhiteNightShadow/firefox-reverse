@@ -646,7 +646,15 @@ body {
 .agent-ws__tools {
   display: inline-flex;
   gap: 4px;
+}
+.agent-ws__usage {
   margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--in-content-deemphasized-text, GrayText);
+  font-size: 11px;
 }
 .agent-ws__btn {
   padding: 3px 7px;

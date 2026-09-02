@@ -75,5 +75,21 @@ ok(r.content === "hello", "text 块 → content");
 ok(r.toolCalls.length === 1 && r.toolCalls[0].function.name === "f" && JSON.parse(r.toolCalls[0].function.arguments).x === 1, "tool_use → OpenAI 形 toolCalls");
 ok(r.finishReason === "tool_use", "stop_reason → finishReason");
 
+console.log("[5] Anthropic stream 合并 message_start + message_delta usage");
+const encoder = new TextEncoder();
+const streamBody = [
+  'data: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":90,"cache_creation_input_tokens":5}}}',
+  'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+  'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}',
+  "",
+].join("\n");
+const sr = await c._readStreamAnthropic(
+  new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode(streamBody)); controller.close(); } })),
+  () => {}
+);
+ok(sr.content === "ok" && sr.finishReason === "end_turn", "Anthropic stream content/finish parsed");
+ok(sr.usage.input_tokens === 10 && sr.usage.cache_read_input_tokens === 90 && sr.usage.output_tokens === 3, "Anthropic stream usage fields merged");
+
 console.log(`\nAnthropic 适配自测：${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

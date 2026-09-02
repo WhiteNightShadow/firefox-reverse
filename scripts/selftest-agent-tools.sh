@@ -20,10 +20,15 @@ run() {
 run npm --prefix "$SIDEBAR_DIR" run build
 
 SELFTESTS=(
+  selftest-addons.mjs
   selftest-config.mjs
   selftest-mozbuild.mjs
   selftest-providers.mjs
+  selftest-usage.mjs
+  selftest-prompt-cache.mjs
   selftest-conversations.mjs
+  selftest-context-projection.mjs
+  selftest-context-runtime.mjs
   selftest-skills.mjs
   selftest-stream.mjs
   selftest-retry.mjs

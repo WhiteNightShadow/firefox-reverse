@@ -4,16 +4,19 @@
  *   （用 IOUtils/PathUtils，system ESM 全局可用）。比 prefs 更适合大体量历史。
  * - Node 自测：无 IOUtils → 退化为内存，仍可 import 验证。
  * 全部 API 异步。数据结构：{ schemaVersion, threads: [{ id, title, createdAt, updatedAt,
- * workspace, envId, modelStrategy, lastTurnStatus, cancellationPending, messages:[{role,content}] }] }
+ * workspace, envId, modelStrategy, contextProjection, usage, messages:[{role,content}] }] }
  *   workspace = 该会话绑定的本地工作目录绝对路径（null=未设；**新会话默认为空/不绑定**，需用户手动打开目录）。
  *   envId = 该会话准备使用的 Firefox-Reverse 环境 id（null=未选）。
  *   modelStrategy = "balanced" | "premium"，先作为 Agent 调度上下文，后续可映射到具体 provider/model。
  */
 
+import { normalizeContextProjection, projectMessages } from "./ContextProjection.sys.mjs";
+import { emptyUsage, mergeUsage } from "./Usage.sys.mjs";
+
 const DIR_NAME = "firefox-reverse-agent";
 const FILE_NAME = "conversations.json";
 const NEW_TITLE = "新对话";
-const STORE_SCHEMA_VERSION = 2;
+const STORE_SCHEMA_VERSION = 3;
 const EXPORT_FORMAT = "firefox-reverse-conversation";
 const EXPORT_SCHEMA_VERSION = 1;
 const MAX_IMPORT_CHARS = 10 * 1024 * 1024;
@@ -42,6 +45,7 @@ function cleanTitle(value) {
 }
 
 function normalizeThread(t) {
+  const messages = Array.isArray(t.messages) ? t.messages : [];
   return {
     ...t,
     workspace: t.workspace || null,
@@ -51,7 +55,9 @@ function normalizeThread(t) {
     lastTurnStatus: TURN_STATUSES.has(t.lastTurnStatus) ? t.lastTurnStatus : "idle",
     cancellationPending: t.cancellationPending === true,
     cancelledAt: Number.isFinite(t.cancelledAt) ? t.cancelledAt : null,
-    messages: Array.isArray(t.messages) ? t.messages : [],
+    contextProjection: normalizeContextProjection(t.contextProjection, messages.length),
+    usage: mergeUsage(t.usage || emptyUsage()),
+    messages,
   };
 }
 
@@ -153,6 +159,8 @@ export class ConversationStore {
         modelStrategy: t.modelStrategy || "balanced",
         lastTurnStatus: t.lastTurnStatus || "idle",
         cancellationPending: t.cancellationPending === true,
+        contextProjected: !!t.contextProjection,
+        usage: mergeUsage(t.usage),
         count: t.messages.length,
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -161,6 +169,21 @@ export class ConversationStore {
   async getThread(id) {
     const d = await this._load();
     return d.threads.find(t => t.id === id) || null;
+  }
+
+  /** Full UI history remains untouched; only the model-facing view may use a projection. */
+  async getModelMessages(id, { strategy = "projected" } = {}) {
+    const t = await this.getThread(id);
+    if (!t) {
+      return [];
+    }
+    const messages = t.messages.map(message => ({
+      role: message.role,
+      content: message.content,
+    }));
+    return strategy === "legacy"
+      ? messages
+      : projectMessages(messages, t.contextProjection);
   }
 
   async createThread(title = NEW_TITLE, workspace = null, mode = null) {
@@ -178,6 +201,8 @@ export class ConversationStore {
       lastTurnStatus: "idle",
       cancellationPending: false,
       cancelledAt: null,
+      contextProjection: null,
+      usage: emptyUsage(),
       messages: [],
     };
     d.threads.push(t);
@@ -285,6 +310,51 @@ export class ConversationStore {
     return t;
   }
 
+  /** Atomically replace the model-only continuation projection. */
+  async setContextProjection(id, projection) {
+    const d = await this._load();
+    const t = d.threads.find(x => x.id === id);
+    if (!t) {
+      throw new Error("conversation thread not found: " + id);
+    }
+    const normalized = normalizeContextProjection(projection, t.messages.length);
+    if (!normalized) {
+      throw new Error("invalid context projection");
+    }
+    const previous = t.contextProjection;
+    t.contextProjection = normalized;
+    try {
+      await this._save();
+    } catch (error) {
+      t.contextProjection = previous;
+      throw error;
+    }
+    return normalized;
+  }
+
+  async clearContextProjection(id) {
+    const d = await this._load();
+    const t = d.threads.find(x => x.id === id);
+    if (!t) {
+      return false;
+    }
+    t.contextProjection = null;
+    await this._save();
+    return true;
+  }
+
+  /** Persist aggregate token counters without changing conversation ordering. */
+  async addThreadUsage(id, usage) {
+    const d = await this._load();
+    const t = d.threads.find(x => x.id === id);
+    if (!t) {
+      return null;
+    }
+    t.usage = mergeUsage(t.usage, usage);
+    await this._save();
+    return t.usage;
+  }
+
   async renameThread(id, title) {
     const d = await this._load();
     const t = d.threads.find(x => x.id === id);
@@ -382,6 +452,8 @@ export class ConversationStore {
       lastTurnStatus: "idle",
       cancellationPending: false,
       cancelledAt: null,
+      contextProjection: null,
+      usage: emptyUsage(),
       importedFrom: {
         sourceThreadId: String(src.sourceThreadId || "").slice(0, 200) || null,
         importedAt: now,

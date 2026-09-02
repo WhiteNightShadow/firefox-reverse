@@ -45,6 +45,15 @@ check("无效 custom reasoning effort 回退 auto", cs.getCustomReasoningEffort(
 check("reasoning effort 支持 max", REASONING_EFFORT_VALUES.includes("max"), true);
 check("normalize 可用自定义 fallback", normalizeReasoningEffort("bad", "medium"), "medium");
 
+check("默认启用 Provider 提示缓存", cs.getPromptCacheMode(), "auto");
+cs.setPromptCacheMode("off");
+check("提示缓存可关闭", cs.getPromptCacheMode(), "off");
+cs.setPromptCacheTtl("1h");
+check("缓存 TTL 持久化", cs.getPromptCacheTtl(), "1h");
+check("默认使用持久化上下文投影", cs.getContextStrategy(), "projected");
+cs.setContextStrategy("legacy");
+check("上下文策略可一键回退旧模式", cs.getContextStrategy(), "legacy");
+
 const migrated = cs.listModelProfiles();
 check("旧配置自动迁移成一条命名配置", migrated.length, 1);
 const accountA = cs.updateModelProfile(migrated[0].id, {
