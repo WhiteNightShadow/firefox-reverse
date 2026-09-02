@@ -182,7 +182,9 @@ export class LedgerBackend {
       const norm = _norm(text);
       // 去重：同任务作用域(目录/站点) + 同 kind 下，归一化全等 或 子串近重复 → 删旧留新。
       const existing = sc ? await db.execute(
-        `SELECT id,norm FROM mem WHERE kind=:k AND ${sc.col}<>'' AND ${sc.col}=:v`,
+        sc.col === "workspace"
+          ? "SELECT id,norm FROM mem WHERE kind=:k AND workspace<>'' AND workspace=:v"
+          : "SELECT id,norm FROM mem WHERE kind=:k AND site<>'' AND site=:v",
         { k: kind, v: sc.val }
       ) : [];
       const dropIds = [];
@@ -197,7 +199,7 @@ export class LedgerBackend {
         }
       }
       if (dropIds.length) {
-        await db.execute(`DELETE FROM mem WHERE id IN (${dropIds.map(() => "?").join(",")})`, dropIds);
+        await db.execute("DELETE FROM mem WHERE id IN (" + dropIds.map(() => "?").join(",") + ")", dropIds);
         dedup += dropIds.length;
       }
       await db.execute(
@@ -211,7 +213,9 @@ export class LedgerBackend {
       if (sc) {
         const cap = kind === "deadend" ? CAP_DEAD : CAP_FACT;
         await db.execute(
-          `DELETE FROM mem WHERE id IN (SELECT id FROM mem WHERE kind=:k AND ${sc.col}=:v ORDER BY id DESC LIMIT -1 OFFSET :cap)`,
+          sc.col === "workspace"
+            ? "DELETE FROM mem WHERE id IN (SELECT id FROM mem WHERE kind=:k AND workspace=:v ORDER BY id DESC LIMIT -1 OFFSET :cap)"
+            : "DELETE FROM mem WHERE id IN (SELECT id FROM mem WHERE kind=:k AND site=:v ORDER BY id DESC LIMIT -1 OFFSET :cap)",
           { k: kind, v: sc.val, cap }
         );
       }
