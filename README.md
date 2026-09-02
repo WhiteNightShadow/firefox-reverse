@@ -311,6 +311,11 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
+### v0.24.0-beta.2（2026-09-02）
+- **多端构建一致性修复**：补回干净 Firefox 基线中 Agent 侧栏的 `makeSidebar` 注册块，并增加构建门禁，避免长期增量源码树可见、全新源码树却缺少侧栏入口的差异。
+- **兼容性**：不改变扩展工具、ContextProjection、历史会话、模型配置、指纹环境或 C++ 行为；beta.1 的功能与文件协议保持兼容。
+- **多端复验**：使用同一锁定基线重新构建并验证 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64 产物。
+
 ### v0.24.0-beta.1（2026-09-02）
 - **Firefox 扩展 Agent 能力**：新增 `addons_query` / `addons_manage`，支持 AMO 搜索、列出已安装扩展、查看状态、安装、启用、禁用、卸载与打开配置页面；打开后继续复用 `page_info` / `page_elements` / `page_click` / `page_type` 做配置自动化。
 - **最小权限边界**：安装只接受 AMO slug/GUID/数字 id，强制透传 AMO SHA-256 并要求 Firefox 返回有效签名状态；任意 XPI URL、系统/应用内置扩展修改和任意扩展内部业务 API 不开放。扩展管理沿用工具确认，安装和卸载还必须显式传 `confirm:true`。

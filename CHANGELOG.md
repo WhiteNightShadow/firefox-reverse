@@ -6,6 +6,8 @@
 
 | 日期 | 版本号 | 改版内容（一句话） |
 |------|--------|--------------------|
+| 2026-09-02 | v0.24.0-beta.2 | **扩展管理 Beta 多端发布与侧栏注册门禁**：在 v0.24.0-beta.1 的 `addons_query` / `addons_manage`、Provider 原生缓存、持久化 ContextProjection 和工具输出折叠基础上，补回干净 Firefox 基线中的 Agent `makeSidebar` 注册块并加入自测断言，消除增量构建树与全新构建树的侧栏入口差异；同一锁定基线重新构建 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64。 |
+| 2026-09-02 | v0.24.0-beta.1 | **安全扩展生命周期与 Token 缓存优化 Beta**：新增 `addons_query` / `addons_manage`，支持 AMO 搜索、签名安装、启停、卸载和打开配置页；新增 Provider 原生缓存、稳定前缀、持久化 ContextProjection、旧工具输出折叠与用量统计，原 66 个工具和既有数据协议不变。 |
 | 2026-08-20 | v0.23.1 | **Windows MCP 工具注册兼容与多端复验**：确认 Firefox v0.23.0 Windows 包内 `Tools/ToolRouter/AgentSession/Backends` 完整，浏览器真实工具面为 66；根因是配套 `frx-director-mcp` 从初版起在 stdio 握手前等待浏览器，且旧 `agent_tools` 静态 backend stub 只能返回 38/66。配套 MCP v0.3.6 改为先注册 23 个顶层 MCP 工具，再异步解析 `FRX_ENV_ID`、分配端口和启动 Firefox；目录改读真实 backend 并增加 `missingDeclared`。安装包新增 `extensions.firefox-reverse.version=0.23.1` 标记，五端统一新 BuildID，并新增 `force-build-id-relink.sh` 防止增量构建出现 ini 已更新但运行时 XUL 仍为旧 BuildID。本浏览器版本不改指纹、profile、Agent 或 C++ 行为，重新构建并复验 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64 产物。 |
 | 2026-08-14 | v0.23.0 | **可迁移会话、多账号模型配置、取消边界与通用 Skills**：单会话支持 `.frx-chat.json` 导入导出；同一模型渠道可保存多组命名账号/端点/模型配置；手动停止后持久记录 `cancelled`，下一条默认不恢复旧任务；新增 `skill_list`、按名 `skill_get`、`skill_read_resource`，工具总数更新为 66。发布 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64。 |
 | 2026-07-29 | v0.22.4 | **Firefox-only 指纹与简体中文默认值**：新环境只生成匹配 Gecko 内核的 Firefox 指纹，默认中国大陆、`zh-CN`、`Asia/Shanghai`；已有环境保持兼容。修复网页指纹 screen/DPR 覆盖污染 chrome 坐标导致右键菜单偏移，并补齐环境接口与品牌回归。 |

@@ -81,6 +81,8 @@ const agentUiPatch = fs.readFileSync(agentUiPatchPath, "utf8");
 for (const expected of [
   'diff --git a/browser/components/moz.build b/browser/components/moz.build',
   '+    "agent-sidebar",',
+  '+        "viewAgentSidebar",',
+  '+          url: "chrome://browser/content/agent-sidebar/panel.html",',
   '+sidebar-menu-agent-label =',
 ]) {
   if (!agentUiPatch.includes(expected)) {

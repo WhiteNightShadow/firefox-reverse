@@ -93,7 +93,7 @@ index a9857f4682..e7103a3225 100644
  ChromeUtils.defineESModuleGetters(lazy, {
    BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
 diff --git a/browser/components/sidebar/browser-sidebar.js b/browser/components/sidebar/browser-sidebar.js
-index d3178e9eb6..8ffe590dec 100644
+index d3178e9eb6..9b83bedc02 100644
 --- a/browser/components/sidebar/browser-sidebar.js
 +++ b/browser/components/sidebar/browser-sidebar.js
 @@ -14,6 +14,7 @@ const { DeferredTask } = ChromeUtils.importESModule(
@@ -104,7 +104,23 @@ index d3178e9eb6..8ffe590dec 100644
    viewGenaiPageAssistSidebar: "aipageassist",
    viewTabsSidebar: "syncedtabs",
    viewHistorySidebar: "history",
-@@ -406,6 +407,13 @@ var SidebarController = {
+@@ -182,4 +183,15 @@ var SidebarController = {
+           recordSidebarVersion: true,
+         }),
+       ],
++      [
++        "viewAgentSidebar",
++        this.makeSidebar({
++          name: "agent",
++          elementId: "sidebar-switcher-agent",
++          url: "chrome://browser/content/agent-sidebar/panel.html",
++          menuId: "menu_agentSidebar",
++          revampL10nId: "sidebar-menu-agent-label",
++          iconUrl: "chrome://global/skin/icons/highlights.svg",
++        }),
++      ],
+     ]);
+@@ -406,6 +418,13 @@ var SidebarController = {
      // Initialize global state manager.
      this.SidebarManager;
  
@@ -118,7 +134,7 @@ index d3178e9eb6..8ffe590dec 100644
      // Initialize per-window state manager.
      if (!this._state) {
        this._state = new this.SidebarState(this);
-@@ -693,6 +701,9 @@ var SidebarController = {
+@@ -693,6 +712,9 @@ var SidebarController = {
     * Toggle the vertical tabs preference.
     */
    toggleVerticalTabs() {
