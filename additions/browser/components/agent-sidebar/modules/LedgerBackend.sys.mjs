@@ -18,6 +18,45 @@ const MD = "ledger.md";
 const CAP_FACT = 120; // 每(站点,类型)封顶，防注入块无限膨胀（跨会话累积也要有界）
 const CAP_DEAD = 60;
 
+// 作用域列只能来自这两个内部枚举。保留完整 SQL，而不是把列名拼入模板字符串：
+// 即使以后调用方误传外部值，也会在执行 SQL 前 fail-closed。
+const SCOPE_SQL = new Map([
+  [
+    "workspace",
+    Object.freeze({
+      selectExisting:
+        "SELECT id,norm FROM mem WHERE kind=:k AND workspace<>'' AND workspace=:v",
+      trimOldest:
+        "DELETE FROM mem WHERE id IN (SELECT id FROM mem WHERE kind=:k AND workspace=:v ORDER BY id DESC LIMIT -1 OFFSET :cap)",
+    }),
+  ],
+  [
+    "site",
+    Object.freeze({
+      selectExisting:
+        "SELECT id,norm FROM mem WHERE kind=:k AND site<>'' AND site=:v",
+      trimOldest:
+        "DELETE FROM mem WHERE id IN (SELECT id FROM mem WHERE kind=:k AND site=:v ORDER BY id DESC LIMIT -1 OFFSET :cap)",
+    }),
+  ],
+]);
+/** 返回固定作用域 SQL；未知列拒绝，禁止回退到字符串拼接。 */
+export function ledgerScopeSql(column) {
+  const statements = SCOPE_SQL.get(column);
+  if (!statements) {
+    throw new Error(`不支持的账本作用域列: ${String(column)}`);
+  }
+  return statements;
+}
+
+/** 仅按内部查询结果数量生成占位符；ID 值始终通过绑定参数传入。 */
+export function ledgerDeleteByIdsSql(count) {
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new Error(`无效的账本去重数量: ${String(count)}`);
+  }
+  return "DELETE FROM mem WHERE id IN (" + Array(count).fill("?").join(",") + ")";
+}
+
 function _norm(s) {
   return String(s || "")
     .toLowerCase()
@@ -181,10 +220,10 @@ export class LedgerBackend {
       const ev = String(it.evidence || it.ev || "").trim().slice(0, 300);
       const norm = _norm(text);
       // 去重：同任务作用域(目录/站点) + 同 kind 下，归一化全等 或 子串近重复 → 删旧留新。
-      const existing = sc ? await db.execute(
-        `SELECT id,norm FROM mem WHERE kind=:k AND ${sc.col}<>'' AND ${sc.col}=:v`,
-        { k: kind, v: sc.val }
-      ) : [];
+      const scopeSql = sc ? ledgerScopeSql(sc.col) : null;
+      const existing = scopeSql
+        ? await db.execute(scopeSql.selectExisting, { k: kind, v: sc.val })
+        : [];
       const dropIds = [];
       for (const r of existing) {
         const en = r.getResultByName("norm") || "";
@@ -197,7 +236,8 @@ export class LedgerBackend {
         }
       }
       if (dropIds.length) {
-        await db.execute(`DELETE FROM mem WHERE id IN (${dropIds.map(() => "?").join(",")})`, dropIds);
+        // SQL 只按可信数量生成问号；全部 ID 一次绑定，保留原有单语句原子性。
+        await db.execute(ledgerDeleteByIdsSql(dropIds.length), dropIds);
         dedup += dropIds.length;
       }
       await db.execute(
@@ -208,10 +248,10 @@ export class LedgerBackend {
         added++;
       }
       // 每(任务作用域,类型)封顶：删最旧超出部分。
-      if (sc) {
+      if (scopeSql) {
         const cap = kind === "deadend" ? CAP_DEAD : CAP_FACT;
         await db.execute(
-          `DELETE FROM mem WHERE id IN (SELECT id FROM mem WHERE kind=:k AND ${sc.col}=:v ORDER BY id DESC LIMIT -1 OFFSET :cap)`,
+          scopeSql.trimOldest,
           { k: kind, v: sc.val, cap }
         );
       }

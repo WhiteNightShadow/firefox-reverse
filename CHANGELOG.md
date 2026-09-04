@@ -6,6 +6,7 @@
 
 | 日期 | 版本号 | 改版内容（一句话） |
 |------|--------|--------------------|
+| 2026-09-04 | v0.24.1 | **Ledger SQL 固定列名加固**：确认 Semgrep 报告不是当前可利用的 SQL 注入；将内部 `workspace/site` 作用域改为完整固定 SQL allowlist，未知列 fail-closed，所有业务值继续参数绑定；去重 ID 使用单条占位符数组绑定以保持原子性和性能，新增恶意值、多 ID 与非法数量回归测试，不改变数据库结构、去重/cap 语义或 Agent API。 |
 | 2026-09-02 | v0.24.0-beta.2 | **扩展管理 Beta 多端发布与侧栏注册门禁**：在 v0.24.0-beta.1 的 `addons_query` / `addons_manage`、Provider 原生缓存、持久化 ContextProjection 和工具输出折叠基础上，补回干净 Firefox 基线中的 Agent `makeSidebar` 注册块并加入自测断言；强制刷新 `buildid.h` 与 `source-repo.h`，消除增量构建树的侧栏入口差异和新 BuildID 搭配旧 SourceStamp 的发布溯源差异；同一锁定基线重新构建 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64。 |
 | 2026-09-02 | v0.24.0-beta.1 | **安全扩展生命周期与 Token 缓存优化 Beta**：新增 `addons_query` / `addons_manage`，支持 AMO 搜索、签名安装、启停、卸载和打开配置页；新增 Provider 原生缓存、稳定前缀、持久化 ContextProjection、旧工具输出折叠与用量统计，原 66 个工具和既有数据协议不变。 |
 | 2026-08-20 | v0.23.1 | **Windows MCP 工具注册兼容与多端复验**：确认 Firefox v0.23.0 Windows 包内 `Tools/ToolRouter/AgentSession/Backends` 完整，浏览器真实工具面为 66；根因是配套 `frx-director-mcp` 从初版起在 stdio 握手前等待浏览器，且旧 `agent_tools` 静态 backend stub 只能返回 38/66。配套 MCP v0.3.6 改为先注册 23 个顶层 MCP 工具，再异步解析 `FRX_ENV_ID`、分配端口和启动 Firefox；目录改读真实 backend 并增加 `missingDeclared`。安装包新增 `extensions.firefox-reverse.version=0.23.1` 标记，五端统一新 BuildID，并新增 `force-build-id-relink.sh` 防止增量构建出现 ini 已更新但运行时 XUL 仍为旧 BuildID。本浏览器版本不改指纹、profile、Agent 或 C++ 行为，重新构建并复验 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64 产物。 |
