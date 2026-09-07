@@ -1,11 +1,13 @@
 """Validate the exact candidate ZIP on a native Windows CI runner."""
 import configparser
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import socket
 import struct
 import subprocess
@@ -24,6 +26,23 @@ def stop(process):
         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         process.wait(timeout=15)
+
+
+@contextmanager
+def temporary_workspace():
+    work = Path(tempfile.mkdtemp(prefix="frx-native-"))
+    try:
+        yield work
+    finally:
+        # Windows may briefly retain file locks after the browser exits.
+        for attempt in range(20):
+            try:
+                shutil.rmtree(work)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(1)
 
 
 class Wire:
@@ -77,7 +96,7 @@ def validate(report, output):
     package = Path("candidate") / f"firefox-reverse-{tag}-windows-x86_64.zip"
     assert sha(package) == package_sha
     report.update(platform="Windows", source_commit=commit, package_sha256=package_sha)
-    with tempfile.TemporaryDirectory(prefix="frx-native-") as work:
+    with temporary_workspace() as work:
         work = Path(work)
         with zipfile.ZipFile(package) as archive:
             for name in archive.namelist():
@@ -106,7 +125,7 @@ def validate(report, output):
         try:
             with (output / "screenshot.log").open("wb") as log:
                 process = subprocess.Popen([
-                    str(executable), "--headless", "--no-remote", "--profile", str(profile),
+                    str(executable), "--headless", "--no-remote", "--no-deelevate", "--wait-for-browser", "--profile", str(profile),
                     "--screenshot", str(screenshot),
                     "data:text/html,%3Cbody%3EFirefox%20Reverse%20native%20validation%3C/body%3E"
                 ], stdout=log, stderr=log)
@@ -130,7 +149,7 @@ def validate(report, output):
         connection = None
         try:
             with (output / "ledger.log").open("wb") as log:
-                process = subprocess.Popen([str(executable), "-headless", "-no-remote", "-profile", str(profile),
+                process = subprocess.Popen([str(executable), "-headless", "-no-remote", "-no-deelevate", "-wait-for-browser", "-profile", str(profile),
                     "-marionette", "-remote-allow-system-access", "about:blank"], env=env, stdout=log, stderr=log)
                 deadline = time.monotonic() + 60
                 while connection is None:
@@ -177,6 +196,9 @@ def validate(report, output):
                 assert result.get("passed") is True, result
                 assert result["build"] == build_id and result["version"] == tag[1:]
                 report.update(runtime_build_id=result["build"], ledger_passed=True, ledger_checks=result["checks"])
+                wire.command("Marionette:Quit", {})
+                report["ledger_exit_code"] = process.wait(timeout=30)
+                assert report["ledger_exit_code"] == 0
         finally:
             if connection:
                 connection.close()
