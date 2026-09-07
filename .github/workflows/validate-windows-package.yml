@@ -21,7 +21,8 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # GitHub only exposes draft releases to identities with push access.
+  contents: write
 
 jobs:
   native-windows:
