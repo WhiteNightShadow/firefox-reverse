@@ -1,0 +1,59 @@
+name: Validate Windows Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "包含候选 ZIP 的草稿或正式 Release"
+        required: true
+        type: string
+      package_sha256:
+        description: "候选 Windows ZIP 的 SHA256"
+        required: true
+        type: string
+      source_commit:
+        description: "浏览器 SourceStamp 对应的源提交"
+        required: true
+        type: string
+      build_id:
+        description: "浏览器 BuildID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: 下载候选包
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v[0-9][0-9A-Za-z.-]*$') { throw 'Invalid release tag' }
+          gh release download $env:RELEASE_TAG --pattern "firefox-reverse-$($env:RELEASE_TAG)-windows-x86_64.zip" --dir candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Release download failed' }
+      - name: 原生启动、截图与 Ledger 验证
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PACKAGE_SHA256: ${{ inputs.package_sha256 }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          EXPECTED_BUILD_ID: ${{ inputs.build_id }}
+        run: python scripts/verify-windows-package.py
+      - name: 保存验证报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-report
+          path: native-report/
+          if-no-files-found: error
