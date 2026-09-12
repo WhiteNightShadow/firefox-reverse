@@ -1,19 +1,12 @@
-/* LlmClient.sys.mjs — Agent 侧边栏的 LLM 调用核心。
+/* LlmClient.sys.mjs - protocol adapter and resilient LLM request engine.
  *
- * 设计约束（A1）：
- * 1. 近零 Firefox 依赖：fetch / AbortController 用 globalThis（Firefox chrome 与 Node 18+ 都有）。
- *    唯一例外：system ESM(.sys.mjs) 全局没有 setTimeout/clearTimeout，缺失时才从
- *    Timer.sys.mjs 取（见下方 _setTimeout 解析器）。Node 路径完全不碰 ChromeUtils，
- *    dev/selftest-llm.mjs 仍可直接 import 验证。
- * 2. API Key 由调用方传入，本类不持久化。持久化是 ConfigStore.sys.mjs 的职责。
- * 3. A1 只实现 protocol="openai"（覆盖 deepseek / openai / 自定义兼容端点）。
- *    anthropic / gemini 协议分支显式抛错，留到 A2，不假装支持。
- *
- * 注：Firefox system ESM 的全局 fetch 可用性需在 upstream bootstrap 后验证；
- * 若系统全局无 fetch，集成时由宿主注入。详见 patches/agent-ui/README.md 风险表。
+ * The client has no Firefox dependency. Network, abort, and timer primitives
+ * come from LlmTransport; Node and browser globals are only default adapters.
+ * Configuration and API-key persistence remain caller responsibilities.
  */
 
 import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
+import { createLlmTransport } from "./LlmTransport.sys.mjs";
 
 /** 协议族标识（与 settings/agent.example.json 的 provider.protocol 对应）。 */
 export const PROTOCOLS = Object.freeze({
@@ -28,23 +21,6 @@ export const PROTOCOLS = Object.freeze({
 const _cacheFieldRejectedEndpoints = new Set();
 const _streamUsageRejectedEndpoints = new Set();
 
-/* setTimeout/clearTimeout 解析：
- * - Node / chrome document：globalThis 上就有，直接用。
- * - Firefox system ESM(.sys.mjs)：globalThis 上没有 → 从 Timer.sys.mjs 取（仅此处、仅在缺失时碰
- *   ChromeUtils，故 Node 自测路径零 Firefox 依赖）。这是 “⚠ setTimeout is not defined” 的修复点。 */
-const { setTimeout: _setTimeout, clearTimeout: _clearTimeout } = (() => {
-  if (typeof globalThis.setTimeout === "function") {
-    return {
-      setTimeout: globalThis.setTimeout.bind(globalThis),
-      clearTimeout: (globalThis.clearTimeout || (() => {})).bind(globalThis),
-    };
-  }
-  if (typeof ChromeUtils !== "undefined") {
-    const T = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
-    return { setTimeout: T.setTimeout, clearTimeout: T.clearTimeout };
-  }
-  return { setTimeout: () => 0, clearTimeout: () => {} }; // 兜底：无定时器 → 不超时
-})();
 
 /** 带 HTTP 状态与响应体的错误类型，便于 UI 区分网络错误 / 鉴权错误 / 解析错误。 */
 export class LlmError extends Error {
@@ -76,12 +52,14 @@ export class LlmClient {
    * @param {string} [cfg.providerId]
    * @param {string} [cfg.promptCacheMode] "auto" | "off"
    * @param {string} [cfg.promptCacheTtl]  "default" | "5m" | "1h"
+   * @param {object} [cfg.transport] Host-provided fetch, abort, and timer primitives.
    * @param {object} [cfg.request]  { timeout_ms, max_tokens, temperature, stream, reasoning_effort }
    */
   constructor(cfg) {
     if (!cfg || typeof cfg !== "object") {
       throw new LlmError("LlmClient: config object required");
     }
+    this.transport = createLlmTransport(cfg.transport || cfg.runtime);
     this.protocol = cfg.protocol || PROTOCOLS.OPENAI;
     this.baseUrl = (cfg.baseUrl || "").replace(/\/+$/, "");
     this.chatPath = cfg.chatPath || "/v1/chat/completions";
@@ -317,22 +295,22 @@ export class LlmClient {
       // 空闲看门狗（idle watchdog）：只要还在进展就不超时——建连→响应头→每段流式数据都会 bump() 重置，
       // 仅当连续 idleMs 一个字节都不来（真·卡死/断流）才中止。于是慢/长响应（大上下文、推理模型边想边出）
       // 都不会再误报超时；正常出 token 时永不触发。stalled 标记区分"看门狗中止"与"用户停止/网络断"。
-      const ac = new AbortController();
+      const ac = this.transport.createAbortController();
       let stalled = false;
       const idleMs = this.request.timeout_ms; // 语义=最大"无数据间隔"，不是总时长
       let watchdog = null;
       const bump = () => {
         if (watchdog) {
-          _clearTimeout(watchdog);
+          this.transport.clearTimeout(watchdog);
         }
-        watchdog = _setTimeout(() => {
+        watchdog = this.transport.setTimeout(() => {
           stalled = true;
           ac.abort();
         }, idleMs);
       };
       const stopWatch = () => {
         if (watchdog) {
-          _clearTimeout(watchdog);
+          this.transport.clearTimeout(watchdog);
           watchdog = null;
         }
       };
@@ -342,7 +320,7 @@ export class LlmClient {
       }
       let resp;
       try {
-        resp = await fetch(built.url, { ...built.init, signal: ac.signal });
+        resp = await this.transport.fetch(built.url, { ...built.init, signal: ac.signal });
         bump(); // 收到响应头 → 重置看门狗
       } catch (e) {
         stopWatch();
@@ -441,9 +419,9 @@ export class LlmClient {
     throw lastErr;
   }
 
-  /** 重试退避用的小延时（用 Timer 解析器，system ESM 也能用）。 */
+  /** Retry backoff delay provided by the injected transport. */
   _delay(ms) {
-    return new Promise(r => _setTimeout(r, ms));
+    return this.transport.delay(ms);
   }
 
   /**
@@ -789,7 +767,7 @@ export function toAnthropicMessages(messages) {
  * 从 agent.json 风格的 provider 配置构造 LlmClient。
  * @param {object} providerCfg  agent.json 中 providers[name] 的对象
  * @param {object} [requestCfg] agent.json 中的 request 对象
- * @param {object} [opts]       { apiKeyFallbackEnv?: string } Node 自测时回退读环境变量
+ * @param {object} [opts]       API-key fallback and optional runtime transport.
  * @returns {LlmClient}
  */
 export function clientFromProviderConfig(providerCfg, requestCfg, opts = {}) {
@@ -803,6 +781,7 @@ export function clientFromProviderConfig(providerCfg, requestCfg, opts = {}) {
     chatPath: providerCfg.chat_path,
     apiKey,
     model: providerCfg.default_model,
+    transport: opts.transport,
     request: requestCfg,
   });
 }

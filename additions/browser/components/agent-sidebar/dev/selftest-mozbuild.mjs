@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const mozBuildPath = fileURLToPath(new URL("../moz.build", import.meta.url));
+const modulesPath = fileURLToPath(new URL("../modules/", import.meta.url));
 const packagePath = fileURLToPath(new URL("../package.json", import.meta.url));
 const localePrefsPath = fileURLToPath(new URL("../preferences/frx-locale.js", import.meta.url));
 const localeMozBuildPath = fileURLToPath(new URL("../preferences/moz.build", import.meta.url));
@@ -31,6 +32,21 @@ const sorted = [...entries].sort((left, right) => {
 if (JSON.stringify(entries) !== JSON.stringify(sorted)) {
   console.error("FAIL: moz.build module list is not sorted");
   console.error("expected:", sorted.join("\n"));
+  process.exit(1);
+}
+
+const sourceModules = fs
+  .readdirSync(modulesPath)
+  .filter(name => name.endsWith(".sys.mjs"))
+  .map(name => `modules/${name}`)
+  .sort();
+const registeredModules = [...entries].sort();
+if (JSON.stringify(sourceModules) !== JSON.stringify(registeredModules)) {
+  const missing = sourceModules.filter(name => !registeredModules.includes(name));
+  const stale = registeredModules.filter(name => !sourceModules.includes(name));
+  console.error("FAIL: moz.build does not exactly match modules/*.sys.mjs");
+  if (missing.length) console.error("unregistered:", missing.join(", "));
+  if (stale.length) console.error("missing source:", stale.join(", "));
   process.exit(1);
 }
 

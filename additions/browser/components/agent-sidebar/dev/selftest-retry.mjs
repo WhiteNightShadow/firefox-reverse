@@ -15,15 +15,23 @@ const ok = (c, m) => {
   }
 };
 
+let mockFetch = null;
 const mkClient = () => {
-  const c = new LlmClient({ protocol: "openai", baseUrl: "http://x", apiKey: "k", model: "m", request: { timeout_ms: 5000 } });
+  const c = new LlmClient({
+    protocol: "openai",
+    baseUrl: "http://x",
+    apiKey: "k",
+    model: "m",
+    transport: { fetch: (...args) => mockFetch(...args) },
+    request: { timeout_ms: 5000 },
+  });
   c._delay = () => Promise.resolve(); // 测试里不真等
   return c;
 };
 
 console.log("[1] 502(upstream) 两次后重试成功");
 let calls = 0;
-globalThis.fetch = async () => {
+mockFetch = async () => {
   calls++;
   if (calls < 3) {
     return { ok: false, status: 502, statusText: "Bad Gateway", text: async () => '{"error":{"type":"upstream_error"}}' };
@@ -36,7 +44,7 @@ ok(r.content === "hi", "重试后拿到正常响应");
 
 console.log("[2] 400 不重试（请求错误，重试无意义）");
 calls = 0;
-globalThis.fetch = async () => {
+mockFetch = async () => {
   calls++;
   return { ok: false, status: 400, statusText: "Bad Request", text: async () => '{"error":{"message":"bad"}}' };
 };
@@ -50,7 +58,7 @@ ok(status400 === 400 && calls === 1, `400 直接抛、不重试（fetch 调用 $
 
 console.log("[3] 持续 502 → 重试耗尽后抛（带提示）");
 calls = 0;
-globalThis.fetch = async () => {
+mockFetch = async () => {
   calls++;
   return { ok: false, status: 502, statusText: "Bad Gateway", text: async () => '{"error":{"type":"upstream_error"}}' };
 };

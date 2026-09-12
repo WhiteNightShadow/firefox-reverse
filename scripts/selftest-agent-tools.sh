@@ -21,6 +21,7 @@ run npm --prefix "$SIDEBAR_DIR" run build
 
 SELFTESTS=(
   selftest-addons.mjs
+  selftest-agent-runtime-core.mjs
   selftest-config.mjs
   selftest-mozbuild.mjs
   selftest-providers.mjs

@@ -235,7 +235,7 @@ export function listProviders() {
 /**
  * 从 ConfigStore（+ 可选 overrides）构造 LlmClient。
  * @param {object} store  ConfigStore 实例
- * @param {object} [overrides] { provider, apiKey, model, baseUrl, reasoningEffort }
+ * @param {object} [overrides] Provider fields plus an optional runtime transport.
  * @returns {LlmClient}
  */
 export function buildClientFromStore(store, overrides = {}) {
@@ -288,6 +288,7 @@ export function buildClientFromStore(store, overrides = {}) {
       overrides.promptCacheTtl ||
       (store.getPromptCacheTtl && store.getPromptCacheTtl()) ||
       "default",
+    transport: overrides.transport,
     request: {
       // Anthropic extended thinking uses a different object shape and token
       // budget contract; do not translate an OpenAI-compatible level into it.

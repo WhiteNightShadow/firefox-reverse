@@ -1,75 +1,23 @@
-/* dev/selftest-thread-reservation.mjs — 多窗口线程预留逻辑的算法规格镜像测试。
- *   node dev/selftest-thread-reservation.mjs
- * AgentSession.sys.mjs 依赖整棵 Firefox 模块树、Node 无法直接 import，故此处**逐字镜像**
- * acquire/renew/release 三函数的算法，覆盖回归点：同 owner 立即重认领 / 别窗口活预留拦截 /
- * 预留过期回收 / 心跳续约 / 释放只放自己的。真模块的端到端验证走装机后 marionette aeval。
- * 不随 omni.ja 打包。
- */
-const RESERVE_TTL_MS = 8000;
+/* Direct specification test for the platform-neutral AgentRuntimeCore. */
+import {
+  AgentRuntimeCore,
+  DEFAULT_RESERVATION_TTL_MS as RESERVE_TTL_MS,
+} from "../modules/AgentRuntimeCore.sys.mjs";
 
-// ── 逐字镜像自 AgentSession.sys.mjs（改动时两处同步）──
 function makeStore() {
-  const sessions = new Map();
   let NOW = 0;
-  const now = () => NOW;
-  const getOrInit = id => {
-    let s = sessions.get(id);
-    if (!s) {
-      s = { reservation: null };
-      sessions.set(id, s);
-    }
-    return s;
-  };
+  const core = new AgentRuntimeCore({
+    now: () => NOW,
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
   return {
-    sessions,
-    advance: ms => {
-      NOW += ms;
-    },
-    setNow: v => {
-      NOW = v;
-    },
-    acquireThread(candidateIds, owner) {
-      const token = owner || "anon";
-      for (const id of candidateIds || []) {
-        if (!id) {
-          continue;
-        }
-        const s = getOrInit(id);
-        const r = s.reservation;
-        const liveOther = r && r.owner !== token && now() - r.ts < RESERVE_TTL_MS;
-        if (!liveOther) {
-          s.reservation = { owner: token, ts: now() };
-          return id;
-        }
-      }
-      return null;
-    },
-    renewThread(threadId, owner) {
-      const s = sessions.get(threadId);
-      if (!s) {
-        return false;
-      }
-      const token = owner || "anon";
-      if (!s.reservation) {
-        s.reservation = { owner: token, ts: now() };
-        return true;
-      }
-      if (s.reservation.owner !== token) {
-        return false;
-      }
-      s.reservation.ts = now();
-      return true;
-    },
-    releaseThread(threadId, owner) {
-      const s = sessions.get(threadId);
-      if (!s || !s.reservation) {
-        return;
-      }
-      if (owner && s.reservation.owner !== owner) {
-        return;
-      }
-      s.reservation = null;
-    },
+    sessions: core.sessions,
+    advance: ms => { NOW += ms; },
+    setNow: value => { NOW = value; },
+    acquireThread: core.acquireThread.bind(core),
+    renewThread: core.renewThread.bind(core),
+    releaseThread: core.releaseThread.bind(core),
   };
 }
 

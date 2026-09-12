@@ -41,16 +41,8 @@ for module in "${MODULES[@]}"; do
   fi
 done
 
-# 拷贝 additions/
-if [[ -d "$REPO_ROOT/additions" ]]; then
-  if [[ -n "$(find "$REPO_ROOT/additions" -mindepth 1 -not -name 'README.md' -print -quit 2>/dev/null)" ]]; then
-    echo "[apply-patches] copying additions/ to $UPSTREAM_DIR"
-    # 排除 agent-sidebar 的前端开发文件（Firefox 构建只需 bundle/html/css + .sys.mjs）
-    rsync -a --exclude README.md --exclude node_modules --exclude dev \
-      --exclude '*.jsx' --exclude 'package*.json' --exclude .gitignore \
-      "$REPO_ROOT/additions/" "$UPSTREAM_DIR/"
-  fi
-fi
+# 拷贝 additions/；独立脚本也供日常二次开发安全重复执行。
+bash "$REPO_ROOT/scripts/sync-additions.sh"
 
 python3 "$REPO_ROOT/scripts/apply-fingerprint-config.py" "$UPSTREAM_DIR"
 

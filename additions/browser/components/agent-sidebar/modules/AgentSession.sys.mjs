@@ -7,9 +7,11 @@
  * 恢复 steps+busy 并订阅续看；不在场也不影响——引擎照跑、结果照存。
  */
 import { runAgentTurn } from "./AgentLoop.sys.mjs";
-import { ToolRouter } from "./ToolRouter.sys.mjs";
-import { createBuiltinTools } from "./Tools.sys.mjs";
-import { getBackends } from "./Backends.sys.mjs";
+import {
+  AgentRuntimeCore,
+  slimifySteps,
+  textFromSteps,
+} from "./AgentRuntimeCore.sys.mjs";
 import { configStore } from "./ConfigStore.sys.mjs";
 import {
   buildProjectionInput,
@@ -19,245 +21,33 @@ import {
 } from "./ContextProjection.sys.mjs";
 import { buildClientFromStore, isVisionModel } from "./providers.sys.mjs";
 import { conversationStore } from "./ConversationStore.sys.mjs";
+import { firefoxAgentRuntimeHost } from "./FirefoxAgentRuntimeHost.sys.mjs";
 import { emptyUsage, mergeUsage, normalizeUsage } from "./Usage.sys.mjs";
 
-// system ESM 无 window.setTimeout；从 Timer.sys.mjs 取（用于流式通知节流）。
-const { setTimeout: _setTimeout, clearTimeout: _clearTimeout } = ChromeUtils.importESModule(
-  "resource://gre/modules/Timer.sys.mjs"
-);
-const NOTIFY_THROTTLE_MS = 50; // 流式 delta/reasoning 最多 ~20 次/秒推给 UI——避免每 token 跨 realm 调用把内容进程压垮
 const CANCELLED_TURN_BOUNDARY =
   "【手动取消边界】上一项任务已被用户明确手动取消。此前未完成事项只能作为历史背景，" +
   "不得自动恢复、补做或继续调用工具。请把最新一条用户消息视为新的独立请求；" +
   "只有当最新消息明确要求‘继续/恢复上一项任务’时，才可以接着执行被取消的任务。";
-
-let _router = null;
-function router() {
-  if (!_router) {
-    _router = new ToolRouter();
-    _router.registerAll(createBuiltinTools(getBackends()));
-  }
-  return _router;
-}
-
-// 从 steps 里拼出本轮模型产出的正文文本。content 兜底用：
-// 工具密集轮 / 被打断轮 res.content 可能为空，但 steps 里有 text 段 → 落盘的 assistant
-// 消息仍须带文本，否则下一轮历史里这一轮是空白回复＝模型看不到自己上轮说过什么＝会话失忆。
-function textFromSteps(steps) {
-  return (steps || [])
-    .filter(x => x && x.kind === "text" && typeof x.text === "string" && x.text.trim())
-    .map(x => x.text)
-    .join("\n")
-    .trim();
-}
-
-/** 持久化前给 steps 瘦身（去截图大数据、截断长思考），与 UI 旧逻辑一致。 */
-function slimifySteps(steps) {
-  return steps.map(s => {
-    if (s.images && s.images.length) {
-      const { images, ...rest } = s; // eslint-disable-line no-unused-vars
-      return { ...rest, shot: images.length };
-    }
-    if (s.kind === "think" && s.text && s.text.length > 800) {
-      return { ...s, text: s.text.slice(0, 800) + "…（思考已截断）" };
-    }
-    return s;
-  });
-}
-
-function summarizeEnv(env) {
-  if (!env) return "";
-  if (!env.ok) return (env.error ? String(env.error) : "失败").slice(0, 80);
-  const d = env.data;
-  if (d == null) return "ok";
-  if (typeof d === "object") {
-    for (const k of ["count", "savedCount", "total", "enabled", "requests", "hits", "records", "urls"]) {
-      if (d[k] != null) {
-        return k + "=" + (Array.isArray(d[k]) ? d[k].length : JSON.stringify(d[k]).slice(0, 40));
-      }
-    }
-    return "ok";
-  }
-  return String(d).slice(0, 60);
-}
-
-const sessions = new Map(); // threadId -> state
-
-// 多窗口预留的心跳过期：持有窗口活着时每隔几秒续约 ts；超过此时长没续约 = 持有者已销毁
-// （切栏/关窗时文档被异常拆除、releaseThread 没跑成）→ 预留视为可回收。比心跳间隔(3s)宽裕。
-const RESERVE_TTL_MS = 8000;
-
-// 关机时中止所有运行中的会话（停掉挂起的 LLM 流/工具 + 经 signal 让子进程被 kill），让 firefox
-// 主进程干净快速退出。修「关闭浏览器后进程僵尸/慢退」：实测基座(无 agent)SIGTERM 1s 退，agent
-// 激活后占资源则慢退；这里在关机早期主动中止。Node 自测无 Services.obs → try 兜底。
-try {
-  Services.obs.addObserver(
-    {
-      observe() {
-        for (const s of sessions.values()) {
-          try {
-            s.abort?.abort();
-          } catch {
-            /* ignore */
-          }
-        }
-      },
-    },
-    "quit-application-granted"
-  );
-} catch {
-  /* 非 Firefox 环境无 Services.obs */
-}
-const _runLog = []; // [DEBUG] 记录每次 run() 调用，确认 UI 是否真的路由到引擎
+console.log("[AgentSession] zbb");
+const _runLog = [];
 export function getRunLog() {
   return _runLog.slice(-20);
 }
 
-function newState() {
-  return {
-    running: false,
-    settled: false, // 本轮已结束（done/error）——UI 据此从 store 重载已落盘消息
-    steps: [],
-    _curText: -1,
-    _curThink: -1,
-    content: "",
-    error: null,
-    aborted: false,
-    abort: null,
-    subs: new Set(),
-    reservation: null, // 多窗口隔离：{ owner, ts } 或 null。owner=持有窗口 token；ts=最后心跳。
-    //   只有「owner 不同 且 心跳新鲜(未过 TTL)」才算被别的活窗口占用；过期/同 owner/空 → 可认领。
-    //   修「切到别的插件侧栏再切回→该会话已在另一个窗口打开」：旧 reserved 布尔无持有者无存活性，
-    //   文档异常拆除时 releaseThread 没跑→reserved 永真泄漏→同窗口重挂载误判成"别的窗口占用"。
-    pendingConfirm: null, // { id, name, args, resolve }
-    _notifyTimer: null, // 节流定时器
-    _lastNotify: 0, // 上次广播时刻
-    checkpointSeq: 0, // 自增：每次上下文压缩落盘一条 checkpoint 回复就 +1，UI 据此重载并起新气泡
-    usage: emptyUsage(), // current run only; aggregate is persisted on the thread
-    lastUsage: null,
-    contextStrategy: "projected",
-    contextProjected: false,
-  };
-}
-function getOrInit(threadId) {
-  let s = sessions.get(threadId);
-  if (!s) {
-    s = newState();
-    sessions.set(threadId, s);
-  }
-  return s;
-}
-
-function notify(s) {
-  // 立即广播（结构性事件：tool/round/confirm/done/error）。会清掉待发的节流定时器。
-  if (s._notifyTimer) {
-    _clearTimeout(s._notifyTimer);
-    s._notifyTimer = null;
-  }
-  s._lastNotify = Date.now();
-  const snap = snapshot(s);
-  for (const cb of s.subs) {
-    try {
-      cb(snap);
-    } catch {
-      /* 死订阅者(面板已重载)忽略 */
-    }
-  }
-}
-// 节流广播（高频流式 delta/reasoning）：把"每 token 一次跨 realm 调用"降到 ~20 次/秒，
-// 否则内容进程被每 token 的快照+渲染压垮→看起来不流式、很慢。带 trailing：突发结束后补发一次。
-function notifyThrottled(s) {
-  const now = Date.now();
-  const since = now - (s._lastNotify || 0);
-  if (since >= NOTIFY_THROTTLE_MS) {
-    notify(s);
-  } else if (!s._notifyTimer) {
-    s._notifyTimer = _setTimeout(() => {
-      s._notifyTimer = null;
-      notify(s);
-    }, NOTIFY_THROTTLE_MS - since);
-  }
-}
-function snapshot(s) {
-  return {
-    running: s.running,
-    settled: s.settled,
-    steps: s.steps.slice(),
-    error: s.error,
-    aborted: s.aborted,
-    content: s.content,
-    checkpointSeq: s.checkpointSeq || 0,
-    usage: { ...s.usage },
-    lastUsage: s.lastUsage ? { ...s.lastUsage } : null,
-    contextStrategy: s.contextStrategy || "projected",
-    contextProjected: s.contextProjected === true,
-    pendingConfirm: s.pendingConfirm ? { id: s.pendingConfirm.id, name: s.pendingConfirm.name, args: s.pendingConfirm.args } : null,
-  };
-}
-
-// ── step reducer（从 UI 原样搬来：text / think 流式段 + tool 步骤）──
-function pushDelta(s, chunk) {
-  const arr = s.steps;
-  const i = s._curText;
-  if (i >= 0 && arr[i] && arr[i].kind === "text") {
-    arr[i] = { ...arr[i], text: arr[i].text + chunk };
-  } else {
-    arr.push({ kind: "text", text: chunk });
-    s._curText = arr.length - 1;
-    s._curThink = -1;
-  }
-}
-function pushReasoning(s, chunk) {
-  const arr = s.steps;
-  const i = s._curThink;
-  if (i >= 0 && arr[i] && arr[i].kind === "think") {
-    arr[i] = { ...arr[i], text: arr[i].text + chunk };
-  } else {
-    arr.push({ kind: "think", text: chunk });
-    s._curThink = arr.length - 1;
-    s._curText = -1;
-  }
-}
-function applyEvent(s, ev) {
-  if (ev.type === "round") {
-    s._curText = -1;
-    s._curThink = -1;
-  } else if (ev.type === "tool_call") {
-    s.steps.push({ kind: "tool", id: ev.id, name: ev.name, status: "running" });
-    s._curText = -1;
-    s._curThink = -1;
-  } else if (ev.type === "tool_result") {
-    const idx = s.steps.findIndex(x => x.kind === "tool" && x.id === ev.id && x.status === "running");
-    if (idx >= 0) {
-      const imgs =
-        ev.env && Array.isArray(ev.env.media)
-          ? ev.env.media.filter(m => m && m.type === "image" && m.dataUrl).map(m => m.dataUrl)
-          : null;
-      s.steps[idx] = {
-        ...s.steps[idx],
-        status: ev.env && ev.env.ok ? "ok" : "err",
-        summary: summarizeEnv(ev.env),
-        ...(imgs && imgs.length ? { images: imgs } : {}),
-      };
-    }
-  }
-}
+const runtimeCore = new AgentRuntimeCore({
+  ...firefoxAgentRuntimeHost.timers,
+  createUsage: emptyUsage,
+});
+const router = () => firefoxAgentRuntimeHost.router();
+const backends = () => firefoxAgentRuntimeHost.backends();
+firefoxAgentRuntimeHost.onShutdown(() => runtimeCore.abortAll());
 
 export const agentSession = {
   isRunning(threadId) {
-    const s = sessions.get(threadId);
-    return !!(s && s.running);
+    return runtimeCore.isRunning(threadId);
   },
-  /** 列出当前所有「正在跑」的线程（id + 进度），供面板发现被外部/MCP 驱动、但自己没在显示的会话 →
-   *  空闲时自动跟随、忙时横幅提示。只读，开销极小（遍历进程内 sessions Map）。 */
   listRunning() {
-    const out = [];
-    for (const [id, s] of sessions) {
-      if (s && s.running) {
-        out.push({ id, nSteps: (s.steps || []).length, checkpointSeq: s.checkpointSeq || 0 });
-      }
-    }
-    return out;
+    return runtimeCore.listRunning();
   },
   /** 列出全部已注册工具的规格（OpenAI tools 数组）。供 MCP 等外部 director 发现可直调的工具集。
    *  只读、零副作用；与 agent 用的是同一个全局 ToolRouter 单例（可用工具面 = 已接好的 backend）。 */
@@ -298,110 +88,26 @@ export const agentSession = {
    *  同一 chrome 窗口切栏重挂载会传同一 token → 立即重认领自己那条（不受 TTL 影响）；
    *  传旧式无 owner 时退化为匿名(仍按 TTL 回收)。每个侧栏挂载/切线程时调。 */
   acquireThread(candidateIds, owner) {
-    const token = owner || "anon";
-    const now = Date.now();
-    for (const id of (candidateIds || [])) {
-      if (!id) {
-        continue;
-      }
-      const s = getOrInit(id);
-      const r = s.reservation;
-      // 仅「别的 owner 且心跳仍新鲜」= 真有另一个活窗口占用；自己持有 / 无预留 / 预留过期(持有者已销毁) → 认领
-      const liveOther = r && r.owner !== token && now - r.ts < RESERVE_TTL_MS;
-      if (!liveOther) {
-        s.reservation = { owner: token, ts: now };
-        return id;
-      }
-    }
-    return null;
+    return runtimeCore.acquireThread(candidateIds, owner);
   },
-  /** 心跳续约：本窗口持有 currentId 期间定时调，刷新 ts 证明自己还活着→别的窗口在 TTL 内认领不到。
-   *  仅当本 owner 仍持有(或预留为空=已被回收则重新认领)时续；预留已被别的活窗口接管则返回 false(本窗口已失去)。 */
   renewThread(threadId, owner) {
-    const s = sessions.get(threadId);
-    if (!s) {
-      return false;
-    }
-    const token = owner || "anon";
-    if (!s.reservation) {
-      s.reservation = { owner: token, ts: Date.now() };
-      return true;
-    }
-    if (s.reservation.owner !== token) {
-      return false;                             // 已被别的活窗口接管，不抢回
-    }
-    s.reservation.ts = Date.now();
-    return true;
+    return runtimeCore.renewThread(threadId, owner);
   },
-  /** 释放本窗口对某线程的预留（侧栏切走该线程 / pagehide / 关闭窗口时调）。释放后该线程可被任意窗口重开续看。
-   *  传了 owner 则只释放自己的预留(不抢释放别窗口的)；不传 owner=旧式无条件释放。引擎后台仍跑不受影响。 */
   releaseThread(threadId, owner) {
-    const s = sessions.get(threadId);
-    if (!s || !s.reservation) {
-      return;
-    }
-    if (owner && s.reservation.owner !== owner) {
-      return;                                   // 不是自己的预留，别动（避免误放别的活窗口）
-    }
-    s.reservation = null;
+    runtimeCore.releaseThread(threadId, owner);
   },
-  /** 取本线程当前快照（mount/remount 恢复用）；无则 null。 */
   getState(threadId) {
-    const s = sessions.get(threadId);
-    return s ? snapshot(s) : null;
+    return runtimeCore.getState(threadId);
   },
-  /** 订阅本线程的状态更新；返回退订函数。订阅即立刻收到一次当前快照。 */
-  subscribe(threadId, cb) {
-    const s = getOrInit(threadId);
-    s.subs.add(cb);
-    try {
-      cb(snapshot(s));
-    } catch {
-      /* ignore */
-    }
-    return () => {
-      s.subs.delete(cb);
-      if (s.subs.size === 0) {
-        s.reservation = null; // 窗口关闭/退订 → 释放预留，本线程可被其它窗口再认领（关后台续跑不受影响）
-      }
-    };
+  subscribe(threadId, callback) {
+    return runtimeCore.subscribe(threadId, callback);
   },
-  /** 回应工具确认（confirm-mode）。all=true → 本轮后续工具自动批准（"总是允许"）。 */
   respondConfirm(threadId, id, approved, all) {
-    const s = sessions.get(threadId);
-    if (s && s.pendingConfirm && s.pendingConfirm.id === id) {
-      if (all && approved) {
-        s.approveAll = true;
-      }
-      const resolve = s.pendingConfirm.resolve;
-      s.pendingConfirm = null;
-      notify(s);
-      resolve(!!approved);
-    }
+    return runtimeCore.respondConfirm(threadId, id, approved, all);
   },
-  /** 停止本回合（轮次边界 + 进行中的 LLM 请求都会停）。 */
   stop(threadId) {
-    const s = sessions.get(threadId);
-    if (s && s.abort) {
-      try {
-        s.abort.abort();
-      } catch {
-        /* ignore */
-      }
-      // 若正停在“等待用户确认工具”阶段，AbortSignal 本身不会释放 confirm Promise。
-      // 主动按拒绝收口，确保手动停止能立即越过确认点并进入统一的 cancelled 收尾。
-      if (s.pendingConfirm && typeof s.pendingConfirm.resolve === "function") {
-        const resolve = s.pendingConfirm.resolve;
-        s.pendingConfirm = null;
-        try {
-          resolve(false);
-        } catch {
-          /* ignore */
-        }
-      }
-      s.aborted = true;
+    if (runtimeCore.abortThread(threadId)) {
       void conversationStore.setThreadTurnStatus(threadId, "cancelled").catch(() => {});
-      notify(s);
     }
   },
   /**
@@ -414,37 +120,18 @@ export const agentSession = {
    */
   async run(threadId, { systemPrompt, dynamicContext = "", convo, confirmMode = false, maxRounds = 120, maxPerTool = 40, workspaceRoot, win, assist = false } = {}) {
     _runLog.push({ threadId, at: Date.now(), convoLen: Array.isArray(convo) ? convo.length : -1 });
-    const s = getOrInit(threadId);
-    if (s.running) {
-      return; // 已在跑，避免重入
-    }
-    // 重置本轮态
-    s.running = true;
-    s.settled = false;
-    s.steps = [];
-    s._curText = -1;
-    s._curThink = -1;
-    s.content = "";
-    s.error = null;
-    s.aborted = false;
-    s.pendingConfirm = null;
-    s.approveAll = false;
-    s.checkpointSeq = 0; // 新一轮自主执行：checkpoint 计数清零
-    s.usage = emptyUsage();
-    s.lastUsage = null;
-    s.contextStrategy =
+    const contextStrategy =
       configStore.getContextStrategy && configStore.getContextStrategy() === "legacy"
         ? "legacy"
         : "projected";
-    s.contextProjected = false;
-    if (s._notifyTimer) {
-      _clearTimeout(s._notifyTimer);
-      s._notifyTimer = null;
+    const s = runtimeCore.beginRun(threadId, { usage: emptyUsage(), contextStrategy });
+    if (!s) {
+      return; // Already running; avoid re-entry.
     }
-    s._lastNotify = 0;
-    const ac = new AbortController();
+    const ac = firefoxAgentRuntimeHost.llmTransport.createAbortController();
     s.abort = ac;
-    notify(s);
+    const runtimeBackends = backends();
+    runtimeCore.notify(s);
 
     let vision = false;
     try {
@@ -459,7 +146,9 @@ export const agentSession = {
       if (hadCancellationBoundary) {
         dynamicContext = String(dynamicContext || "") + "\n\n" + CANCELLED_TURN_BOUNDARY;
       }
-      const client = buildClientFromStore(configStore);
+      const client = buildClientFromStore(configStore, {
+        transport: firefoxAgentRuntimeHost.llmTransport,
+      });
       const activeProfile =
         (configStore.getActiveModelProfile && configStore.getActiveModelProfile()) || null;
       const cacheKey = [
@@ -483,7 +172,7 @@ export const agentSession = {
         }
         s.lastUsage = normalized;
         s.usage = mergeUsage(s.usage, normalized);
-        notifyThrottled(s);
+        runtimeCore.notifyThrottled(s);
       };
       try {
         const active = configStore.getActiveModelProfile && configStore.getActiveModelProfile();
@@ -588,7 +277,7 @@ export const agentSession = {
         // 让确认过的事实不因压缩衰减、动手前先看账本（治"压缩后重新发现/重走死路"）。
         getLedger: async () => {
           try {
-            return await getBackends().ledger.digest({}, { workspaceRoot: workspaceRoot || null });
+            return await runtimeBackends.ledger.digest({}, { workspaceRoot: workspaceRoot || null });
           } catch {
             return "";
           }
@@ -602,7 +291,7 @@ export const agentSession = {
                 const safeName = String(name || "tool").replace(/[^a-zA-Z0-9._-]+/g, "_");
                 const safeId = String(id || Date.now()).replace(/[^a-zA-Z0-9._-]+/g, "_");
                 const path = `.frx-context/tool-results/${Date.now()}_${safeName}_${safeId}.json`;
-                const saved = await getBackends().workspace.write(
+                const saved = await runtimeBackends.workspace.write(
                   { path, content },
                   { workspaceRoot, win: win || null }
                 );
@@ -610,12 +299,12 @@ export const agentSession = {
               }
             : null,
         onDelta: c => {
-          pushDelta(s, c);
-          notifyThrottled(s); // 高频→节流(~20/s)
+          runtimeCore.pushDelta(s, c);
+          runtimeCore.notifyThrottled(s); // 高频→节流(~20/s)
         },
         onReasoning: c => {
-          pushReasoning(s, c);
-          notifyThrottled(s); // 高频→节流
+          runtimeCore.pushReasoning(s, c);
+          runtimeCore.notifyThrottled(s); // 高频→节流
         },
         // 上下文压缩点：把本段进展作为一条 checkpoint 回复落盘 + 重置实时步骤 + 自增 seq，
         // UI 据 checkpointSeq 变化重载历史(新气泡)、清空 live 区，于是"一个长任务"在界面上
@@ -626,7 +315,7 @@ export const agentSession = {
           // ② 接手段若需要也能 fs_read 回看；覆盖写=始终是最新累积状态。
           if (workspaceRoot) {
             try {
-              await getBackends().workspace.write(
+              await runtimeBackends.workspace.write(
                 { path: "progress.md", content: summary },
                 { workspaceRoot }
               );
@@ -636,7 +325,7 @@ export const agentSession = {
             // 自动捕获安全网：把交接摘要里的"已确认事实/已否决假设"沉淀进结构化账本（去重）——
             // 即便 Agent 没主动 remember，每次压缩也把确认结论累积进账本、不衰减。这是"把压缩能力沉淀下来"。
             try {
-              await getBackends().ledger.mergeHandoff(summary, { workspaceRoot, win: win || null });
+              await runtimeBackends.ledger.mergeHandoff(summary, { workspaceRoot, win: win || null });
             } catch {
               /* 自动沉淀失败不影响续跑 */
             }
@@ -646,11 +335,11 @@ export const agentSession = {
           s._curThink = -1;
           s.content = "";
           s.checkpointSeq = (s.checkpointSeq || 0) + 1;
-          notify(s);
+          runtimeCore.notify(s);
         },
         onEvent: ev => {
-          applyEvent(s, ev);
-          notify(s); // 结构性事件→立即(snappy)
+          runtimeCore.applyEvent(s, ev);
+          runtimeCore.notify(s); // 结构性事件→立即(snappy)
         },
         confirm: confirmMode
           ? call =>
@@ -658,7 +347,7 @@ export const agentSession = {
                 ? Promise.resolve(true) // 本轮已选"总是允许"→ 后续工具不再打断
                 : new Promise(resolve => {
                     s.pendingConfirm = { id: call.id, name: call.name, args: call.args, resolve };
-                    notify(s);
+                    runtimeCore.notify(s);
                   })
           : undefined,
       });
@@ -698,7 +387,7 @@ export const agentSession = {
       s._curThink = -1;
       s.content = "";
       s.checkpointSeq = (s.checkpointSeq || 0) + 1;
-      notify(s);
+      runtimeCore.notify(s);
       // 喂回累积对话（剥掉 res.messages 前置的 system——runAgentTurn 会按 systemPrompt 重新前置，否则双份）
       // + 一条续跑指令（保证角色交替合法 + 给模型明确"接着干、别重来"的指示）。
       turnMsgs = (res.messages || turnMsgs).filter(m => m && m.role !== "system");
@@ -744,11 +433,7 @@ export const agentSession = {
       } catch {
         /* usage persistence never blocks final state */
       }
-      s.running = false;
-      s.settled = true;
-      s.abort = null;
-      s.pendingConfirm = null;
-      notify(s);
+      runtimeCore.settle(s);
     }
   },
 

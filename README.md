@@ -242,6 +242,14 @@ bash scripts/apply-patches.sh
 cd upstream && ./mach build && ./mach package
 ```
 
+修改 `additions/` 后进行日常增量开发时，不要重新应用整套 patch；同步新增文件和
+`moz.build` 清单后执行 faster 构建即可：
+
+```bash
+bash scripts/sync-additions.sh
+cd upstream && ./mach build faster
+```
+
 - 侧边栏与父进程后端：`additions/browser/components/agent-sidebar/`；React UI、Agent 引擎、68 个工具声明、`AddonBackend.sys.mjs` 和 `EnvironmentBackend.sys.mjs` 均在此维护，前端通过 `npm run build` 生成 bundle。
 - 指纹配置层：`additions/dom/base/FrxFingerprintConfig.*`、`NavigatorUAData.*` 及 `scripts/apply-fingerprint-config.py` 写入的 Gecko / Necko 接入点。
 - 引擎观测层：`additions/js/...` 的 SpiderMonkey trace 与 `additions/dom/bindings/...` 的 WebAPI trace。
