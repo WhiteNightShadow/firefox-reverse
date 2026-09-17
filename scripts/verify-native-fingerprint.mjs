@@ -96,11 +96,12 @@ const server = http.createServer((req, res) => {
 await listening(server);
 const origin = `http://127.0.0.1:${server.address().port}`;
 
-async function start(label, config, { inline, preferences = {}, profile: reuse } = {}) {
+async function start(label, config, { inline, preferences = {}, profile: reuse, missingFile = false } = {}) {
   const directory = reuse || path.join(temporary, label);
   await fs.mkdir(directory, { recursive: true });
   const configPath = path.join(directory, "环境-配置.json");
   await fs.writeFile(configPath, JSON.stringify(config));
+  if (missingFile) await fs.unlink(configPath);
   const prefs = { "browser.startup.page": 0, "browser.startup.homepage": "about:blank", "browser.newtabpage.enabled": false, ...nativeRenderingPrefs(config, renderingDefaults), ...preferences };
   await fs.writeFile(path.join(directory, "user.js"), Object.entries(prefs).map(([key, value]) => `user_pref(${JSON.stringify(key)}, ${JSON.stringify(value)});`).join("\n"));
   const port = await freePort();
@@ -259,6 +260,16 @@ try {
   const invalidValue = await sample(invalid, "invalid");
   check("empty explicit input does not fall back", invalidValue.snapshot.status === 2 && invalidValue.page.ua === reference.page.ua && invalidValue.page.timezone === reference.page.timezone);
   await stop(invalid);
+  const missing = await start("missing-file", config, { missingFile: true, preferences: { "frx.fingerprint.config.json": JSON.stringify(other) } });
+  const missingValue = await sample(missing, "missing-file:first");
+  check("missing fingerprint file permits browser startup without fallback", missingValue.snapshot.status === 2 && missingValue.snapshot.reason === "configuration-file-unreadable" && missingValue.page.ua === reference.page.ua && missingValue.page.timezone === reference.page.timezone);
+  await fs.writeFile(missing.configPath, JSON.stringify(config));
+  await missing.wire.command("Marionette:SetContext", { value: "content" });
+  const missingContext = await missing.wire.command("WebDriver:NewWindow", { type: contextType, focus: true });
+  await missing.wire.command("WebDriver:SwitchToWindow", { handle: (missingContext.value ?? missingContext).handle, focus: true });
+  const stillMissing = await sample(missing, "missing-file:created-later", { crossSite: true });
+  check("invalid file result is cached across new content processes", stillMissing.contentPid !== missingValue.contentPid && stillMissing.snapshot.status === 2 && stillMissing.page.timezone === reference.page.timezone);
+  await stop(missing);
   const seeded = structuredClone(config); seeded.audio.mode.value = "seeded"; seeded.audio.seed.enabled = true;
   seeded.canvas.backend.value = "software"; seeded.webgl.msaaSamples = { enabled: true, value: 0 };
   const audioA = await start("audio-A", seeded);
