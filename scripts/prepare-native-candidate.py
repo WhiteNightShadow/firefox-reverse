@@ -61,7 +61,13 @@ ini.read(resource_root / "application.ini", encoding="utf-8")
 assert ini["App"]["BuildID"] == build_id, "BuildID mismatch"
 assert ini["App"]["SourceStamp"] == commit, "SourceStamp mismatch"
 expected = subprocess.check_output(["git", "show", f"{commit}:additions/browser/components/agent-sidebar/preferences/frx-locale.js"])
-assert (resource_root / "defaults/pref/frx-locale.js").read_bytes() == expected
+preference_file = resource_root / "defaults/pref/frx-locale.js"
+if preference_file.is_file():
+    actual_preferences = preference_file.read_bytes()
+else:
+    with zipfile.ZipFile(resource_root / "omni.ja") as archive:
+        actual_preferences = archive.read("defaults/pref/frx-locale.js")
+assert actual_preferences == expected, "stale packaged locale/version preferences"
 assert tag[1:] in expected.decode()
 modules = ["EnvironmentBackend", "NativeFingerprintPolicy", "ConfigStore", "SidebarTypography", "LlmClient"]
 with zipfile.ZipFile(resource_root / "browser/omni.ja") as archive:

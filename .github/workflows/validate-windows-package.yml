@@ -59,7 +59,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.source_commit }}
+          # Run current validation helpers; package identity is independently
+          # bound to source_commit below, including the exact module bytes.
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/checkout@v5
         with:
