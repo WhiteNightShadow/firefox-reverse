@@ -102,7 +102,7 @@ async function start(label, config, { inline, preferences = {}, profile: reuse, 
   const configPath = path.join(directory, "环境-配置.json");
   await fs.writeFile(configPath, JSON.stringify(config));
   if (missingFile) await fs.unlink(configPath);
-  const prefs = { "browser.startup.page": 0, "browser.startup.homepage": "about:blank", "browser.newtabpage.enabled": false, ...nativeRenderingPrefs(config, renderingDefaults), ...preferences };
+  const prefs = { "browser.startup.page": 0, "browser.startup.homepage": "about:blank", "browser.newtabpage.enabled": false, ...(process.platform === "win32" ? { "marionette.log.level": "Trace" } : {}), ...nativeRenderingPrefs(config, renderingDefaults), ...preferences };
   await fs.writeFile(path.join(directory, "user.js"), Object.entries(prefs).map(([key, value]) => `user_pref(${JSON.stringify(key)}, ${JSON.stringify(value)});`).join("\n"));
   const port = await freePort();
   const owned = { label, directory, configPath, port, wire: new MarionetteWire(), pid: null };
@@ -111,26 +111,33 @@ async function start(label, config, { inline, preferences = {}, profile: reuse, 
   if (process.platform === "win32") {
     // Native CI runs elevated. Keep ownership of this disposable test process
     // rather than allowing Firefox's de-elevation helper to detach it.
-    owned.process = spawn(firefox, ["-no-remote", "-no-deelevate", "-wait-for-browser", "-profile", directory, "-marionette", "-remote-allow-system-access"], { env: { ...process.env, ...extraEnv, MOZ_MARIONETTE: "1", MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS: JSON.stringify({ "marionette.port": port }) }, stdio: ["ignore", "ignore", "pipe"] });
+    owned.process = spawn(firefox, ["-no-remote", "-no-deelevate", "-wait-for-browser", "-profile", directory, "-marionette", "-remote-allow-system-access", "about:blank"], { env: { ...process.env, ...extraEnv, MOZ_MARIONETTE: "1", MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS: JSON.stringify({ "marionette.port": port }) }, stdio: ["ignore", "pipe", "pipe"] });
     owned.stderr = "";
-    owned.process.stderr.on("data", chunk => { owned.stderr = (owned.stderr + chunk).slice(-4000); });
+    const capture = chunk => { owned.stderr = (owned.stderr + chunk).slice(-8000); };
+    owned.process.stderr.on("data", capture);
+    owned.process.stdout.on("data", capture);
     owned.process.on("error", error => { owned.launchError = error; });
     const deadline = Date.now() + 90000;
+    owned.handshakeAttempts = 0;
     while (true) {
-      if (owned.launchError || owned.process.exitCode !== null) throw new Error(`owned Windows launch failed: ${owned.launchError || owned.stderr}`);
-      const ready = await new Promise(resolve => {
-        const socket = net.createConnection({ host: "127.0.0.1", port });
-        const finish = value => { socket.destroy(); resolve(value); };
-        socket.once("connect", () => finish(true)); socket.once("error", () => finish(false)); socket.setTimeout(500, () => finish(false));
-      });
-      if (ready) break;
-      if (Date.now() >= deadline) throw new Error("owned Windows launch timed out");
+      if (owned.launchError || owned.process.exitCode !== null) throw new Error(`owned Windows launch exited (${owned.process.exitCode}): ${owned.launchError || owned.stderr}`);
+      owned.handshakeAttempts++;
+      try {
+        // A bare TCP probe can race listener startup. Keep the connection that
+        // completed the actual Marionette hello and session handshake.
+        await owned.wire.connect("127.0.0.1", port, 90000);
+        break;
+      } catch (error) {
+        await owned.wire.close();
+        owned.wire = new MarionetteWire();
+        if (!/ECONNREFUSED|ECONNRESET|marionette closed/.test(String(error)) || Date.now() >= deadline) throw error;
+      }
       await delay(250);
     }
   } else {
     await ensureBrowser({ host: "127.0.0.1", port, autolaunch: true, firefoxBin: firefox, profile: directory, portWaitSec: 90, extraEnv });
+    await owned.wire.connect("127.0.0.1", port, 90000);
   }
-  await owned.wire.connect("127.0.0.1", port, 90000);
   const actual = await owned.wire.execute('return {pid:Services.appinfo.processID,profile:Services.dirsvc.get("ProfD",Ci.nsIFile).path,version:Services.appinfo.version,os:Services.appinfo.OS,buildID:Services.appinfo.appBuildID};');
   check(`${label}:profile ownership`, await fs.realpath(actual.profile) === await fs.realpath(directory));
   owned.pid = actual.pid;
@@ -297,6 +304,7 @@ try {
 } catch (error) {
   report.passed = false; report.error = error.stack || String(error); process.exitCode = 1;
 } finally {
+  report.launchDiagnostics = profiles.filter(owned => owned.process).map(owned => ({ label: owned.label, handshakeAttempts: owned.handshakeAttempts, exitCode: owned.process.exitCode, ...(report.passed ? {} : { output: owned.stderr }) }));
   for (const owned of profiles) { try { await stop(owned); } catch (error) { report.cleanupError = String(error); process.exitCode = 1; } }
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   const reportPath = path.join(temporary, "observations.json");
