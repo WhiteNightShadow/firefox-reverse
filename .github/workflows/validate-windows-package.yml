@@ -27,6 +27,10 @@ on:
         description: "Pinned frx-director-mcp revision for native fingerprint transport tests"
         required: false
         type: string
+      native_matrix:
+        description: "Optional JSON array of runner/target pairs to validate already-built candidates; omitted runs all four CI targets"
+        required: false
+        type: string
 
 permissions:
   # GitHub only exposes draft releases to identities with push access.
@@ -38,15 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: windows-latest
-            target: windows-x86_64
-          - runner: ubuntu-24.04
-            target: linux-x86_64
-          - runner: ubuntu-24.04-arm
-            target: linux-arm64
-          - runner: macos-15-intel
-            target: macos-x86_64
+        include: ${{ fromJSON(inputs.native_matrix || '[{"runner":"windows-latest","target":"windows-x86_64"},{"runner":"ubuntu-24.04","target":"linux-x86_64"},{"runner":"ubuntu-24.04-arm","target":"linux-arm64"},{"runner":"macos-15-intel","target":"macos-x86_64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     env:
