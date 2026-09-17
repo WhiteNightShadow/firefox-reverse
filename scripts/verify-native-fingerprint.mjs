@@ -252,7 +252,9 @@ try {
   check("zoom follows native DPR", zoom.display.dpr > first.display.dpr);
   await a.wire.command("Marionette:SetContext", { value: "content" });
   report.progress = "file-A:create-context";
-  const opened = await a.wire.command("WebDriver:NewWindow", { type: contextType, focus: false });
+  // Selecting the new tab avoids openTab(false) reselecting the old tab and
+  // waiting for macOS activation. The handle switch must not activate the OS window.
+  const opened = await a.wire.command("WebDriver:NewWindow", { type: contextType, focus: true });
   report.progress = "file-A:switch-context";
   await a.wire.command("WebDriver:SwitchToWindow", { handle: (opened.value ?? opened).handle, focus: false });
   report.progress = "file-A:probe-new-context";
@@ -277,7 +279,7 @@ try {
   await fs.writeFile(missing.configPath, JSON.stringify(config));
   await missing.wire.command("Marionette:SetContext", { value: "content" });
   report.progress = "missing-file:create-context";
-  const missingContext = await missing.wire.command("WebDriver:NewWindow", { type: contextType, focus: false });
+  const missingContext = await missing.wire.command("WebDriver:NewWindow", { type: contextType, focus: true });
   report.progress = "missing-file:switch-context";
   await missing.wire.command("WebDriver:SwitchToWindow", { handle: (missingContext.value ?? missingContext).handle, focus: false });
   report.progress = "missing-file:probe-new-context";
