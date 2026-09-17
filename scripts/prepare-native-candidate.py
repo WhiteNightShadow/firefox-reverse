@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import shutil
+import struct
 import subprocess
 import tarfile
 import zipfile
@@ -56,6 +57,21 @@ else:
     resource_root = stage / "firefox"
     binary = resource_root / ("firefox.exe" if target.startswith("windows") else "firefox")
     xul = resource_root / ("xul.dll" if target.startswith("windows") else "libxul.so")
+architecture = "arm64" if target.endswith("arm64") else "x86_64"
+if target.startswith("macos"):
+    assert subprocess.check_output(["lipo", "-archs", str(xul)], text=True).strip() == architecture
+elif target.startswith("windows"):
+    with xul.open("rb") as stream:
+        header = stream.read(64)
+        assert header[:2] == b"MZ", "invalid PE library"
+        stream.seek(struct.unpack("<I", header[60:64])[0])
+        pe = stream.read(6)
+        assert pe[:4] == b"PE\0\0" and struct.unpack("<H", pe[4:6])[0] == 0x8664, "not x86_64 PE"
+else:
+    with xul.open("rb") as stream:
+        header = stream.read(20)
+    assert header[:6] == b"\x7fELF\x02\x01", "not little-endian ELF64"
+    assert struct.unpack("<H", header[18:20])[0] == (183 if architecture == "arm64" else 62), "wrong ELF architecture"
 ini = configparser.ConfigParser(interpolation=None)
 ini.read(resource_root / "application.ini", encoding="utf-8")
 assert ini["App"]["BuildID"] == build_id, "BuildID mismatch"
@@ -84,7 +100,7 @@ with zipfile.ZipFile(resource_root / "browser/omni.ja") as archive:
         expected = subprocess.check_output(["git", "show", f"{commit}:additions/browser/components/agent-sidebar/modules/{module}.sys.mjs"])
         assert archive.read(f"modules/agentsidebar/{module}.sys.mjs") == expected, f"stale module: {module}"
     assert "右击或下拉显示历史" in archive.read("localization/zh-CN/browser/browserContext.ftl").decode()
-report = {"package": name, "packageSHA256": sha(package), "xulSHA256": sha(xul), "sidebarBundleSHA256": bundle_sha, "extensionParentSHA256": extension_parent_sha, "sourceCommit": commit, "buildID": build_id, "modules": modules, "status": "passed"}
+report = {"package": name, "packageSHA256": sha(package), "xulSHA256": sha(xul), "binaryArchitecture": architecture, "sidebarBundleSHA256": bundle_sha, "extensionParentSHA256": extension_parent_sha, "sourceCommit": commit, "buildID": build_id, "modules": modules, "status": "passed"}
 (output / "PACKAGE-IDENTITY.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
     stream.write(f"FRX_TEST_BINARY={binary}\nFRX_TEST_XUL_SHA={report['xulSHA256']}\n")

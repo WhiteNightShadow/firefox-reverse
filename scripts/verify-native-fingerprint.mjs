@@ -138,12 +138,13 @@ async function start(label, config, { inline, preferences = {}, profile: reuse, 
     await ensureBrowser({ host: "127.0.0.1", port, autolaunch: true, firefoxBin: firefox, profile: directory, portWaitSec: 90, extraEnv });
     await owned.wire.connect("127.0.0.1", port, 90000);
   }
-  const actual = await owned.wire.execute('return {pid:Services.appinfo.processID,profile:Services.dirsvc.get("ProfD",Ci.nsIFile).path,version:Services.appinfo.version,os:Services.appinfo.OS,buildID:Services.appinfo.appBuildID};');
+  const actual = await owned.wire.execute('return {pid:Services.appinfo.processID,profile:Services.dirsvc.get("ProfD",Ci.nsIFile).path,version:Services.appinfo.version,os:Services.appinfo.OS,abi:Services.appinfo.XPCOMABI,buildID:Services.appinfo.appBuildID};');
   check(`${label}:profile ownership`, await fs.realpath(actual.profile) === await fs.realpath(directory));
   owned.pid = actual.pid;
   report.runtime.buildID = actual.buildID;
   report.runtime.version = actual.version;
   report.runtime.os = actual.os;
+  report.runtime.abi = actual.abi;
   return owned;
 }
 
