@@ -118,26 +118,30 @@ def validate(report, output):
             assert archive.read("modules/agentsidebar/LedgerBackend.sys.mjs") == expected_ledger
             assert "右击或下拉显示历史" in archive.read("localization/zh-CN/browser/browserContext.ftl").decode()
 
-        profile = work / "screenshot-profile"
-        profile.mkdir()
-        screenshot = output / "windows-native.png"
-        process = None
-        try:
-            with (output / "screenshot.log").open("wb") as log:
-                process = subprocess.Popen([
-                    str(executable), "--headless", "--no-remote", "--no-deelevate", "--wait-for-browser", "--profile", str(profile),
-                    "--screenshot", str(screenshot),
-                    "data:text/html,%3Cbody%3EFirefox%20Reverse%20native%20validation%3C/body%3E"
-                ], stdout=log, stderr=log)
-                report["screenshot_exit_code"] = process.wait(timeout=90)
-            assert report["screenshot_exit_code"] == 0
-            image = screenshot.read_bytes()
-            assert image[:8] == b"\x89PNG\r\n\x1a\n"
-            width, height = struct.unpack(">II", image[16:24])
-            assert width > 0 and height > 0
-            report.update(screenshot_sha256=sha(screenshot), screenshot_size=len(image))
-        finally:
-            stop(process)
+        report["screenshot_runs"] = []
+        for attempt in range(6):
+            profile = work / f"screenshot-profile-{attempt}"
+            profile.mkdir()
+            suffix = f"-{attempt}" if attempt else ""
+            screenshot = output / f"windows-native{suffix}.png"
+            process = None
+            try:
+                with (output / f"screenshot{suffix}.log").open("wb") as log:
+                    process = subprocess.Popen([
+                        str(executable), "--headless", "--no-remote", "--no-deelevate", "--wait-for-browser", "--profile", str(profile),
+                        "--screenshot", str(screenshot),
+                        "data:text/html,%3Cbody%3EFirefox%20Reverse%20native%20validation%3C/body%3E"
+                    ], stdout=log, stderr=log)
+                    report["screenshot_exit_code"] = process.wait(timeout=90)
+                report["screenshot_runs"].append({"attempt": attempt, "exitCode": report["screenshot_exit_code"]})
+                assert report["screenshot_exit_code"] == 0, f"fresh-profile screenshot/exit failed on run {attempt}"
+                image = screenshot.read_bytes()
+                assert image[:8] == b"\x89PNG\r\n\x1a\n"
+                width, height = struct.unpack(">II", image[16:24])
+                assert width > 0 and height > 0
+                report.update(screenshot_sha256=sha(screenshot), screenshot_size=len(image))
+            finally:
+                stop(process)
 
         with socket.socket() as port_socket:
             port_socket.bind(("127.0.0.1", 0))

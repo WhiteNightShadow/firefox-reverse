@@ -1,0 +1,546 @@
+From 4cf4f28e4a29a167957dd021a4d7227d952d0078 Mon Sep 17 00:00:00 2001
+From: Rob Wu <rob@robwu.nl>
+Date: Sun, 19 Jul 2026 23:00:35 +0000
+Subject: [PATCH] Bug 2051934 - Handle quit in HiddenXULWindow r=zombie
+
+Prevent background startup from getting stuck due to never-settling
+promises in various stages of HiddenXULWindow initialization.
+
+Differential Revision: https://phabricator.services.mozilla.com/D312620
+---
+ .../extensions/ExtensionParent.sys.mjs        |  94 +++++++++++++---
+ .../test_ext_background_early_quit.js         |  17 ++-
+ .../test_ext_background_early_quit2.js        |  96 +++++++++++++++++
+ .../test_ext_background_early_quit3.js        | 101 ++++++++++++++++++
+ .../test_ext_background_early_quit4.js        |  95 ++++++++++++++++
+ .../test/xpcshell/xpcshell-common.toml        |   9 ++
+ 6 files changed, 397 insertions(+), 15 deletions(-)
+ create mode 100644 toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit2.js
+ create mode 100644 toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit3.js
+ create mode 100644 toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit4.js
+
+diff --git a/toolkit/components/extensions/ExtensionParent.sys.mjs b/toolkit/components/extensions/ExtensionParent.sys.mjs
+index 9e779d46f02e9..811c6a7d6dd18 100644
+--- a/toolkit/components/extensions/ExtensionParent.sys.mjs
++++ b/toolkit/components/extensions/ExtensionParent.sys.mjs
+@@ -44,14 +44,8 @@ const DUMMY_PAGE_URI = Services.io.newURI(
+ var { BaseContext, CanOfAPIs, SchemaAPIManager, SpreadArgs, redefineGetter } =
+   ExtensionCommon;
+ 
+-var {
+-  DefaultMap,
+-  DefaultWeakMap,
+-  ExtensionError,
+-  promiseDocumentLoaded,
+-  promiseEvent,
+-  promiseObserved,
+-} = ExtensionUtils;
++var { DefaultMap, DefaultWeakMap, ExtensionError, promiseObserved } =
++  ExtensionUtils;
+ 
+ const ERROR_NO_RECEIVERS =
+   "Could not establish connection. Receiving end does not exist.";
+@@ -1531,15 +1525,13 @@ class HiddenXULWindow {
+     }
+ 
+     windowlessBrowser.browsingContext.useGlobalHistory = false;
++
++    const loadPromise = this.#promiseWindowlessBrowserReady(windowlessBrowser);
+     webNav.loadURI(DUMMY_PAGE_URI, {
+       triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+     });
++    await loadPromise;
+ 
+-    await promiseObserved(
+-      "chrome-document-global-created",
+-      win => win.document == webNav.document
+-    );
+-    await promiseDocumentLoaded(windowlessBrowser.document);
+     if (this.unloaded) {
+       windowlessBrowser.close();
+       return;
+@@ -1547,6 +1539,41 @@ class HiddenXULWindow {
+     this._windowlessBrowser = windowlessBrowser;
+   }
+ 
++  #promiseWindowlessBrowserReady(windowlessBrowser) {
++    const webProgress = windowlessBrowser
++      .QueryInterface(Ci.nsIInterfaceRequestor)
++      .getInterface(Ci.nsIWebProgress);
++    return new Promise(resolve => {
++      const { shutdownSignal } = ExtensionParent;
++      const listener = {
++        QueryInterface: ChromeUtils.generateQI([
++          "nsIWebProgressListener",
++          "nsISupportsWeakReference",
++        ]),
++        onStateChange(webProgress, request, stateFlags) {
++          if (stateFlags & Ci.nsIWebProgressListener.STATE_STOP) {
++            unregisterAndResolve();
++          }
++        },
++      };
++
++      function unregisterAndResolve() {
++        webProgress.removeProgressListener(listener);
++        shutdownSignal.removeEventListener("abort", unregisterAndResolve);
++        resolve();
++      }
++
++      webProgress.addProgressListener(
++        listener,
++        Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT
++      );
++      shutdownSignal.addEventListener("abort", unregisterAndResolve);
++      if (shutdownSignal.aborted) {
++        unregisterAndResolve();
++      }
++    });
++  }
++
+   /**
+    * Creates the browser XUL element that will contain the WebExtension Page.
+    *
+@@ -1564,6 +1591,10 @@ class HiddenXULWindow {
+ 
+     await this.waitInitialized;
+ 
++    if (Services.startup.shuttingDown) {
++      throw new Error("Cannot create hidden browser past shutdown");
++    }
++
+     const chromeDoc = this.chromeDocument;
+ 
+     const browser = chromeDoc.createXULElement("browser");
+@@ -1581,7 +1612,7 @@ class HiddenXULWindow {
+     let awaitFrameLoader;
+ 
+     if (browser.hasAttribute("remote")) {
+-      awaitFrameLoader = promiseEvent(browser, "XULFrameLoaderCreated");
++      awaitFrameLoader = this.#promiseXULFrameLoaderCreated(browser);
+     }
+ 
+     // Prevent initial about:blank load before navigating to extension URI
+@@ -1594,12 +1625,35 @@ class HiddenXULWindow {
+     browser.getBoundingClientRect();
+     await awaitFrameLoader;
+ 
++    if (Services.startup.shuttingDown) {
++      browser.remove();
++      // We already checked shuttingDown above; if we reach this point, then
++      // shutdown somehow started while awaiting XULFrameLoaderCreated.
++      throw new Error("Aborted hidden browser creation at shutdown");
++    }
++
+     // FIXME(emilio): This unconditionally active frame seems rather
+     // unfortunate, but matches previous behavior.
+     browser.docShellIsActive = true;
+ 
+     return browser;
+   }
++
++  #promiseXULFrameLoaderCreated(browser) {
++    return new Promise(resolve => {
++      const { shutdownSignal } = ExtensionParent;
++      function handleDone() {
++        browser.removeEventListener("XULFrameLoaderCreated", handleDone);
++        shutdownSignal.removeEventListener("abort", handleDone);
++        resolve();
++      }
++      browser.addEventListener("XULFrameLoaderCreated", handleDone);
++      shutdownSignal.addEventListener("abort", handleDone);
++      if (shutdownSignal.aborted) {
++        handleDone();
++      }
++    });
++  }
+ }
+ 
+ const SharedWindow = {
+@@ -2537,6 +2591,18 @@ ExtensionParent._resetStartupPromises = () => {
+ };
+ ExtensionParent._resetStartupPromises();
+ 
++ChromeUtils.defineLazyGetter(ExtensionParent, "shutdownSignal", () => {
++  const abortControllerForShutdownSignal = new AbortController();
++  if (Services.startup.shuttingDown) {
++    abortControllerForShutdownSignal.abort();
++  } else {
++    promiseObserved("quit-application").then(() => {
++      abortControllerForShutdownSignal.abort();
++    });
++  }
++  return abortControllerForShutdownSignal.signal;
++});
++
+ ChromeUtils.defineLazyGetter(ExtensionParent, "PlatformInfo", () => {
+   return Object.freeze({
+     os: (function () {
+diff --git a/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit.js b/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit.js
+index 79d887cddf1f9..cce6d2681f989 100644
+--- a/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit.js
++++ b/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit.js
+@@ -28,6 +28,8 @@ add_task(async function test_quit_while_background_starts() {
+ 
+   info("Waiting for extension to start up");
+   let browserCount = 0;
++  // Verifies that background startup does not get stuck at
++  // https://searchfox.org/firefox-main/rev/d83a08d81de20f3b72db70f531fad19090e1db4b/toolkit/components/extensions/parent/ext-backgroundPage.js#133,135,140
+   Management.once("extension-browser-inserted", (eventName, browser) => {
+     ++browserCount;
+     equal(
+@@ -48,10 +50,23 @@ add_task(async function test_quit_while_background_starts() {
+     Services.startup.enterLastWindowClosingSurvivalArea();
+     Services.startup.quit(Ci.nsIAppStartup.eForceQuit);
+   });
+-  await extension.startup();
++  const { messages } = await promiseConsoleOutput(async () => {
++    await extension.startup();
++  });
+   equal(browserCount, 1, "Seen background browser");
+ 
+   equal(extension.extension.backgroundState, "stopped", "backgroundState");
+ 
++  // Verify that we check a scenario for bug 1959339, different from:
++  // test_ext_background_early_quit2.js (HiddenXULWindow first init) and
++  // test_ext_background_early_quit3.js (HiddenXULWindow second browser).
++  equal(
++    messages.filter(m =>
++      m.message.includes("Cannot create hidden browser past shutdown")
++    ).length,
++    0,
++    "No message from HiddenXULWindow when quit happens after createBrowserElement()"
++  );
++
+   await extension.unload();
+ });
+diff --git a/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit2.js b/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit2.js
+new file mode 100644
+index 0000000000000..b326c10c8d2c3
+--- /dev/null
++++ b/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit2.js
+@@ -0,0 +1,96 @@
++"use strict";
++
++const { Management } = ChromeUtils.importESModule(
++  "resource://gre/modules/Extension.sys.mjs"
++);
++
++// This test task quits in the middle of the test - do NOT add more tests below
++// this, unless you explicitly want to verify the behavior after quitting.
++//
++// Regression test for bug 2051934, specifically the scenario described at
++// https://bugzilla.mozilla.org/show_bug.cgi?id=2051934#c13
++//
++// The background page is loaded via HiddenXULWindow. When a quit is requested
++// during browser/extension startup, HiddenXULWindow's initWindowlessBrowser()
++// should settle instead of stalling forever.
++//
++// Note: test_ext_background_early_quit3.js seems identical, except it
++// exercises the scenario where HiddenXULWindow already exists when quitting.
++// test_ext_background_early_quit.js also exists, but tests a scenario that
++// happens even later.
++add_task(async function test_quit_while_background_starts_first_time() {
++  let extension = ExtensionTestUtils.loadExtension({
++    // Extension startup is blocked on background startup (bug 1543354).
++    // If we somehow fail to make progress, then we should notice that.
++    delayedStartup: false,
++    background() {
++      browser.test.fail(
++        "Unexpected background page execution. eForceQuit should have aborted HiddenXULWindow load"
++      );
++    },
++  });
++
++  info("Waiting for extension to start up");
++  let startupCount = 0;
++  let runManifestCount = 0;
++  // Verifies that background startup is interrupted; "startup" is emitted
++  // before runManifest invokes the background initialization logic that
++  // initializes HiddenXULWindow.
++  // - https://searchfox.org/firefox-main/rev/d83a08d81de20f3b72db70f531fad19090e1db4b/toolkit/components/extensions/Extension.sys.mjs#4281,4284
++  // - https://searchfox.org/firefox-main/rev/d83a08d81de20f3b72db70f531fad19090e1db4b/toolkit/components/extensions/parent/ext-backgroundPage.js#125
++  Management.once("startup", (eventName, ext) => {
++    ++startupCount;
++    const origRunManifest = ext.runManifest;
++    ext.runManifest = function () {
++      ++runManifestCount;
++      return Reflect.apply(origRunManifest, this, arguments);
++    };
++
++    // The Quit() call below calls ExitLastWindowClosingSurvivalArea() at
++    // https://searchfox.org/mozilla-central/rev/38e462fe13ea42ae6cc391fb36e8b9e82e842b00/toolkit/components/startup/nsAppStartup.cpp#428,431
++    // which expects an EnterLastWindowClosingSurvivalArea() to have called
++    // before, or else the following assertion will be triggered at:
++    // https://searchfox.org/mozilla-central/rev/38e462fe13ea42ae6cc391fb36e8b9e82e842b00/toolkit/components/startup/nsAppStartup.cpp#597-598
++    // ASSERTION: consider quit stopper out of bounds: 'mConsiderQuitStopper > 0
++    //
++    // During normal (non-xpcshell) execution, nsAppStartup::Run() runs, which
++    // calls EnterLastWindowClosingSurvivalArea(). In xpcshell tests, this is
++    // not called, and we need to call it here:
++    Services.startup.enterLastWindowClosingSurvivalArea();
++    Services.startup.quit(Ci.nsIAppStartup.eForceQuit);
++  });
++  const { messages } = await promiseConsoleOutput(async () => {
++    await extension.startup();
++  });
++  equal(startupCount, 1, "Observed one extension startup");
++  equal(runManifestCount, 1, "Observed runManifest call after emit startup");
++
++  equal(extension.extension.backgroundState, "stopped", "backgroundState");
++
++  equal(
++    messages.filter(m =>
++      m.message.includes("Cannot create hidden browser past shutdown")
++    ).length,
++    1,
++    "Found message when HiddenXULWindow initialization was aborted"
++  );
++
++  // To be most realistic, set the APP_SHUTDOWN flag when shutdown() is called
++  // via extension.unload(). Otherwise we would run logic that ordinarily does
++  // not run when extensions unload on browser shutdown.
++  // E.g. ServiceWorkerCleanUp.removeFromPrincipal at
++  // https://searchfox.org/firefox-main/rev/c0dff85fa67e5ab148ce20d4298c13f13ceec342/toolkit/components/extensions/Extension.sys.mjs#4542
++  // throws NS_ERROR_XPC_GS_RETURNED_FAILURE upon calling
++  // ServiceManager::GetService via unregisterServiceWorkersMatching.
++  let shutdownCount = 0;
++  const origShutdown = extension.extension.shutdown;
++  extension.extension.shutdown = function () {
++    // Sanity check: extension.unload() calls shutdown() without parameters.
++    equal(arguments.length, 0, "shutdown() called without parameters");
++    equal(++shutdownCount, 1, "shutdown() called once");
++    return origShutdown.call(this, "APP_SHUTDOWN");
++  };
++
++  await extension.unload();
++  equal(shutdownCount, 1, "extension.shutdown() was called");
++});
+diff --git a/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit3.js b/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit3.js
+new file mode 100644
+index 0000000000000..1eefce4e8d0e4
+--- /dev/null
++++ b/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit3.js
+@@ -0,0 +1,101 @@
++"use strict";
++
++const { Management } = ChromeUtils.importESModule(
++  "resource://gre/modules/Extension.sys.mjs"
++);
++
++// This test task quits in the middle of the test - do NOT add more tests below
++// this, unless you explicitly want to verify the behavior after quitting.
++//
++// Regression test for bug 2051934, specifically the scenario described at
++// https://bugzilla.mozilla.org/show_bug.cgi?id=2051934#c13
++//
++// This is similar to test_ext_background_early_quit2.js, except here we load
++// another extension first (which ensures that HiddenXULWindow is initialized),
++// and then initiate quit while the second extension starts. This verifies that
++// `createBrowserElement` in `HiddenXULWindow` settles without continuing to
++// create a background page (or worse, gets stuck forever, e.g. waiting for
++// "XULFrameLoaderCreated").
++add_task(async function test_quit_while_background_starts_after_another_ext() {
++  let unrelatedExtension = ExtensionTestUtils.loadExtension({
++    background() {
++      // Nothing here, when startup() resolves we have loaded.
++    },
++  });
++  await unrelatedExtension.startup();
++
++  let extension = ExtensionTestUtils.loadExtension({
++    // Extension startup is blocked on background startup (bug 1543354).
++    // If we somehow fail to make progress, then we should notice that.
++    delayedStartup: false,
++    background() {
++      browser.test.fail(
++        "Unexpected background page execution. eForceQuit should have aborted createBrowserElement in HiddenXULWindow"
++      );
++    },
++  });
++
++  info("Waiting for extension to start up");
++  let startupCount = 0;
++  let runManifestCount = 0;
++  // Verifies that background startup is interrupted; "startup" is emitted
++  // before runManifest invokes the background initialization logic that
++  // initializes HiddenXULWindow.
++  // - https://searchfox.org/firefox-main/rev/d83a08d81de20f3b72db70f531fad19090e1db4b/toolkit/components/extensions/Extension.sys.mjs#4281,4284
++  // - https://searchfox.org/firefox-main/rev/d83a08d81de20f3b72db70f531fad19090e1db4b/toolkit/components/extensions/parent/ext-backgroundPage.js#125
++  Management.once("startup", (eventName, ext) => {
++    ++startupCount;
++    const origRunManifest = ext.runManifest;
++    ext.runManifest = function () {
++      ++runManifestCount;
++      return Reflect.apply(origRunManifest, this, arguments);
++    };
++
++    // The Quit() call below calls ExitLastWindowClosingSurvivalArea() at
++    // https://searchfox.org/mozilla-central/rev/38e462fe13ea42ae6cc391fb36e8b9e82e842b00/toolkit/components/startup/nsAppStartup.cpp#428,431
++    // which expects an EnterLastWindowClosingSurvivalArea() to have called
++    // before, or else the following assertion will be triggered at:
++    // https://searchfox.org/mozilla-central/rev/38e462fe13ea42ae6cc391fb36e8b9e82e842b00/toolkit/components/startup/nsAppStartup.cpp#597-598
++    // ASSERTION: consider quit stopper out of bounds: 'mConsiderQuitStopper > 0
++    //
++    // During normal (non-xpcshell) execution, nsAppStartup::Run() runs, which
++    // calls EnterLastWindowClosingSurvivalArea(). In xpcshell tests, this is
++    // not called, and we need to call it here:
++    Services.startup.enterLastWindowClosingSurvivalArea();
++    Services.startup.quit(Ci.nsIAppStartup.eForceQuit);
++  });
++  const { messages } = await promiseConsoleOutput(async () => {
++    await extension.startup();
++  });
++  equal(startupCount, 1, "Observed one extension startup");
++  equal(runManifestCount, 1, "Observed runManifest call after emit startup");
++
++  equal(extension.extension.backgroundState, "stopped", "backgroundState");
++
++  equal(
++    messages.filter(m =>
++      m.message.includes("Cannot create hidden browser past shutdown")
++    ).length,
++    1,
++    "Found message when HiddenXULWindow.createBrowserElement was aborted"
++  );
++
++  // To be most realistic, set the APP_SHUTDOWN flag when shutdown() is called
++  // via extension.unload(). Otherwise we would run logic that ordinarily does
++  // not run when extensions unload on browser shutdown.
++  // E.g. ServiceWorkerCleanUp.removeFromPrincipal at
++  // https://searchfox.org/firefox-main/rev/c0dff85fa67e5ab148ce20d4298c13f13ceec342/toolkit/components/extensions/Extension.sys.mjs#4542
++  // throws NS_ERROR_XPC_GS_RETURNED_FAILURE upon calling
++  // ServiceManager::GetService via unregisterServiceWorkersMatching.
++  let shutdownCount = 0;
++  const Extension_prototype = Object.getPrototypeOf(extension.extension);
++  const origShutdown = Extension_prototype.shutdown;
++  Extension_prototype.shutdown = function () {
++    ++shutdownCount;
++    return origShutdown.call(this, "APP_SHUTDOWN");
++  };
++
++  await extension.unload();
++  await unrelatedExtension.unload();
++  equal(shutdownCount, 2, "extension.shutdown() was called twice");
++});
+diff --git a/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit4.js b/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit4.js
+new file mode 100644
+index 0000000000000..da9e1259bbdb9
+--- /dev/null
++++ b/toolkit/components/extensions/test/xpcshell/test_ext_background_early_quit4.js
+@@ -0,0 +1,95 @@
++"use strict";
++
++// This test task quits in the middle of the test - do NOT add more tests below
++// this, unless you explicitly want to verify the behavior after quitting.
++//
++// Regression test for the class of bugs seen in bug 2051934, observed in the
++// wild at https://bugzilla.mozilla.org/show_bug.cgi?id=2003265#c14
++//
++// This verifies the scenario where quit happens while waiting for
++// XULFrameLoaderCreated. In terms of timing, this is after
++// test_ext_background_early_quit3.js, before test_ext_background_early_quit.js
++add_task(async function test_quit_while_background_starts_loading_browser() {
++  // Need an existing background page to prepare hook for browser creation.
++  let unrelatedExtension = ExtensionTestUtils.loadExtension({
++    background() {
++      // Nothing here, when startup() resolves we have loaded.
++    },
++  });
++  await unrelatedExtension.startup();
++
++  // The HiddenXULWindow's windowlessBrowser's document:
++  const windowlessBrowserDocument =
++    unrelatedExtension.extension.backgroundContext.xulBrowser.ownerDocument;
++
++  function triggerRealQuit() {
++    // The Quit() call below calls ExitLastWindowClosingSurvivalArea() at
++    // https://searchfox.org/mozilla-central/rev/38e462fe13ea42ae6cc391fb36e8b9e82e842b00/toolkit/components/startup/nsAppStartup.cpp#428,431
++    // which expects an EnterLastWindowClosingSurvivalArea() to have called
++    // before, or else the following assertion will be triggered at:
++    // https://searchfox.org/mozilla-central/rev/38e462fe13ea42ae6cc391fb36e8b9e82e842b00/toolkit/components/startup/nsAppStartup.cpp#597-598
++    // ASSERTION: consider quit stopper out of bounds: 'mConsiderQuitStopper > 0
++    //
++    // During normal (non-xpcshell) execution, nsAppStartup::Run() runs, which
++    // calls EnterLastWindowClosingSurvivalArea(). In xpcshell tests, this is
++    // not called, and we need to call it here:
++    Services.startup.enterLastWindowClosingSurvivalArea();
++    Services.startup.quit(Ci.nsIAppStartup.eForceQuit);
++  }
++
++  let extension = ExtensionTestUtils.loadExtension({
++    // Extension startup is blocked on background startup (bug 1543354).
++    // If we somehow fail to make progress, then we should notice that.
++    delayedStartup: false,
++    background() {
++      browser.test.fail(
++        "Unexpected background page execution. eForceQuit should have aborted HiddenXULWindow load"
++      );
++    },
++  });
++
++  info("Waiting for extension to start up");
++  let browserCount = 0;
++  const origCreateXULElement = windowlessBrowserDocument.createXULElement;
++  windowlessBrowserDocument.createXULElement = function () {
++    ++browserCount;
++    // Not expecting more than 1, but just in case we somehow get more:
++    if (browserCount === 1) {
++      triggerRealQuit();
++    }
++    return Reflect.apply(origCreateXULElement, this, arguments);
++  };
++  const { messages } = await promiseConsoleOutput(async () => {
++    await extension.startup();
++  });
++  equal(browserCount, 1, "Seen one background browser creation attempt");
++
++  equal(extension.extension.backgroundState, "stopped", "backgroundState");
++
++  equal(
++    messages.filter(m =>
++      m.message.includes("Aborted hidden browser creation at shutdown")
++    ).length,
++    1,
++    "Found message when quit while waiting for XULFrameLoaderCreated"
++  );
++
++  // To be most realistic, set the APP_SHUTDOWN flag when shutdown() is called
++  // via extension.unload(). Otherwise we would run logic that ordinarily does
++  // not run when extensions unload on browser shutdown.
++  // E.g. ServiceWorkerCleanUp.removeFromPrincipal at
++  // https://searchfox.org/firefox-main/rev/c0dff85fa67e5ab148ce20d4298c13f13ceec342/toolkit/components/extensions/Extension.sys.mjs#4542
++  // throws NS_ERROR_XPC_GS_RETURNED_FAILURE upon calling
++  // ServiceManager::GetService via unregisterServiceWorkersMatching.
++  let shutdownCount = 0;
++  const Extension_prototype = Object.getPrototypeOf(extension.extension);
++  const origShutdown = Extension_prototype.shutdown;
++  Extension_prototype.shutdown = function () {
++    ++shutdownCount;
++    return origShutdown.call(this, "APP_SHUTDOWN");
++  };
++
++  await extension.unload();
++  await unrelatedExtension.unload();
++  equal(shutdownCount, 2, "extension.shutdown() was called twice");
++});
+diff --git a/toolkit/components/extensions/test/xpcshell/xpcshell-common.toml b/toolkit/components/extensions/test/xpcshell/xpcshell-common.toml
+index d3ddec0e4e629..611dfa7cb986b 100644
+--- a/toolkit/components/extensions/test/xpcshell/xpcshell-common.toml
++++ b/toolkit/components/extensions/test/xpcshell/xpcshell-common.toml
+@@ -54,6 +54,15 @@ skip-if = [
+ 
+ ["test_ext_background_early_quit.js"]
+ 
++["test_ext_background_early_quit2.js"]
++
++["test_ext_background_early_quit3.js"]
++
++["test_ext_background_early_quit4.js"]
++skip-if = [
++  "debug", # bug 2055827: debug-only "ASSERTION: Couldn't create child process."
++]
++
+ ["test_ext_background_early_shutdown.js"]
+ requesttimeoutfactor = 3  # Slow on Linux TSan/ASan (replaces manifest 2x)
+ run-sequentially = ["os == 'mac'"] # frequent fail in parallel on Mac
