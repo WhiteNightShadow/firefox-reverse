@@ -311,11 +311,12 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
-### v0.25.0（候选验证，2026-09-17）
+### v0.25.0（2026-09-17）
 - **侧栏文字大小（Issue #17）**：设置中新增 90%–180% 字号比例及默认复位，覆盖聊天、Markdown、设置和环境编辑；按 profile 持久化，不修改网页缩放或指纹 DPR。
 - **启动诊断（Issue #18 排查支持）**：新增[只读 macOS 启动诊断](docs/macos-startup-diagnostics.md)，区分用户数据目录、指纹 JSON 和应用包缺失；保留用户 profile，不自动重置。macOS 27 专属问题尚缺复现信息，未标为已解决。
-- **原生一致指纹（验证中）**：新环境默认跟随实际 Firefox 身份和 Screen/DPR/GPU，旧环境保留历史策略；新增一次性配置缓存、父子快照和 Windows Unicode 读取，修正生成的 `appVersion`。侧栏提供 Canvas software、WebGL MSAA、已安装字体白名单和 opt-in Offline Audio seed；完整显示模拟与跨内核身份暂不开放。见[原生一致策略](docs/native-fingerprint-consistency.md)。
-- **本轮验收范围**：macOS ARM64 完整构建与 186 项原生检查通过，包内 68 个工具注册正常，抽样执行 Agent 文件/页面/环境管理操作及 cookie 隔离验证；Windows、Linux、Intel Mac 仍待原机回归，不将单平台结果当作三端通过。
+- **原生一致指纹**：新环境默认跟随实际 Firefox 身份和 Screen/DPR/GPU，旧环境保留历史策略；新增一次性配置缓存、父子快照和 Windows Unicode 读取，修正生成的 `appVersion`。侧栏提供 Canvas software、WebGL MSAA、已安装字体白名单和 opt-in Offline Audio seed；完整显示模拟与跨内核身份暂不开放。见[原生一致策略](docs/native-fingerprint-consistency.md)。
+- **快速退出边界**：移植 Mozilla 已重新落地的 HiddenXULWindow 退出处理，避免窗口初始化等待在退出时悬挂；本机 Mac 与 Windows runner 各通过六次新 profile 截图/退出，补充扩展后台、DevTools 描述符和卸载回归。此项不代表已经确认 #18 的根因。
+- **本轮验收范围**：macOS ARM64 213 项、Intel Mac 197 项、Windows 212 项、Linux x86_64/ARM64 各 182 项原生检查通过；68 个浏览器工具注册正常，抽样执行 Agent 文件/页面/环境管理及 cookie 隔离，配套 MCP v0.3.8 验证 23 个入口工具。Intel Mac/两种 Linux 的无头 runner 未验证 GPU/MSAA，Linux 缺少 Arial/Times 字体用例；详见[验证报告](https://github.com/WhiteNightShadow/firefox-reverse/releases/download/v0.25.0/NATIVE-VALIDATION.json)与[CI 记录](https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/35222030479)。
 - **AI 结果 Markdown（Issue #14）**：历史结果、已完成步骤、执行中的正文和思考段统一支持标题、加粗、列表、任务清单、引用、代码块和 GFM 表格；代码与宽表格在侧栏内横向滚动，支持深浅主题和未闭合的流式 Markdown。
 - **展示与链接边界**：原始对话、导出 JSON 和模型上下文不变；原始 HTML 作为文本显示，网页链接打开普通标签页，内部/可执行/文件链接不启用，Markdown 图片显示为可点击说明，工具截图沿用原展示方式。
 - **OpenCode Go 请求兼容（Issue #13）**：访问官方 OpenCode API 时自动发送自身 `User-Agent` 和每个会话稳定的 `x-opencode-session`；普通对话、工具循环、流式/重试、交接摘要和 ContextProjection 共用持久会话 ID。其它供应商的请求头保持原行为。

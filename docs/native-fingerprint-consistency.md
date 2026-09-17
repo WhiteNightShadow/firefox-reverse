@@ -1,6 +1,6 @@
 # 原生一致指纹策略
 
-本轮为未发布的原生能力改造。隔离边界仍为一个环境一个 profile、一个父进程，不替换 Agent、工具接口、产品壳或历史环境数据。
+本策略随 v0.25.0 发布。隔离边界仍为一个环境一个 profile、一个父进程，不替换 Agent、工具接口、产品壳或历史环境数据。
 
 ## 新旧环境
 
@@ -16,7 +16,7 @@
 
 `FrxFingerprintConfig` 缓存 Loaded / Invalid / Absent，包括禁用状态。Invalid 表示停用覆盖、返回 Firefox 原生值，不代表整台浏览器拒绝启动；环境管理器另做启动前校验。
 
-子进程只消费父快照，即使继承不同 inline/path 也不改变身份。原始 JSON、状态、来源和每次父进程启动生成的 token 经不超过 4000 字节的 ASCII default-pref 片段传入，走现有共享内存首选项链路，不持久化到 `prefs.js`，不放松沙箱。
+内容子进程（含 Worker 所属进程）只消费父快照，即使继承不同 inline/path 也不改变身份。原始 JSON、状态、来源和每次父进程启动生成的 token 经不超过 4000 字节的 ASCII default-pref 片段传入，走现有共享内存首选项链路，不持久化到 `prefs.js`，不放松沙箱。
 
 要求严格 UTF-8 JSON 对象，最大 1 MiB，不接受注释、重复键、尾逗号和尾随内容。Windows 使用 `GetEnvironmentVariableW`、`_wfopen` 和 UTF-8/UTF-16 转换。大配置宜用文件；1 MiB 不是操作系统环境块容量承诺。
 
@@ -57,8 +57,12 @@ node scripts/verify-native-fingerprint.mjs \
 
 读取器单测编译本仓实际 C++ 和树内 JsonCpp，以替身模拟 XPCOM/prefs，不能证明 Gecko IPC、沙箱或 Windows Unicode 行为。浏览器测试绑定新产物 hash，使用临时 profile，不能用旧安装包代替新构建。
 
-2026-09-16 macOS ARM64 已完成完整构建与 186 项原生检查；读取器 68 项、MCP 25 项及 Agent 自测通过，包内 68 个工具注册正常。离线音频相同种子的 unity replay 误差为 0，写入后重放最大绝对误差约 `5.96e-8`。另实际调用文件、Node、笔记、页面和环境管理工具，确认独立 profile 的 cookie 隔离。
+2026-09-17 最终包验证：macOS ARM64 213 项、Intel Mac 197 项、Windows 212 项、Linux x86_64/ARM64 各 182 项通过。macOS ARM64 在本机运行，其余目标在对应原生架构的 CI runner 上运行，不将 Rosetta 或静态文件检查算作原生运行。
 
-此次验证 XUL SHA-256：`3d5fe5666f4bfd1fbeabaae617f54a92d614126bbf694c3a6ae09f4ce8e3cbec`，BuildID：`20260916122754`。测试副本使用独立 macOS Bundle ID，不是已经发布的 v0.24.1 安装包。Windows、Linux 和 Intel Mac 的原机运行回归仍待进行；未覆盖本地应用，也未发布代码或编译包。
+Intel Mac 与 Linux 的无头 runner 无 WebGL，GPU/MSAA 未验证；Linux 缺少 Arial/Times 字体用例。Windows/Linux 保留 Firefox 原生 local-font fallback 策略，不承诺跨硬件字体或音频等价。完整范围、每项断言和限制见 [NATIVE-VALIDATION.json](https://github.com/WhiteNightShadow/firefox-reverse/releases/download/v0.25.0/NATIVE-VALIDATION.json)。
+
+读取器 68 项、MCP 25 项及 Agent 自测通过；真实浏览器验证 68 个工具注册，抽样调用文件、Node、笔记、页面和环境管理工具及 cookie 隔离；实际 MCP stdio 验证 23 个入口工具。Mac/Windows 另各通过六次新 profile 截图/退出，Mac 验证扩展后台、DevTools 描述符和卸载。没有使用真实付费模型账号进行线上推理验收，也没有覆盖用户日常安装或 profile。
+
+最终包 BuildID 为 `20260917112226`，构建源码提交 `cfa74a51ccb01e99df6f0458874d8c40e94fa5bd`。该提交之后的发布提交仅更新验证脚本和文档；逐包哈希、核心库哈希及来源见 [RELEASE-MANIFEST.json](https://github.com/WhiteNightShadow/firefox-reverse/releases/download/v0.25.0/RELEASE-MANIFEST.json)。
 
 移植参考 PaBox `4913975992bd55adc615cc40f3119ef13d098557` 的配置、音频与字体实现，按 Firefox Reverse 锁定基线逐函数适配，不引入 runtime shell/BiDi 改造。参考：[Camoufox 指纹边界](https://camoufox.com/fingerprint/)、[Mozilla 实现](https://firefox-source-docs.mozilla.org/toolkit/components/resistfingerprinting/resistfingerprinting/implementation.html)。不承诺不可检测或完整 Chromium 身份。
