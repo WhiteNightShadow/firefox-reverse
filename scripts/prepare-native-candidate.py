@@ -71,11 +71,15 @@ assert actual_preferences == expected, "stale packaged locale/version preference
 assert tag[1:] in expected.decode()
 modules = ["EnvironmentBackend", "NativeFingerprintPolicy", "ConfigStore", "SidebarTypography", "LlmClient"]
 with zipfile.ZipFile(resource_root / "browser/omni.ja") as archive:
+    ui_prefix = "chrome/browser/content/browser/agent-sidebar/"
+    bundle_sha = hashlib.sha256(archive.read(ui_prefix + "agent-sidebar.bundle.js")).hexdigest()
+    expected_css = subprocess.check_output(["git", "show", f"{commit}:additions/browser/components/agent-sidebar/content/agent-panel.css"])
+    assert archive.read(ui_prefix + "agent-panel.css") == expected_css, "stale sidebar styles"
     for module in modules:
         expected = subprocess.check_output(["git", "show", f"{commit}:additions/browser/components/agent-sidebar/modules/{module}.sys.mjs"])
         assert archive.read(f"modules/agentsidebar/{module}.sys.mjs") == expected, f"stale module: {module}"
     assert "右击或下拉显示历史" in archive.read("localization/zh-CN/browser/browserContext.ftl").decode()
-report = {"package": name, "packageSHA256": sha(package), "xulSHA256": sha(xul), "sourceCommit": commit, "buildID": build_id, "modules": modules, "status": "passed"}
+report = {"package": name, "packageSHA256": sha(package), "xulSHA256": sha(xul), "sidebarBundleSHA256": bundle_sha, "sourceCommit": commit, "buildID": build_id, "modules": modules, "status": "passed"}
 (output / "PACKAGE-IDENTITY.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
     stream.write(f"FRX_TEST_BINARY={binary}\nFRX_TEST_XUL_SHA={report['xulSHA256']}\n")
