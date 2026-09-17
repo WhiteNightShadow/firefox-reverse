@@ -184,7 +184,7 @@ patch_file(cgpath, [
 ])
 
 # ---------------------------------------------------------------------------
-# 6. browser/app/nsBrowserApp.cpp: Windows 下父进程启动最早期注入
+# 6. Explicit diagnostic builds only: Windows early-startup sandbox override.
 #    MOZ_DISABLE_CONTENT_SANDBOX=1。内容进程沙箱挡住引擎层 trace 往 %TEMP% 写 NDJSON
 #    (fopen 静默失败)；security.sandbox.content.level=0 在 release 构建被钳制、不足以禁用。
 #    内容进程继承父进程 env，故在 main() 最早注入（早于沙箱 TargetServices 初始化）。
@@ -192,7 +192,8 @@ patch_file(cgpath, [
 # ---------------------------------------------------------------------------
 nbapath = os.path.join(ROOT, "browser/app/nsBrowserApp.cpp")
 print(f"==> {nbapath}")
-patch_file(nbapath, [
+if os.environ.get("FRX_ALLOW_UNSANDBOXED_TRACE") == "1":
+    patch_file(nbapath, [
     (
         "inject MOZ_DISABLE_CONTENT_SANDBOX into nsBrowserApp main (Windows)",
         "int main(int argc, char* argv[], char* envp[]) {\n",
@@ -205,6 +206,8 @@ patch_file(nbapath, [
         '  _putenv("MOZ_DISABLE_CONTENT_SANDBOX=1");\n'
         "#endif\n",
     ),
-])
+    ])
+else:
+    print("  [skip] preserve content sandbox (unsandboxed trace requires explicit build opt-in)")
 
 print("\nAll Phase B patches applied successfully.")
