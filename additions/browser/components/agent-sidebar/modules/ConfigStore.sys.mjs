@@ -10,6 +10,7 @@
  */
 
 import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
+import { normalizeFontScale } from "./SidebarTypography.sys.mjs";
 
 const PREF_PREFIX = "extensions.firefox-reverse.agent.";
 const MODEL_PROFILES_KEY = PREF_PREFIX + "modelProfiles.v1";
@@ -95,6 +96,13 @@ export class ConfigStore {
   /** 真持久化（Firefox prefs）还是内存（Node 自测）。 */
   get isPersistent() {
     return !!this.b.persistent;
+  }
+
+  getSidebarFontScale() {
+    return normalizeFontScale(this.b.getString(PREF_PREFIX + "ui.fontScale", "100"));
+  }
+  setSidebarFontScale(value) {
+    this.b.setString(PREF_PREFIX + "ui.fontScale", String(normalizeFontScale(value)));
   }
 
   _readProfiles() {

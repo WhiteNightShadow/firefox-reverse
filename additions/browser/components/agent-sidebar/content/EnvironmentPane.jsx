@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { isNativeFingerprint, nativeFingerprintDefaults } from "../modules/NativeFingerprintPolicy.sys.mjs";
 
 const CURRENT_PROCESS_TARGET = "__current_process__";
 
@@ -278,12 +279,17 @@ function fieldValue(obj, section, key, fallback = "") {
   return v ?? fallback;
 }
 
+function activeFieldValue(obj, section, key, fallback) {
+  if (obj?.[section]?.enabled === false || obj?.[section]?.[key]?.enabled === false) return fallback;
+  return fieldValue(obj, section, key, fallback);
+}
+
 function setField(obj, section, key, value) {
   const next = clone(obj);
   next[section] = next[section] || {};
   const old = next[section][key];
   if (old && typeof old === "object" && Object.prototype.hasOwnProperty.call(old, "value")) {
-    next[section][key] = { ...old, enabled: old.enabled !== false, value };
+    next[section][key] = { ...old, enabled: true, value };
   } else {
     next[section][key] = { enabled: true, value };
   }
@@ -384,7 +390,7 @@ function TextField({ label, value, onChange }) {
   );
 }
 
-function FingerprintForm({ fingerprint, setFingerprint }) {
+export function FingerprintForm({ fingerprint, setFingerprint }) {
   if (!fingerprint) {
     return null;
   }
@@ -396,27 +402,42 @@ function FingerprintForm({ fingerprint, setFingerprint }) {
   const webgl = fingerprint.webgl || {};
   const audio = fingerprint.audio || {};
   const fonts = fingerprint.fonts || {};
+  const fontFamilies = fieldValue({ fonts }, "fonts", "families", []);
   const webrtc = fingerprint.webrtc || {};
   const tls = fingerprint.tls || {};
   const protection = fingerprint.protection || {};
+  const native = isNativeFingerprint(fingerprint);
+  const canvas = fingerprint.canvas || {};
   const set = (section, key, value) => setFingerprint(fp => setField(fp, section, key, value));
+  const setActive = (section, key, value) => setFingerprint(fp => {
+    const next = setField(fp, section, key, value);
+    next[section].enabled = true;
+    next[section][key].enabled = value !== null;
+    return next;
+  });
+  const newSeed = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, "0")).join("");
   return (
     <div className="env-editor">
       <label className="env-check">
         <input type="checkbox" checked={fingerprint.enabled !== false} onChange={e => setFingerprint(fp => setTop(fp, "enabled", e.target.checked))} />
         <span>启用指纹覆盖</span>
       </label>
+      <SelectField label="一致性策略" value={native ? "native-consistent" : "legacy"} onChange={mode => setFingerprint(fp => mode === "native-consistent" ? nativeFingerprintDefaults(fp, fieldValue(fp, "audio", "seed", "").length === 64 ? fieldValue(fp, "audio", "seed") : newSeed()) : { ...fp, consistency: { mode: "legacy", version: 1 } })}>
+        <option value="native-consistent">原生一致</option>
+        <option value="legacy">历史策略</option>
+      </SelectField>
 
       <div className="env-editor__grid">
-        <TextField label="User-Agent" value={fieldValue({ navigator: nav }, "navigator", "userAgent")} onChange={v => set("navigator", "userAgent", v)} />
-        <Field label="platform" value={fieldValue({ navigator: nav }, "navigator", "platform")} onChange={v => set("navigator", "platform", v)} />
+        {!native && <TextField label="User-Agent" value={fieldValue({ navigator: nav }, "navigator", "userAgent")} onChange={v => set("navigator", "userAgent", v)} />}
+        {!native && <Field label="platform" value={fieldValue({ navigator: nav }, "navigator", "platform")} onChange={v => set("navigator", "platform", v)} />}
         <Field label="首选语言" value={fieldValue({ navigator: nav }, "navigator", "language")} onChange={v => set("navigator", "language", v)} />
         <Field label="语言列表" value={(fieldValue({ navigator: nav }, "navigator", "languages", []) || []).join(",")} onChange={v => set("navigator", "languages", parseList(v))} />
-        <Field label="hardwareConcurrency" type="number" value={fieldValue({ navigator: nav }, "navigator", "hardwareConcurrency", 8)} onChange={v => set("navigator", "hardwareConcurrency", v)} />
+        {!native && <Field label="hardwareConcurrency" type="number" value={fieldValue({ navigator: nav }, "navigator", "hardwareConcurrency", 8)} onChange={v => set("navigator", "hardwareConcurrency", v)} />}
         <label className="env-check env-check--field">
           <input type="checkbox" checked={fieldValue({ navigator: nav }, "navigator", "webdriver", false) === true} onChange={e => set("navigator", "webdriver", e.target.checked)} />
           <span>webdriver=true</span>
         </label>
+        {!native && <>
         <Field label="screen.width" type="number" value={fieldValue({ screen }, "screen", "width", 1920)} onChange={v => set("screen", "width", v)} />
         <Field label="screen.height" type="number" value={fieldValue({ screen }, "screen", "height", 1080)} onChange={v => set("screen", "height", v)} />
         <Field label="availWidth" type="number" value={fieldValue({ screen }, "screen", "availWidth", 1920)} onChange={v => set("screen", "availWidth", v)} />
@@ -424,13 +445,15 @@ function FingerprintForm({ fingerprint, setFingerprint }) {
         <Field label="colorDepth" type="number" value={fieldValue({ screen }, "screen", "colorDepth", 24)} onChange={v => set("screen", "colorDepth", v)} />
         <Field label="pixelDepth" type="number" value={fieldValue({ screen }, "screen", "pixelDepth", 24)} onChange={v => set("screen", "pixelDepth", v)} />
         <Field label="devicePixelRatio" type="number" value={fieldValue({ window: win }, "window", "devicePixelRatio", 1)} onChange={v => set("window", "devicePixelRatio", v)} />
+        </>}
         <Field label="地区（Locale）" value={fieldValue({ intl }, "intl", "locale")} onChange={v => set("intl", "locale", v)} />
         <Field label="时区" value={fieldValue({ intl }, "intl", "timezone")} onChange={v => set("intl", "timezone", v)} />
-        <TextField label="HTTP User-Agent" value={fieldValue({ http }, "http", "userAgent")} onChange={v => set("http", "userAgent", v)} />
+        {!native && <TextField label="HTTP User-Agent" value={fieldValue({ http }, "http", "userAgent")} onChange={v => set("http", "userAgent", v)} />}
         <Field label="请求语言" value={fieldValue({ http }, "http", "acceptLanguage")} onChange={v => set("http", "acceptLanguage", v)} />
       </div>
 
       <div className="env-editor__grid">
+        {!native && <>
         <Field label="WebGL vendor" value={fieldValue({ webgl }, "webgl", "vendor", "Mozilla")} onChange={v => set("webgl", "vendor", v)} />
         <Field label="WebGL renderer" value={fieldValue({ webgl }, "webgl", "renderer", "Mozilla")} onChange={v => set("webgl", "renderer", v)} />
         <Field label="unmaskedVendor" value={fieldValue({ webgl }, "webgl", "unmaskedVendor", "")} onChange={v => set("webgl", "unmaskedVendor", v)} />
@@ -440,6 +463,22 @@ function FingerprintForm({ fingerprint, setFingerprint }) {
 
         <Field label="Audio sampleRate" type="number" value={fieldValue({ audio }, "audio", "sampleRate", 48000)} onChange={v => set("audio", "sampleRate", v)} />
         <Field label="font visibility" type="number" value={fieldValue({ fonts }, "fonts", "visibility", 3)} onChange={v => set("fonts", "visibility", v)} />
+        </>}
+        {native && <>
+          <SelectField label="Canvas 后端" value={activeFieldValue({ canvas }, "canvas", "backend", "native")} onChange={v => setActive("canvas", "backend", v)}>
+            <option value="native">原生</option><option value="software">软件渲染</option>
+          </SelectField>
+          <SelectField label="WebGL MSAA" value={String(activeFieldValue({ webgl }, "webgl", "msaaSamples", "native"))} onChange={v => setActive("webgl", "msaaSamples", v === "native" ? null : Number(v))}>
+            <option value="native">原生</option><option value="0">0</option><option value="4">4</option>
+          </SelectField>
+          <SelectField label="离线音频" value={activeFieldValue({ audio }, "audio", "mode", "native")} onChange={mode => setFingerprint(fp => ({ ...fp, seed_mode: "persistent", audio: { enabled: true, mode: { enabled: true, value: mode }, scope: { enabled: true, value: "profile" }, seed: { enabled: mode === "seeded", value: /^[a-f0-9]{64}$/i.test(fieldValue(fp, "audio", "seed", "")) ? fieldValue(fp, "audio", "seed") : newSeed() } } }))}>
+            <option value="native">原生 PCM</option><option value="seeded">固定种子 PCM</option>
+          </SelectField>
+          <SelectField label="系统字体" value={activeFieldValue({ fonts }, "fonts", "mode", "native")} onChange={mode => setFingerprint(fp => ({ ...fp, fonts: { enabled: true, mode: { enabled: true, value: mode }, families: { enabled: mode === "allowlist", value: fieldValue(fp, "fonts", "families", []) } } }))}>
+            <option value="native">全部已安装字体</option><option value="allowlist">已安装字体白名单</option>
+          </SelectField>
+          {activeFieldValue({ fonts }, "fonts", "mode", "native") === "allowlist" && <TextField label="字体家族（每行一个）" value={Array.isArray(fontFamilies) ? fontFamilies.join("\n") : String(fontFamilies || "")} onChange={v => setActive("fonts", "families", v.split("\n").map(name => name.trim()).filter(Boolean))} />}
+        </>}
 
         <SelectField label="WebRTC mode" value={fieldValue({ webrtc }, "webrtc", "mode", "default_address_only")} onChange={v => set("webrtc", "mode", v)}>
           <option value="default_address_only">default_address_only</option>
@@ -456,8 +495,8 @@ function FingerprintForm({ fingerprint, setFingerprint }) {
         <CheckField label="0-RTT" checked={fieldValue({ tls }, "tls", "zeroRtt", false)} onChange={v => set("tls", "zeroRtt", v)} />
         <CheckField label="ECH GREASE" checked={fieldValue({ tls }, "tls", "echGrease", true)} onChange={v => set("tls", "echGrease", v)} />
         <CheckField label="Kyber" checked={fieldValue({ tls }, "tls", "kyber", true)} onChange={v => set("tls", "kyber", v)} />
-        <CheckField label="RFP" checked={fieldValue({ protection }, "protection", "resistFingerprinting", false)} onChange={v => set("protection", "resistFingerprinting", v)} />
-        <CheckField label="FPP" checked={fieldValue({ protection }, "protection", "fingerprintingProtection", false)} onChange={v => set("protection", "fingerprintingProtection", v)} />
+        {!native && <CheckField label="RFP" checked={fieldValue({ protection }, "protection", "resistFingerprinting", false)} onChange={v => set("protection", "resistFingerprinting", v)} />}
+        {!native && <CheckField label="FPP" checked={fieldValue({ protection }, "protection", "fingerprintingProtection", false)} onChange={v => set("protection", "fingerprintingProtection", v)} />}
       </div>
     </div>
   );

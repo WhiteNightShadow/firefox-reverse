@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import MarkdownContent from "./MarkdownContent.jsx";
 
 /**
  * Agent 对话面板（A1+：多轮消息 + 多线程历史持久化）。
@@ -150,7 +151,7 @@ function ToolStep({ step }) {
 function TextSeg({ step, live }) {
   return (
     <div className="msg__textseg">
-      {step.text}
+      <MarkdownContent>{step.text}</MarkdownContent>
       {live ? <span className="msg__cursor">▌</span> : null}
     </div>
   );
@@ -162,7 +163,7 @@ function ThinkSeg({ step, live }) {
     <details className="msg__think" open>
       <summary className="msg__think-label">💭 思考过程</summary>
       <div className="msg__think-body">
-        {step.text}
+        <MarkdownContent>{step.text}</MarkdownContent>
         {live ? <span className="msg__cursor">▌</span> : null}
       </div>
     </details>
@@ -170,7 +171,7 @@ function ThinkSeg({ step, live }) {
 }
 
 // 渲染 steps：正文段/思考段始终显示；工具步骤按 hideTools 折叠。live 时给最后一段加光标。
-function StepList({ steps, hideTools, live }) {
+export function StepList({ steps, hideTools, live }) {
   return steps.map((s, j) => {
     if (s.kind === "tool") {
       return hideTools ? null : <ToolStep key={j} step={s} />;
@@ -183,10 +184,10 @@ function StepList({ steps, hideTools, live }) {
 }
 
 // 完成态 assistant 消息体：默认展开全过程；收起后**只保留最后一段（结论）**，思考/工具/中间正文一并收齐
-function AssistantBody({ steps, content }) {
+export function AssistantBody({ steps, content }) {
   const [collapsed, setCollapsed] = useState(false);
   if (!steps || !steps.length) {
-    return <div className="msg__content">{content}</div>;
+    return <div className="msg__content"><MarkdownContent>{content}</MarkdownContent></div>;
   }
   const toolCount = steps.filter(s => s.kind === "tool").length;
   // 最后一段正文（最终结论）的下标
@@ -898,7 +899,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
             break;
           }
         }
-        const content = (await buildClient().chat([{ role: "system", content: sys }, ...fallbackConvo])).content;
+        const content = (await buildClient().chat(
+          [{ role: "system", content: sys }, ...fallbackConvo],
+          { sessionId: tid }
+        )).content;
         const am = { role: "assistant", content };
         setMessages([...convo, am]);
         await conversations.appendMessage(tid, am);
@@ -1098,7 +1102,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           type="button"
           onClick={() => { setExtRunning(null); openThread(extRunning.id); }}
           title="外部(MCP)正在驱动另一个会话——点击切过去实时查看进度"
-          style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderBottom: "1px solid rgba(106,140,255,0.3)", background: "rgba(106,140,255,0.15)", color: "#6a8cff", padding: "6px 12px", cursor: "pointer", fontSize: "12px" }}
+          style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderBottom: "1px solid rgba(106,140,255,0.3)", background: "rgba(106,140,255,0.15)", color: "#6a8cff", padding: "6px 12px", cursor: "pointer", fontSize: "calc(12px * var(--frx-font-scale, 1))" }}
         >
           ⚡ 外部(MCP)正在驱动另一个会话（{extRunning.nSteps} 步）· 点击实时跟随
         </button>

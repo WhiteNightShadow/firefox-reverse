@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import AgentPanel from "./AgentPanel.jsx";
 import EnvironmentPane from "./EnvironmentPane.jsx";
 import SettingsPane from "./SettingsPane.jsx";
+import { applySidebarFontScale } from "../modules/SidebarTypography.sys.mjs";
 
 /* Agent 侧边栏入口：在 chrome-privileged document 里挂载 React。
  *
@@ -106,6 +107,7 @@ function main() {
   let mods;
   try {
     mods = loadModules();
+    applySidebarFontScale(document, mods.store.getSidebarFontScale?.() ?? 100);
   } catch (e) {
     rootEl.textContent = e.message;
     return;

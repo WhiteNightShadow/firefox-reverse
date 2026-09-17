@@ -311,6 +311,17 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
+### v0.25.0（候选验证，2026-09-17）
+- **侧栏文字大小（Issue #17）**：设置中新增 90%–180% 字号比例及默认复位，覆盖聊天、Markdown、设置和环境编辑；按 profile 持久化，不修改网页缩放或指纹 DPR。
+- **启动诊断（Issue #18 排查支持）**：新增[只读 macOS 启动诊断](docs/macos-startup-diagnostics.md)，区分用户数据目录、指纹 JSON 和应用包缺失；保留用户 profile，不自动重置。macOS 27 专属问题尚缺复现信息，未标为已解决。
+- **原生一致指纹（验证中）**：新环境默认跟随实际 Firefox 身份和 Screen/DPR/GPU，旧环境保留历史策略；新增一次性配置缓存、父子快照和 Windows Unicode 读取，修正生成的 `appVersion`。侧栏提供 Canvas software、WebGL MSAA、已安装字体白名单和 opt-in Offline Audio seed；完整显示模拟与跨内核身份暂不开放。见[原生一致策略](docs/native-fingerprint-consistency.md)。
+- **本轮验收范围**：macOS ARM64 完整构建与 186 项原生检查通过，包内 68 个工具注册正常，抽样执行 Agent 文件/页面/环境管理操作及 cookie 隔离验证；Windows、Linux、Intel Mac 仍待原机回归，不将单平台结果当作三端通过。
+- **AI 结果 Markdown（Issue #14）**：历史结果、已完成步骤、执行中的正文和思考段统一支持标题、加粗、列表、任务清单、引用、代码块和 GFM 表格；代码与宽表格在侧栏内横向滚动，支持深浅主题和未闭合的流式 Markdown。
+- **展示与链接边界**：原始对话、导出 JSON 和模型上下文不变；原始 HTML 作为文本显示，网页链接打开普通标签页，内部/可执行/文件链接不启用，Markdown 图片显示为可点击说明，工具截图沿用原展示方式。
+- **OpenCode Go 请求兼容（Issue #13）**：访问官方 OpenCode API 时自动发送自身 `User-Agent` 和每个会话稳定的 `x-opencode-session`；普通对话、工具循环、流式/重试、交接摘要和 ContextProjection 共用持久会话 ID。其它供应商的请求头保持原行为。
+- **配置方式**：模型设置选择“自定义”，Base URL 填 `https://opencode.ai/zen/go/v1`，按 [OpenCode 官方端点表](https://opencode.ai/docs/go/#endpoints) 选择 OpenAI Chat Completions 或 Anthropic Messages 协议及模型名，并填写 Go Key；无需手填 UA 或 Session ID。目前不支持仅提供 `/responses` 的模型。自建转发域名不自动识别为 OpenCode。
+- **验证范围**：本地 HTTP 协议回归覆盖同/不同会话、历史重载、导入、流式、重试及摘要请求；真实 Firefox 临时 profile 验证请求头能在网页指纹 UA 启用时正确发出。尚未使用 Go 付费账号进行线上推理验证。
+
 ### v0.24.1（2026-09-04）
 - **Ledger SQL 防御性加固**：确认外部 PR 报告不是当前可利用的 SQL 注入；`workspace/site` 列名原本只来自内部固定枚举，所有业务值也已参数绑定。本版进一步改为完整固定 SQL allowlist，未知作用域列直接 fail-closed，消除静态扫描歧义。
 - **去重删除保持原子性**：ID 列表仍通过单条 `DELETE ... IN (?,...)` 数组绑定执行；SQL 文本只按内部结果数量生成占位符，不拼接任何 ID 值，保持原有单语句语义和性能。

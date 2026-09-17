@@ -459,7 +459,7 @@ export const agentSession = {
       if (hadCancellationBoundary) {
         dynamicContext = String(dynamicContext || "") + "\n\n" + CANCELLED_TURN_BOUNDARY;
       }
-      const client = buildClientFromStore(configStore);
+      const client = buildClientFromStore(configStore, { sessionId: threadId });
       const activeProfile =
         (configStore.getActiveModelProfile && configStore.getActiveModelProfile()) || null;
       const cacheKey = [

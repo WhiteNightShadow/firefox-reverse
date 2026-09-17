@@ -4,7 +4,7 @@
  * anthropic / gemini 留 A2。React 面板用 listProviders() 渲染下拉，用
  * buildClientFromStore() 在发送时构造 LlmClient。
  */
-import { LlmClient } from "./LlmClient.sys.mjs";
+import { LlmClient, openCodeRequestHeaders } from "./LlmClient.sys.mjs";
 import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
 
 /** 内置 Claude 模型（Anthropic 协议自定义端点用；中转站 /v1/models 往往列不出 Claude）。
@@ -148,7 +148,7 @@ export async function fetchModels(baseUrl, token) {
     : [base + "/v1/models", base + "/models"];
   // 同时带 OpenAI(Bearer) 与 Anthropic(x-api-key+version) 两套鉴权头：OpenAI 网关忽略多余头，
   // Anthropic 官方/同款网关只认 x-api-key——只发 Bearer 会把有效 key 误报成 401。
-  const headers = {};
+  const headers = openCodeRequestHeaders(base);
   if (token) {
     headers.Authorization = "Bearer " + token;
     headers["x-api-key"] = token;
@@ -235,7 +235,7 @@ export function listProviders() {
 /**
  * 从 ConfigStore（+ 可选 overrides）构造 LlmClient。
  * @param {object} store  ConfigStore 实例
- * @param {object} [overrides] { provider, apiKey, model, baseUrl, reasoningEffort }
+ * @param {object} [overrides] { provider, apiKey, model, baseUrl, reasoningEffort, sessionId }
  * @returns {LlmClient}
  */
 export function buildClientFromStore(store, overrides = {}) {
@@ -276,6 +276,7 @@ export function buildClientFromStore(store, overrides = {}) {
   return new LlmClient({
     protocol,
     providerId: id,
+    sessionId: overrides.sessionId,
     baseUrl,
     chatPath,
     apiKey: overrides.apiKey || (profile && profile.apiKey) || store.getApiKey(id),

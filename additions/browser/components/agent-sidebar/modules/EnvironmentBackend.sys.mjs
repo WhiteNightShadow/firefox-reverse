@@ -10,6 +10,8 @@
  * launch surface consumed by the C++/Gecko fingerprint layer.
  */
 
+import { NATIVE_CONSISTENCY_MODE, isNativeFingerprint, nativeFingerprintDefaults, nativeRenderingPrefs, validateNativeFingerprint } from "./NativeFingerprintPolicy.sys.mjs";
+
 const SCHEMA_VERSION = 1;
 const DEFAULT_DIR_NAME = "environments";
 const DEFAULT_PORT_BASE = 2828;
@@ -948,6 +950,9 @@ export class EnvironmentBackend {
   _buildFingerprint(env, options = {}, source = { type: "generated" }) {
     const defaults = this._detectDefaults();
     const randomOptions = options && options.randomize ? this._randomGenerateOptions(options) : {};
+    if ((options.consistencyMode || env.consistencyMode) === NATIVE_CONSISTENCY_MODE) {
+      for (const key of ["resolution", "devicePixelRatio", "hardwareConcurrency"]) delete randomOptions[key];
+    }
     const merged = { ...defaults, ...randomOptions, ...options };
     const ua = this._uaParts(merged);
     const navigatorOptions = merged.navigator && typeof merged.navigator === "object" ? merged.navigator : {};
@@ -1009,7 +1014,7 @@ export class EnvironmentBackend {
       : [];
     const sampleRate = clampInt(merged.audioSampleRate || configField(audioOptions, "sampleRate", 48000), 8000, 192000, 48000);
     const fontVisibility = clampInt(merged.fontVisibility || configField(fontsOptions, "visibility", 3), 1, 3, 3);
-    return {
+    const fingerprint = {
       schemaVersion: SCHEMA_VERSION,
       enabled: merged.enabled !== false,
       seed_mode: env.seedMode || "persistent",
@@ -1053,7 +1058,7 @@ export class EnvironmentBackend {
         hardwareConcurrency: field(hc),
         appCodeName: field(configString(navigatorOptions, "appCodeName", "Mozilla")),
         appName: field(configString(navigatorOptions, "appName", "Netscape")),
-        appVersion: field(configString(navigatorOptions, "appVersion", userAgent.replace(/^Mozilla\//, ""))),
+        appVersion: field(configString(navigatorOptions, "appVersion", isChromium ? userAgent.replace(/^Mozilla\//, "") : `5.0 (${ua.os === "macos" ? "Macintosh" : ua.os === "windows" ? "Windows" : "X11"})`)),
         product: field(configString(navigatorOptions, "product", "Gecko")),
         productSub: field(configString(navigatorOptions, "productSub", isChromium ? "20030107" : "20100101")),
         vendor: field(configString(navigatorOptions, "vendor", isChromium ? "Google Inc." : "")),
@@ -1203,6 +1208,9 @@ export class EnvironmentBackend {
         cookie: field(configString(storageOptions, "cookie", ""), configField(storageOptions, "cookie", null) != null),
       },
     };
+    return (options.consistencyMode || env.consistencyMode) === NATIVE_CONSISTENCY_MODE
+      ? nativeFingerprintDefaults(fingerprint, env.audioSeed || randHex(32))
+      : fingerprint;
   }
 
   _defaultFingerprint(env) {
@@ -1234,14 +1242,49 @@ export class EnvironmentBackend {
     };
   }
 
-  _fingerprintUserPrefs(fingerprint = {}) {
+  _validateFingerprint(fingerprint) {
+    validateNativeFingerprint(fingerprint);
+    if (!isNativeFingerprint(fingerprint) || !fingerprint.enabled) return;
+    const nativeUA = this._uaParts(this._detectDefaults());
+    const platform = configString(fingerprint.navigator, "platform", "");
+    const userAgent = configString(fingerprint.navigator, "userAgent", "");
+    if ((platform && platform !== nativeUA.platform) || (userAgent && userAgent !== nativeUA.userAgent)) {
+      throw new Error("native consistency requires the current Firefox version and host OS identity");
+    }
+    if (configString(fingerprint.fonts, "mode", "native") === "allowlist") {
+      let installedFonts;
+      try {
+        installedFonts = Cc["@mozilla.org/gfx/fontenumerator;1"].getService(Ci.nsIFontEnumerator).EnumerateAllFonts();
+      } catch {
+        throw new Error("cannot verify installed fonts on this machine");
+      }
+      validateNativeFingerprint(fingerprint, { installedFonts });
+    }
+  }
+
+  async _stageEnvironmentConfig(env) {
+    const runtimeConfig = await this._syncProfileRuntimeConfig(env);
+    await this._writeProfilePrefs(env, env.runtime?.marionettePort || null, runtimeConfig);
+  }
+
+  _fingerprintUserPrefs(fingerprint = {}, resetNative = false) {
     const lines = [];
+    const native = isNativeFingerprint(fingerprint);
+    if (native || resetNative) {
+      const renderingConfig = native ? fingerprint : { enabled: false, consistency: { mode: NATIVE_CONSISTENCY_MODE, version: 1 } };
+      const defaults = {};
+      const branch = safe(() => Services.prefs.getDefaultBranch(""), null);
+      for (const [key, value] of Object.entries(nativeRenderingPrefs(renderingConfig))) {
+        defaults[key] = safe(() => typeof value === "boolean" ? branch.getBoolPref(key) : typeof value === "number" ? branch.getIntPref(key) : branch.getStringPref(key), value);
+      }
+      for (const [key, value] of Object.entries(nativeRenderingPrefs(renderingConfig, defaults))) pushUserPref(lines, key, value);
+    }
     if (!fingerprint || fingerprint.enabled === false) {
       return lines;
     }
 
     const webgl = fingerprint.webgl || {};
-    if (webgl.enabled !== false) {
+    if (!native && webgl.enabled !== false) {
       const unmaskedVendor = configString(webgl, "unmaskedVendor", "");
       const unmaskedRenderer = configString(webgl, "unmaskedRenderer", "");
       if (unmaskedVendor) {
@@ -1255,7 +1298,7 @@ export class EnvironmentBackend {
     }
 
     const audio = fingerprint.audio || {};
-    if (audio.enabled !== false) {
+    if (!native && audio.enabled !== false) {
       const sampleRate = configInt(audio, "sampleRate", 8000, 192000, 0);
       if (sampleRate) {
         pushUserPref(lines, "media.cubeb.force_sample_rate", sampleRate);
@@ -1263,7 +1306,7 @@ export class EnvironmentBackend {
     }
 
     const fonts = fingerprint.fonts || {};
-    if (fonts.enabled !== false) {
+    if (!native && fonts.enabled !== false) {
       pushUserPref(lines, "layout.css.font-visibility", configInt(fonts, "visibility", 1, 3, 3));
     }
 
@@ -1429,7 +1472,7 @@ export class EnvironmentBackend {
     pushUserPrefs(lines, AUTOMATION_STEALTH_PREFS);
     if (p) {
       lines.push(`user_pref("frx.fingerprint.config.path", ${JSON.stringify(p.runtimeFingerprintPath)});`);
-      lines.push(`user_pref("frx.fingerprint.config.json", ${JSON.stringify(JSON.stringify(runtimeConfig.fingerprint || {}))});`);
+      lines.push(`user_pref("frx.fingerprint.config.json", ${JSON.stringify(isNativeFingerprint(runtimeConfig.fingerprint) ? "" : JSON.stringify(runtimeConfig.fingerprint || {}))});`);
       lines.push(`user_pref("frx.proxy.config.path", ${JSON.stringify(p.runtimeProxyPath)});`);
       lines.push(`user_pref("frx.environment.id", ${JSON.stringify(env.id)});`);
       lines.push(`user_pref("frx.environment.name", ${JSON.stringify(envDisplayName(env))});`);
@@ -1438,7 +1481,7 @@ export class EnvironmentBackend {
     if (port != null) {
       lines.push(`user_pref("marionette.port", ${Number(port) | 0});`);
     }
-    lines.push(...this._fingerprintUserPrefs(runtimeConfig.fingerprint || {}));
+    lines.push(...this._fingerprintUserPrefs(runtimeConfig.fingerprint || {}, env?.nativeRenderingManaged === true));
     lines.push(...this._proxyUserPrefs(runtimeConfig.proxy || {}, runtimeConfig.fingerprint || {}));
     return lines.join("\n") + "\n";
   }
@@ -1458,7 +1501,9 @@ export class EnvironmentBackend {
   async _syncProfileRuntimeConfig(env) {
     const p = this._paths(env.id);
     await IOUtils.makeDirectory(p.profileFrxDir, { ignoreExisting: true, createAncestors: true });
-    const fingerprint = await this._readJSON(env.fingerprintPath, this._defaultFingerprint(env));
+    const fingerprint = await this._readJSON(env.fingerprintPath, null);
+    if (!fingerprint || typeof fingerprint !== "object" || Array.isArray(fingerprint)) throw new Error("environment fingerprint configuration is missing or invalid");
+    this._validateFingerprint(fingerprint);
     const proxy = await this._readJSON(env.proxyPath, this._defaultProxy());
     await this._writeJSON(p.runtimeFingerprintPath, fingerprint);
     await this._writeJSON(p.runtimeProxyPath, proxy);
@@ -1471,7 +1516,7 @@ export class EnvironmentBackend {
   }
 
   _currentProcessDefaultFingerprint(env) {
-    return this._buildFingerprint(env, { enabled: false }, { type: "current-process-default" });
+    return this._buildFingerprint(env, { enabled: false, consistencyMode: NATIVE_CONSISTENCY_MODE }, { type: "current-process-default" });
   }
 
   async _readOrCreateCurrentProcessConfig(type = "fingerprint") {
@@ -1488,18 +1533,21 @@ export class EnvironmentBackend {
   }
 
   async _upsertCurrentProfileUserJs(fingerprint, proxy) {
+    this._validateFingerprint(fingerprint);
     const env = await this._currentProcessEnv();
     const p = this._currentProcessPaths();
     if (!p.profileUserJsPath) {
       throw new Error("cannot locate current profile user.js");
     }
     await IOUtils.makeDirectory(p.profilePath, { ignoreExisting: true, createAncestors: true });
+    const nativeRenderingManaged = isNativeFingerprint(fingerprint) || safe(() => Services.prefs.getBoolPref("frx.fingerprint.native_rendering_managed", false), false);
     const prefLines = [
+      `user_pref("frx.fingerprint.native_rendering_managed", ${nativeRenderingManaged});`,
       `user_pref("frx.fingerprint.config.path", ${JSON.stringify(p.runtimeFingerprintPath || p.fingerprintPath)});`,
-      `user_pref("frx.fingerprint.config.json", ${JSON.stringify(JSON.stringify(fingerprint || {}))});`,
+      `user_pref("frx.fingerprint.config.json", ${JSON.stringify(isNativeFingerprint(fingerprint) ? "" : JSON.stringify(fingerprint || {}))});`,
       `user_pref("frx.proxy.config.path", ${JSON.stringify(p.runtimeProxyPath || p.proxyPath)});`,
       `user_pref("frx.current_process.fingerprint.enabled", true);`,
-      ...this._fingerprintUserPrefs(fingerprint || {}),
+      ...this._fingerprintUserPrefs(fingerprint || {}, nativeRenderingManaged),
       ...this._proxyUserPrefs(proxy || {}, fingerprint || {}),
     ];
     const names = userPrefNames(prefLines);
@@ -1532,7 +1580,7 @@ export class EnvironmentBackend {
     }
     try {
       Services.prefs.setStringPref("frx.fingerprint.config.path", p.runtimeFingerprintPath || p.fingerprintPath);
-      Services.prefs.setStringPref("frx.fingerprint.config.json", JSON.stringify(fingerprint || {}));
+      Services.prefs.setStringPref("frx.fingerprint.config.json", isNativeFingerprint(fingerprint) ? "" : JSON.stringify(fingerprint || {}));
       Services.prefs.setStringPref("frx.proxy.config.path", p.runtimeProxyPath || p.proxyPath);
       Services.prefs.setBoolPref("frx.current_process.fingerprint.enabled", true);
     } catch {
@@ -1600,14 +1648,12 @@ export class EnvironmentBackend {
   async create({ id, name, generateOptions = null } = {}) {
     await this._ensureRoot();
     const finalName = String(name || "").trim() || "New Environment";
+    if (generateOptions?.consistencyMode && ![NATIVE_CONSISTENCY_MODE, "legacy"].includes(generateOptions.consistencyMode)) throw new Error("unsupported fingerprint consistency mode");
     const envId = id ? String(id).trim() : this._newId(finalName);
     this._validateId(envId);
     const p = this._paths(envId);
     if (await IOUtils.exists(p.envPath)) {
       throw new Error("environment already exists: " + envId);
-    }
-    for (const dir of [p.rootPath, p.profilePath, p.traceDir, p.controlDir, p.capturesDir, p.logsDir]) {
-      await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
     }
     const ts = nowISO();
     const requestedOptions = {
@@ -1621,6 +1667,9 @@ export class EnvironmentBackend {
       name: finalName,
       browserFamily: "firefox",
       fingerprintPolicy: FIREFOX_ONLY_POLICY,
+      consistencyMode: generateOptions?.consistencyMode || NATIVE_CONSISTENCY_MODE,
+      nativeRenderingManaged: generateOptions?.consistencyMode !== "legacy",
+      audioSeed: randHex(32),
       createdAt: ts,
       updatedAt: ts,
       rootPath: p.rootPath,
@@ -1657,6 +1706,10 @@ export class EnvironmentBackend {
       generationOptions,
       { type: generateOptions ? "generated" : "generated-default" }
     );
+    this._validateFingerprint(fingerprint);
+    for (const dir of [p.rootPath, p.profilePath, p.traceDir, p.controlDir, p.capturesDir, p.logsDir]) {
+      await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
+    }
     await this._writeJSON(p.fingerprintPath, fingerprint);
     await this._writeJSON(p.proxyPath, this._defaultProxy());
     const runtimeConfig = await this._syncProfileRuntimeConfig(env);
@@ -1727,6 +1780,7 @@ export class EnvironmentBackend {
       throw new Error("config must be a JSON object");
     }
     data.schemaVersion = data.schemaVersion || SCHEMA_VERSION;
+    if (res.type === "fingerprint") this._validateFingerprint(data);
     data.updatedAt = nowISO();
     await this._writeJSON(res.path, data);
     const fingerprint =
@@ -1753,7 +1807,12 @@ export class EnvironmentBackend {
   async generateCurrentProcessFingerprint({ options = {} } = {}) {
     const env = await this._currentProcessEnv();
     const p = this._currentProcessPaths();
-    const fingerprint = this._buildFingerprint(env, options, { type: "generated", target: CURRENT_PROCESS_ID });
+    const previous = (await this._readOrCreateCurrentProcessConfig("fingerprint")).config;
+    env.consistencyMode = options.consistencyMode || (isNativeFingerprint(previous) ? NATIVE_CONSISTENCY_MODE : "legacy");
+    env.audioSeed = unwrapField(previous.audio?.seed, "");
+    const generationOptions = env.consistencyMode === NATIVE_CONSISTENCY_MODE ? this._firefoxGenerateOptions(options) : options;
+    const fingerprint = this._buildFingerprint(env, generationOptions, { type: "generated", target: CURRENT_PROCESS_ID });
+    this._validateFingerprint(fingerprint);
     await this._writeJSON(p.fingerprintPath, fingerprint);
     const proxy = (await this._readOrCreateCurrentProcessConfig("proxy")).config;
     await this._upsertCurrentProfileUserJs(fingerprint, proxy);
@@ -1782,6 +1841,9 @@ export class EnvironmentBackend {
   async importCurrentProcessFingerprint({ capturePath, capture, text } = {}) {
     const env = await this._currentProcessEnv();
     const p = this._currentProcessPaths();
+    const previous = (await this._readOrCreateCurrentProcessConfig("fingerprint")).config;
+    env.consistencyMode = isNativeFingerprint(previous) ? NATIVE_CONSISTENCY_MODE : "legacy";
+    env.audioSeed = unwrapField(previous.audio?.seed, "");
     let finalCapture = capture || null;
     if (!finalCapture && text != null) {
       finalCapture = JSON.parse(String(text));
@@ -2279,7 +2341,9 @@ export class EnvironmentBackend {
       MOZ_FRX_PROCESS_LABEL: launch.argv0,
       MOZ_FRX_ENVS_ROOT: this._root,
       MOZ_FRX_FINGERPRINT_CONFIG: runtimeConfig.fingerprintPath,
-      MOZ_FRX_FINGERPRINT_JSON: JSON.stringify(runtimeConfig.fingerprint),
+      // Subprocess null removes an inherited value; empty string is Invalid.
+      MOZ_FRX_FINGERPRINT_JSON: isNativeFingerprint(runtimeConfig.fingerprint) ? null : JSON.stringify(runtimeConfig.fingerprint),
+      MOZ_FRX_PARENT_CONFIG_TOKEN: null,
       MOZ_FRX_PROXY_CONFIG: runtimeConfig.proxyPath,
       MOZ_FRX_PROXY_JSON: JSON.stringify(runtimeConfig.proxy),
       MOZ_FRX_TRACE_DIR: env.traceDir,
@@ -2482,6 +2546,7 @@ export class EnvironmentBackend {
       throw new Error("config must be a JSON object");
     }
     const configType = String(type || "fingerprint").toLowerCase();
+    if (configType === "fingerprint" && isNativeFingerprint(await this._readJSON(env.fingerprintPath, null))) env.nativeRenderingManaged = true;
     const configBrowser = configType === "fingerprint" ? browserFamilyFromFingerprint(data) : "firefox";
     if (env.fingerprintPolicy === FIREFOX_ONLY_POLICY && configBrowser !== "firefox" && configBrowser !== "unknown") {
       throw new Error("this environment only accepts Firefox fingerprint configuration");
@@ -2489,11 +2554,15 @@ export class EnvironmentBackend {
     if (!data.schemaVersion) {
       data.schemaVersion = SCHEMA_VERSION;
     }
+    if (configType === "fingerprint") this._validateFingerprint(data);
     data.updatedAt = nowISO();
     const path = this._configPath(env, type);
     await this._writeJSON(path, data);
+    if (configType === "fingerprint") env.consistencyMode = isNativeFingerprint(data) ? NATIVE_CONSISTENCY_MODE : "legacy";
+    if (configType === "fingerprint" && isNativeFingerprint(data)) env.nativeRenderingManaged = true;
     env.updatedAt = nowISO();
     await this._saveEnv(env);
+    await this._stageEnvironmentConfig(env);
     return { ok: true, id: env.id, type, path, config: data, environment: shortEnv(env) };
   }
 
@@ -2543,6 +2612,7 @@ export class EnvironmentBackend {
       throw new Error("environment already exists; pass overwrite:true to replace its configs");
     }
     const importedBrowser = payload.fingerprint ? browserFamilyFromFingerprint(payload.fingerprint) : "firefox";
+    if (payload.fingerprint) this._validateFingerprint(payload.fingerprint);
     if (!exists && payload.fingerprint && importedBrowser !== "firefox") {
       throw new Error("new environments only accept Firefox fingerprint JSON; Chrome-like imports are no longer supported");
     }
@@ -2576,6 +2646,8 @@ export class EnvironmentBackend {
       payload.fingerprint.schemaVersion = payload.fingerprint.schemaVersion || SCHEMA_VERSION;
       payload.fingerprint.updatedAt = ts;
       await this._writeJSON(env.fingerprintPath, payload.fingerprint);
+      env.consistencyMode = isNativeFingerprint(payload.fingerprint) ? NATIVE_CONSISTENCY_MODE : "legacy";
+      if (isNativeFingerprint(payload.fingerprint)) env.nativeRenderingManaged = true;
       env.browserFamily = exists
         ? payload.fingerprint.source?.browser || payload.fingerprint.source?.normalizedBrowser || env.browserFamily || "firefox"
         : "firefox";
@@ -2595,6 +2667,7 @@ export class EnvironmentBackend {
     };
     await this._saveEnv(env);
     const running = isRuntimeActive(env.runtime);
+    await this._stageEnvironmentConfig(env);
     return {
       ok: true,
       id: env.id,
@@ -2614,11 +2687,16 @@ export class EnvironmentBackend {
     }
     const env = await this._loadEnv(String(id));
     const generationOptions = this._firefoxGenerateOptions(options);
+    const previous = await this._readJSON(env.fingerprintPath, null);
+    generationOptions.consistencyMode = options.consistencyMode || (isNativeFingerprint(previous) ? NATIVE_CONSISTENCY_MODE : "legacy");
     const fingerprint = this._buildFingerprint(env, generationOptions, { type: "generated" });
+    env.consistencyMode = generationOptions.consistencyMode;
+    if (isNativeFingerprint(fingerprint)) env.nativeRenderingManaged = true;
     await this._writeJSON(env.fingerprintPath, fingerprint);
     env.browserFamily = "firefox";
     env.source = { type: "generated", browser: "firefox", updatedAt: nowISO(), options: generationOptions };
     await this._saveEnv(env);
+    await this._stageEnvironmentConfig(env);
     return { ok: true, id: env.id, path: env.fingerprintPath, fingerprint, environment: shortEnv(env) };
   }
 
@@ -2992,6 +3070,9 @@ export class EnvironmentBackend {
       throw new Error("id required");
     }
     const env = await this._loadEnv(String(id));
+    const previous = await this._readJSON(env.fingerprintPath, null);
+    env.consistencyMode = isNativeFingerprint(previous) ? NATIVE_CONSISTENCY_MODE : "legacy";
+    if (isNativeFingerprint(previous)) env.nativeRenderingManaged = true;
     let finalCapture = capture || null;
     if (!finalCapture && text != null) {
       finalCapture = JSON.parse(String(text));
@@ -3024,6 +3105,7 @@ export class EnvironmentBackend {
       type: "imported-capture",
       path: finalPath || null,
     });
+    this._validateFingerprint(fingerprint);
     await this._writeJSON(env.fingerprintPath, fingerprint);
     env.browserFamily = "firefox";
     env.source = {
@@ -3036,6 +3118,7 @@ export class EnvironmentBackend {
       normalizedFromNonFirefox: fingerprint.source?.normalizedFromNonFirefox === true,
     };
     await this._saveEnv(env);
+    await this._stageEnvironmentConfig(env);
     return { ok: true, id: env.id, path: env.fingerprintPath, capturePath: finalPath || null, fingerprint, environment: shortEnv(env) };
   }
 

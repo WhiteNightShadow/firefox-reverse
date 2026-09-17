@@ -59,6 +59,40 @@ export class LlmError extends Error {
   }
 }
 
+// OpenCode uses conversation affinity for routing and prompt caching. Scope
+// these headers to its official API so other providers keep their wire format.
+export function openCodeRequestHeaders(endpoint, { sessionId = "", requireSession = false } = {}) {
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return {};
+  }
+  if (
+    url.origin !== "https://opencode.ai" ||
+    !/^\/zen\/(?:go\/)?v1(?:\/|$)/.test(url.pathname)
+  ) {
+    return {};
+  }
+  if (requireSession && !sessionId) {
+    throw new LlmError("OpenCode 请求缺少会话标识：请从 Agent 会话发送请求（sessionId）。");
+  }
+  if (sessionId && !/^[a-zA-Z0-9._:-]{1,256}$/.test(sessionId)) {
+    throw new LlmError("OpenCode sessionId 必须为 1-256 位字母、数字或 . _ : -。");
+  }
+  let version = "dev";
+  try {
+    version = Services.prefs.getStringPref("extensions.firefox-reverse.version", "dev");
+  } catch {
+    // Node tests and standalone callers have no Firefox version preference.
+  }
+  const headers = {
+    "User-Agent": `Firefox-Reverse/${/^[a-zA-Z0-9.+-]+$/.test(version) ? version : "dev"}`,
+  };
+  if (sessionId) headers["x-opencode-session"] = sessionId;
+  return headers;
+}
+
 /**
  * @typedef {{ role: "system"|"user"|"assistant"|"tool", content: string }} ChatMessage
  * @typedef {{ content: string, toolCalls: Array, finishReason: string,
@@ -74,6 +108,7 @@ export class LlmClient {
    * @param {string} cfg.apiKey
    * @param {string} cfg.model
    * @param {string} [cfg.providerId]
+   * @param {string} [cfg.sessionId] Persistent conversation id, shared by main/auxiliary requests.
    * @param {string} [cfg.promptCacheMode] "auto" | "off"
    * @param {string} [cfg.promptCacheTtl]  "default" | "5m" | "1h"
    * @param {object} [cfg.request]  { timeout_ms, max_tokens, temperature, stream, reasoning_effort }
@@ -88,6 +123,7 @@ export class LlmClient {
     this.apiKey = cfg.apiKey || "";
     this.model = cfg.model || "";
     this.providerId = cfg.providerId || "custom";
+    this.sessionId = cfg.sessionId || "";
     this.promptCacheMode = cfg.promptCacheMode === "off" ? "off" : "auto";
     this.promptCacheTtl =
       cfg.promptCacheTtl === "5m" || cfg.promptCacheTtl === "1h"
@@ -112,7 +148,7 @@ export class LlmClient {
   /**
    * 构造请求（url + fetch init），不发送。抽出来便于 dry-run 自测与单元测试。
    * @param {ChatMessage[]} messages
-   * @param {object} [opts]  { tools, model, stream, reasoningEffort, maxTokens, cacheKey }
+   * @param {object} [opts]  { tools, model, stream, reasoningEffort, maxTokens, cacheKey, sessionId }
    * @returns {{ url: string, init: object, cacheApplied: boolean }}
    */
   buildRequest(messages, opts = {}) {
@@ -175,6 +211,10 @@ export class LlmClient {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${this.apiKey}`,
+            ...openCodeRequestHeaders(this.endpoint, {
+              sessionId: opts.sessionId ?? this.sessionId,
+              requireSession: true,
+            }),
           },
           body: JSON.stringify(body),
         },
@@ -222,6 +262,10 @@ export class LlmClient {
             Authorization: `Bearer ${this.apiKey}`,
             "anthropic-version": "2023-06-01",
             "anthropic-dangerous-direct-browser-access": "true",
+            ...openCodeRequestHeaders(this.baseUrl + path, {
+              sessionId: opts.sessionId ?? this.sessionId,
+              requireSession: true,
+            }),
           },
           body: JSON.stringify(body),
         },

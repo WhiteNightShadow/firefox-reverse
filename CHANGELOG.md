@@ -6,6 +6,10 @@
 
 | 日期 | 版本号 | 改版内容（一句话） |
 |------|--------|--------------------|
+| 2026-09-17 | v0.25.0 候选 | 原生一致指纹、OpenCode Go（#13）、Markdown（#14）、侧栏字号（#17）及只读 macOS 启动诊断（#18 排查支持）；保持旧环境策略，五目标编译与候选验证后再正式发布，#18 尚未确认系统级根因。 |
+| 2026-09-16 | 未发布 | **原生一致指纹（验证中）**：新环境保持实际 Firefox/Screen/DPR/GPU，旧配置不自动迁移；Loaded/Invalid/Absent 缓存、父子快照、Unicode 文件路径、appVersion 修正；接入真实 Canvas/MSAA/字体配置与一次性 Offline PCM seed，补充模式复位和原生关系测试。完整显示模拟、UA-CH 和跨 OS 身份不扩展。 |
+| 2026-09-09 | 未发布 | **Agent Markdown 展示（Issue #14）**：通过 react-markdown/remark-gfm 渲染历史结果、流式正文和思考段，支持代码块、列表和表格；限制链接协议并以普通网页权限打开新标签，HTML 保持文本、图片不自动加载；不改变会话原文、导出格式或工具执行。已通过内容渲染测试、窄侧栏/深浅色/流式视觉回归与真实 Firefox chrome 侧栏验证。 |
+| 2026-09-08 | 未发布 | **OpenCode Go 会话路由兼容（Issue #13）**：官方 API 自动携带 Firefox Reverse 客户端 UA 和稳定的会话请求头；由持久 thread ID 绑定 LlmClient，覆盖 OpenAI/Anthropic、工具循环、续聊、压缩/收尾和重试，模型列表发送自身 UA，其它供应商请求不变。已完成本地协议回归与 Firefox 请求头验证，尚未做 Go 付费账号线上联调。 |
 | 2026-09-04 | v0.24.1 | **Ledger SQL 固定列名加固**：确认 Semgrep 报告不是当前可利用的 SQL 注入；将内部 `workspace/site` 作用域改为完整固定 SQL allowlist，未知列 fail-closed，所有业务值继续参数绑定；去重 ID 使用单条占位符数组绑定以保持原子性和性能，新增恶意值、多 ID 与非法数量回归测试，不改变数据库结构、去重/cap 语义或 Agent API。 |
 | 2026-09-02 | v0.24.0-beta.2 | **扩展管理 Beta 多端发布与侧栏注册门禁**：在 v0.24.0-beta.1 的 `addons_query` / `addons_manage`、Provider 原生缓存、持久化 ContextProjection 和工具输出折叠基础上，补回干净 Firefox 基线中的 Agent `makeSidebar` 注册块并加入自测断言；强制刷新 `buildid.h` 与 `source-repo.h`，消除增量构建树的侧栏入口差异和新 BuildID 搭配旧 SourceStamp 的发布溯源差异；同一锁定基线重新构建 macOS ARM64/Intel、Windows x86_64、Linux x86_64/ARM64。 |
 | 2026-09-02 | v0.24.0-beta.1 | **安全扩展生命周期与 Token 缓存优化 Beta**：新增 `addons_query` / `addons_manage`，支持 AMO 搜索、签名安装、启停、卸载和打开配置页；新增 Provider 原生缓存、稳定前缀、持久化 ContextProjection、旧工具输出折叠与用量统计，原 66 个工具和既有数据协议不变。 |

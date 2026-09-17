@@ -14,7 +14,19 @@ namespace mozilla::dom {
 
 class FrxFingerprintConfig final {
  public:
+  enum class Status : uint8_t { Absent, Loaded, Invalid };
+
   static bool Enabled();
+  static Status GetStatus();
+  // Stable diagnostic codes only; never configuration bytes or private paths.
+  static void GetStatusReason(nsACString& aValue);
+  static void GetConfigSource(nsACString& aValue);
+  // Parent-only: publish an immutable, non-persistent preference snapshot
+  // before SharedPreferenceSerializer captures content-process preferences.
+  // The returned per-parent token must be supplied only to that child launch.
+  static bool PrepareContentSnapshot(nsACString& aLaunchToken);
+  // Read once on the main thread before rendering. Zero is a valid seed.
+  static bool GetSurfaceSeed(const char* aSurface, uint64_t* aValue);
 
   static bool GetNavigatorUserAgent(nsAString& aValue);
   static bool GetNavigatorPlatform(nsAString& aValue);

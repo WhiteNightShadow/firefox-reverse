@@ -13,13 +13,17 @@ if len(sys.argv) != 2:
     print("Usage: apply-fingerprint-config.py <firefox-src-root>", file=sys.stderr)
     sys.exit(1)
 
-ROOT = sys.argv[1]
+ROOT = os.path.abspath(sys.argv[1])
 
 
 def patch_file(path, transformations):
+    path = os.path.join(ROOT, path)
     content = open(path, encoding="utf-8").read()
     changed = False
     for desc, old, new in transformations:
+        if desc == "add frx fingerprint config static pref group" and "- name: frx.fingerprint.config.path\n" in content:
+            print(f"  [skip] {desc} (already applied)")
+            continue
         if desc == "export FRX fingerprint header":
             if '"FrxFingerprintConfig.h"' in content:
                 print(f"  [skip] {desc} (already applied)")
@@ -38,7 +42,7 @@ def patch_file(path, transformations):
             if desc == "add frx fingerprint config static pref group":
                 print(f"  [skip] {desc} (source already has frx pref group)")
                 continue
-            print(f"  [FAIL] {desc}: old pattern not found", file=sys.stderr)
+            print(f"  [FAIL] {os.path.relpath(path, ROOT)}: {desc}: old pattern not found", file=sys.stderr)
             sys.exit(1)
         content = content.replace(old, new, 1)
         changed = True
@@ -1133,5 +1137,36 @@ patch_file(
         ),
     ],
 )
+
+
+# Native consumers ported from PaBox 4913975; keep product shell/Agent untouched.
+patch_file("modules/libpref/init/StaticPrefList.yaml", [
+    ("native font allowlist local lookup", "- name: frx.fingerprint.config.path\n",
+     "- name: frx.fingerprint.fonts.whitelist_local_lookup\n"
+     "  type: RelaxedAtomicBool\n  value: false\n  mirror: always\n\n"
+     "- name: frx.fingerprint.config.path\n"),
+])
+patch_file("dom/ipc/ContentParent.cpp", [
+    ("native consumer 1", "#include \"mozilla/NullPrincipal.h\"\n#include \"mozilla/PageloadEvent.h\"\n#include \"mozilla/Preferences.h\"\n#include \"mozilla/PresShell.h\"\n#include \"mozilla/ProcessHangMonitor.h\"\n#include \"mozilla/ProcessHangMonitorIPC.h\"\n", "#include \"mozilla/NullPrincipal.h\"\n#include \"mozilla/PageloadEvent.h\"\n#include \"mozilla/Preferences.h\"\n#include \"mozilla/dom/FrxFingerprintConfig.h\"\n#include \"mozilla/PresShell.h\"\n#include \"mozilla/ProcessHangMonitor.h\"\n#include \"mozilla/ProcessHangMonitorIPC.h\"\n"),
+    ("native consumer 2", "\n  // Instantiate the pref serializer. It will be cleaned up in\n  // `LaunchSubprocessReject`/`LaunchSubprocessResolve`.\n  mPrefSerializer = MakeUnique<mozilla::ipc::SharedPreferenceSerializer>();\n  if (!mPrefSerializer->SerializeToSharedMemory(GeckoProcessType_Content,\n                                                GetRemoteType())) {\n", "\n  // Instantiate the pref serializer. It will be cleaned up in\n  // `LaunchSubprocessReject`/`LaunchSubprocessResolve`.\n  nsAutoCString fingerprintSnapshotToken;\n  if (!FrxFingerprintConfig::PrepareContentSnapshot(fingerprintSnapshotToken)) {\n    NS_WARNING(\"Unable to prepare the immutable content fingerprint snapshot\");\n    MarkAsDead();\n    return false;\n  }\n  mSubprocess->SetEnv(\"MOZ_FRX_PARENT_CONFIG_TOKEN\", fingerprintSnapshotToken.get());\n  mPrefSerializer = MakeUnique<mozilla::ipc::SharedPreferenceSerializer>();\n  if (!mPrefSerializer->SerializeToSharedMemory(GeckoProcessType_Content,\n                                                GetRemoteType())) {\n"),
+])
+patch_file("dom/ipc/ContentProcess.cpp", [
+    ("native consumer 1", "\n#include \"js/Initialization.h\"\n#include \"mozilla/Preferences.h\"\n\n#if defined(XP_MACOSX) && defined(MOZ_SANDBOX)\n#  include <stdlib.h>\n", "\n#include \"js/Initialization.h\"\n#include \"mozilla/Preferences.h\"\n#include \"mozilla/dom/FrxFingerprintConfig.h\"\n\n#if defined(XP_MACOSX) && defined(MOZ_SANDBOX)\n#  include <stdlib.h>\n"),
+    ("native consumer 2", "    MOZ_CRASH(\"NS_InitXPCOM failed\");\n  }\n\n  // \"app-startup\" is the name of both the category and the event\n  NS_CreateServicesFromCategory(\"app-startup\", nullptr, \"app-startup\", nullptr);\n\n", "    MOZ_CRASH(\"NS_InitXPCOM failed\");\n  }\n\n  // InitPrefs only deserializes changed preferences. The XPCOM component\n  // manager must be available before default-branch snapshot lookup, or an\n  // early lookup would cache a false missing state. Any realm created during\n  // NS_InitXPCOM uses the same native getters after service registration.\n  (void)FrxFingerprintConfig::GetStatus();\n\n  // \"app-startup\" is the name of both the category and the event\n  NS_CreateServicesFromCategory(\"app-startup\", nullptr, \"app-startup\", nullptr);\n\n"),
+])
+patch_file("dom/media/webaudio/AudioDestinationNode.cpp", [
+    ("native consumer 1", "#include \"AudioNodeEngine.h\"\n#include \"AudioNodeTrack.h\"\n#include \"CubebUtils.h\"\n#include \"MediaTrackGraph.h\"\n#include \"Tracing.h\"\n#include \"mozilla/StaticPrefs_dom.h\"\n", "#include \"AudioNodeEngine.h\"\n#include \"AudioNodeTrack.h\"\n#include \"CubebUtils.h\"\n#include \"FrxOfflineAudioTransform.h\"\n#include \"MediaTrackGraph.h\"\n#include \"Tracing.h\"\n#include \"mozilla/StaticPrefs_dom.h\"\n"),
+    ("native consumer 2", "#include \"mozilla/dom/BaseAudioContextBinding.h\"\n#include \"mozilla/dom/BrowsingContext.h\"\n#include \"mozilla/dom/ContentMediaController.h\"\n#include \"mozilla/dom/MediaControlUtils.h\"\n#include \"mozilla/dom/OfflineAudioCompletionEvent.h\"\n#include \"mozilla/dom/Promise.h\"\n", "#include \"mozilla/dom/BaseAudioContextBinding.h\"\n#include \"mozilla/dom/BrowsingContext.h\"\n#include \"mozilla/dom/ContentMediaController.h\"\n#include \"mozilla/dom/FrxFingerprintConfig.h\"\n#include \"mozilla/dom/MediaControlUtils.h\"\n#include \"mozilla/dom/OfflineAudioCompletionEvent.h\"\n#include \"mozilla/dom/Promise.h\"\n"),
+    ("native consumer 3", "\n  already_AddRefed<AudioBuffer> CreateAudioBuffer(AudioContext* aContext) {\n    MOZ_ASSERT(NS_IsMainThread());\n    // Create the input buffer\n    ErrorResult rv;\n    RefPtr<AudioBuffer> renderedBuffer =\n", "\n  already_AddRefed<AudioBuffer> CreateAudioBuffer(AudioContext* aContext) {\n    MOZ_ASSERT(NS_IsMainThread());\n    if (!mFrxAudioFinalized) {\n      mFrxAudioFinalized = true;\n      uint64_t seed = 0;\n      // The graph has finished and this buffer has not been shared with script.\n      // Resolve configuration on the main thread, never in ProcessBlock's\n      // realtime/audio graph path. All existing read/copy/acquire paths then\n      // consume the same once-transformed samples.\n      if (mBuffer && FrxFingerprintConfig::GetSurfaceSeed(\"audio\", &seed)) {\n        for (uint32_t channel = 0; channel < mNumberOfChannels; ++channel) {\n          FrxTransformOfflineAudioChannel(mBuffer->GetDataForWrite(channel),\n                                          mLength, channel, seed);\n        }\n      }\n    }\n    // Create the input buffer\n    ErrorResult rv;\n    RefPtr<AudioBuffer> renderedBuffer =\n"),
+    ("native consumer 4", "  uint32_t mLength;\n  float mSampleRate;\n  bool mBufferAllocated;\n};\n\nclass DestinationNodeEngine final : public AudioNodeEngine {\n", "  uint32_t mLength;\n  float mSampleRate;\n  bool mBufferAllocated;\n  bool mFrxAudioFinalized = false;\n};\n\nclass DestinationNodeEngine final : public AudioNodeEngine {\n"),
+])
+patch_file("gfx/thebes/gfxUserFontSet.cpp", [
+    ("native consumer 1", "#include \"mozilla/FontPropertyTypes.h\"\n#include \"mozilla/ProfilerLabels.h\"\n#include \"mozilla/Services.h\"\n#include \"mozilla/StaticPrefs_gfx.h\"\n#include \"mozilla/glean/GfxMetrics.h\"\n#include \"mozilla/gfx/2D.h\"\n", "#include \"mozilla/FontPropertyTypes.h\"\n#include \"mozilla/ProfilerLabels.h\"\n#include \"mozilla/Services.h\"\n#include \"mozilla/StaticPrefs_frx.h\"\n#include \"mozilla/StaticPrefs_gfx.h\"\n#include \"mozilla/glean/GfxMetrics.h\"\n#include \"mozilla/gfx/2D.h\"\n"),
+    ("native consumer 2", "    if (currSrc.mSourceType == gfxFontFaceSrc::eSourceType_Local) {\n      gfxPlatformFontList* pfl = gfxPlatformFontList::PlatformFontList();\n      pfl->AddUserFontSet(fontSet);\n      // Don't look up local fonts if the font whitelist is being used.\n      gfxFontEntry* fe = nullptr;\n      if (!pfl->IsFontFamilyWhitelistActive()) {\n        fe = gfxPlatform::GetPlatform()->LookupLocalFont(\n            fontSet->GetFontVisibilityProvider(), currSrc.mLocalName, Weight(),\n            Stretch(), SlantStyle());\n", "    if (currSrc.mSourceType == gfxFontFaceSrc::eSourceType_Local) {\n      gfxPlatformFontList* pfl = gfxPlatformFontList::PlatformFontList();\n      pfl->AddUserFontSet(fontSet);\n      gfxFontEntry* fe = nullptr;\n#ifdef XP_MACOSX\n      const bool lookupWhitelistedLocalFonts =\n          StaticPrefs::frx_fingerprint_fonts_whitelist_local_lookup();\n#else\n      const bool lookupWhitelistedLocalFonts = false;\n#endif\n      if (!pfl->IsFontFamilyWhitelistActive() || lookupWhitelistedLocalFonts) {\n        fe = gfxPlatform::GetPlatform()->LookupLocalFont(\n            fontSet->GetFontVisibilityProvider(), currSrc.mLocalName, Weight(),\n            Stretch(), SlantStyle());\n"),
+])
+patch_file("gfx/thebes/gfxPlatformFontList.cpp", [
+    ("native consumer 1", "#include \"mozilla/MemoryReporting.h\"\n#include \"mozilla/Mutex.h\"\n#include \"mozilla/Preferences.h\"\n#include \"mozilla/StaticPrefs_gfx.h\"\n#include \"mozilla/StaticPrefs_layout.h\"\n#include \"mozilla/StaticPrefs_mathml.h\"\n", "#include \"mozilla/MemoryReporting.h\"\n#include \"mozilla/Mutex.h\"\n#include \"mozilla/Preferences.h\"\n#include \"mozilla/StaticPrefs_frx.h\"\n#include \"mozilla/StaticPrefs_gfx.h\"\n#include \"mozilla/StaticPrefs_layout.h\"\n#include \"mozilla/StaticPrefs_mathml.h\"\n"),
+    ("native consumer 2", "    uint32_t aNextCh, Script aRunScript, FontPresentation aPresentation,\n    const gfxFontStyle* aMatchStyle, uint32_t& aCmapCount,\n    FontFamily& aMatchedFamily) {\n  bool useCmaps = IsFontFamilyWhitelistActive() ||\n                  gfxPlatform::GetPlatform()->UseCmapsDuringSystemFallback();\n  FontVisibility level = aFontVisibilityProvider\n                             ? aFontVisibilityProvider->GetFontVisibility()\n", "    uint32_t aNextCh, Script aRunScript, FontPresentation aPresentation,\n    const gfxFontStyle* aMatchStyle, uint32_t& aCmapCount,\n    FontFamily& aMatchedFamily) {\n  bool whitelistRequiresCmaps = IsFontFamilyWhitelistActive();\n#ifdef XP_MACOSX\n  if (!SharedFontList() &&\n      StaticPrefs::frx_fingerprint_fonts_whitelist_local_lookup()) {\n    // CoreText candidates are checked against the filtered family table.\n    whitelistRequiresCmaps = false;\n  }\n#endif\n  bool useCmaps = whitelistRequiresCmaps ||\n                  gfxPlatform::GetPlatform()->UseCmapsDuringSystemFallback();\n  FontVisibility level = aFontVisibilityProvider\n                             ? aFontVisibilityProvider->GetFontVisibility()\n"),
+])
 
 print("\nFingerprint config patches applied successfully.")

@@ -1004,7 +1004,7 @@ function toolTable() {
     ),
     T(
       "env_create",
-      "新建一个 Firefox 隔离环境，自动创建 env.json/fingerprint.json/proxy.json/profile/traces/control。浏览器版本和系统与当前 Firefox Reverse 保持一致，地区语言默认中国大陆简体中文。",
+      "新建一个 Firefox 隔离环境，自动创建 env.json/fingerprint.json/proxy.json/profile/traces/control。默认原生一致策略，保留真实 Firefox 身份、Screen/DPR/GPU；地区语言默认中国大陆简体中文。",
       {
         type: "object",
         properties: {
@@ -1014,6 +1014,7 @@ function toolTable() {
             type: "object",
             description: "可选；传入时新建后立即按该组选项生成 fingerprint.json",
             properties: {
+              consistencyMode: { type: "string", enum: ["native-consistent", "legacy"], description: "新建默认 native-consistent；legacy 保留历史覆盖策略" },
               language: { type: "string" },
               languages: { type: "array", items: { type: "string" } },
               locale: { type: "string", description: "地区标识，如 zh-CN" },
@@ -1022,7 +1023,7 @@ function toolTable() {
               acceptLanguage: { type: "string" },
               devicePixelRatio: { type: "number" },
               hardwareConcurrency: { type: "integer" },
-              randomize: { type: "boolean", description: "true 时随机生成分辨率、DPR 和 CPU 核数；不会随机浏览器内核、系统或地区语言" },
+              randomize: { type: "boolean", description: "历史策略可随机分辨率、DPR、CPU；原生一致策略保持真实硬件，不随机这些值" },
             },
           },
         },
@@ -1088,7 +1089,7 @@ function toolTable() {
     ),
     T(
       "env_write_config",
-      "写入环境配置文件。type 支持 fingerprint 或 proxy；config 必须是 JSON object。",
+      "写入环境配置文件并同步 profile 启动配置，运行中需重开环境。type 支持 fingerprint 或 proxy。原生一致模式校验安装字体、渲染及音频参数，禁止部分 Screen/DPR/GPU 标签模拟。",
       {
         type: "object",
         properties: {
@@ -1104,7 +1105,7 @@ function toolTable() {
     ),
     T(
       "env_generate_fingerprint",
-      "为已有环境重新生成 Firefox fingerprint.json。浏览器版本和系统固定匹配当前 Firefox Reverse；默认中国大陆简体中文，可自定义语言、地区和时区。",
+      "为已有环境重新生成 Firefox fingerprint.json，默认保留该环境当前的一致性策略。浏览器版本和系统匹配 Firefox Reverse；默认中国大陆简体中文，可自定义语言、地区和时区。",
       {
         type: "object",
         properties: {
@@ -1112,6 +1113,7 @@ function toolTable() {
           options: {
             type: "object",
             properties: {
+              consistencyMode: { type: "string", enum: ["native-consistent", "legacy"], description: "不传则保留已有策略；切换原生一致会禁用不完整的显示和 GPU 覆盖" },
               language: { type: "string" },
               languages: { type: "array", items: { type: "string" } },
               locale: { type: "string", description: "地区标识，如 zh-CN" },

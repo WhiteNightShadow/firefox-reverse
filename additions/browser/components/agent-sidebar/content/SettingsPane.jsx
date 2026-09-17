@@ -1,4 +1,5 @@
 import React, { useRef, useState } from "react";
+import { applySidebarFontScale, normalizeFontScale } from "../modules/SidebarTypography.sys.mjs";
 
 function legacyProfile(store, providers) {
   const provider = store.getActiveProvider();
@@ -38,6 +39,7 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
   const [promptCacheMode, setPromptCacheMode] = useState(store.getPromptCacheMode ? store.getPromptCacheMode() : "auto");
   const [promptCacheTtl, setPromptCacheTtl] = useState(store.getPromptCacheTtl ? store.getPromptCacheTtl() : "default");
   const [contextStrategy, setContextStrategy] = useState(store.getContextStrategy ? store.getContextStrategy() : "projected");
+  const [fontScale, setFontScale] = useState(() => store.getSidebarFontScale?.() ?? 100);
   const [fetchedModels, setFetchedModels] = useState([]);
   const [fetchMsg, setFetchMsg] = useState("");
   const [manual, setManual] = useState(false);
@@ -45,6 +47,12 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
   const [error, setError] = useState("");
 
   const current = providers.find(p => p.id === provider) || providers[0];
+  function updateFontScale(value) {
+    const next = normalizeFontScale(value);
+    store.setSidebarFontScale?.(next);
+    applySidebarFontScale(document, next);
+    setFontScale(next);
+  }
   const isCustom = provider === "custom";
   const providerRef = useRef(provider);
   providerRef.current = provider;
@@ -212,6 +220,15 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         <span>设置</span>
         {onClose && <button type="button" onClick={onClose} title="关闭">×</button>}
       </header>
+
+      <section className="settings-pane__section">
+        <div className="settings-pane__section-title">侧栏文字大小</div>
+        <label className="settings-pane__fontscale">
+          <input type="range" min="90" max="180" step="10" value={fontScale} aria-label="侧栏文字大小" aria-valuetext={`${fontScale}%`} onChange={e => updateFontScale(e.target.value)} />
+          <output>{fontScale}%</output>
+          <button type="button" className="settings-pane__btn-ghost" onClick={() => updateFontScale(100)}>默认</button>
+        </label>
+      </section>
 
       <section className="settings-pane__section">
         <div className="settings-pane__section-title">模型配置</div>

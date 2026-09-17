@@ -1,4 +1,4 @@
-name: Validate Windows Package
+name: Validate Release Packages
 
 on:
   workflow_dispatch:
@@ -19,12 +19,91 @@ on:
         description: "浏览器 BuildID"
         required: true
         type: string
+      package_checksums:
+        description: "Optional JSON mapping of candidate filenames to SHA256 for the multi-platform native matrix"
+        required: false
+        type: string
+      mcp_commit:
+        description: "Pinned frx-director-mcp revision for native fingerprint transport tests"
+        required: false
+        type: string
 
 permissions:
   # GitHub only exposes draft releases to identities with push access.
   contents: write
 
 jobs:
+  native-fingerprint:
+    if: ${{ inputs.package_checksums != '' && inputs.mcp_commit != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: windows-x86_64
+          - runner: ubuntu-24.04
+            target: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: macos-15-intel
+            target: macos-x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      PACKAGE_TARGET: ${{ matrix.target }}
+      PACKAGE_CHECKSUMS: ${{ inputs.package_checksums }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      EXPECTED_BUILD_ID: ${{ inputs.build_id }}
+      MOZ_HEADLESS: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+      - uses: actions/checkout@v5
+        with:
+          repository: WhiteNightShadow/frx-director-mcp
+          ref: ${{ inputs.mcp_commit }}
+          path: mcp-fixture
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build pinned MCP transport
+        working-directory: mcp-fixture
+        run: npm ci
+      - working-directory: mcp-fixture
+        run: npm run build
+      - name: Download candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          case "$PACKAGE_TARGET" in
+            windows*) ext=zip ;;
+            macos*) ext=dmg ;;
+            linux*) ext=tar.xz ;;
+          esac
+          gh release download "$RELEASE_TAG" --pattern "firefox-reverse-${RELEASE_TAG}-${PACKAGE_TARGET}.${ext}" --dir candidate
+      - name: Verify package identity and extract
+        run: python scripts/prepare-native-candidate.py
+      - name: Native fingerprint and Unicode profile checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-native-fingerprint.mjs --firefox "$FRX_TEST_BINARY" --xul-sha256 "$FRX_TEST_XUL_SHA" --mcp-root "$GITHUB_WORKSPACE/mcp-fixture" --allow-unavailable-webgl --context-type tab --report-output native-report/FINGERPRINT-REPORT.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-${{ matrix.target }}-report
+          path: native-report/
+          if-no-files-found: error
+
   native-windows:
     runs-on: windows-latest
     timeout-minutes: 10
