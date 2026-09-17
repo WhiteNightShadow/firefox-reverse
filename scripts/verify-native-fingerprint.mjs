@@ -251,8 +251,11 @@ try {
   assert.deepEqual(zoom.page, first.page);
   check("zoom follows native DPR", zoom.display.dpr > first.display.dpr);
   await a.wire.command("Marionette:SetContext", { value: "content" });
-  const opened = await a.wire.command("WebDriver:NewWindow", { type: contextType, focus: true });
-  await a.wire.command("WebDriver:SwitchToWindow", { handle: (opened.value ?? opened).handle, focus: true });
+  report.progress = "file-A:create-context";
+  const opened = await a.wire.command("WebDriver:NewWindow", { type: contextType, focus: false });
+  report.progress = "file-A:switch-context";
+  await a.wire.command("WebDriver:SwitchToWindow", { handle: (opened.value ?? opened).handle, focus: false });
+  report.progress = "file-A:probe-new-context";
   const fresh = await sample(a, "file-A:new-context", { crossSite: true });
   assert.deepEqual(fresh.page, first.page);
   check("fresh content process uses original parent snapshot", fresh.contentPid !== first.contentPid);
@@ -273,8 +276,11 @@ try {
   check("missing fingerprint file permits browser startup without fallback", missingValue.snapshot.status === 2 && missingValue.snapshot.reason === "configuration-file-unreadable" && missingValue.page.ua === reference.page.ua && missingValue.page.timezone === reference.page.timezone);
   await fs.writeFile(missing.configPath, JSON.stringify(config));
   await missing.wire.command("Marionette:SetContext", { value: "content" });
-  const missingContext = await missing.wire.command("WebDriver:NewWindow", { type: contextType, focus: true });
-  await missing.wire.command("WebDriver:SwitchToWindow", { handle: (missingContext.value ?? missingContext).handle, focus: true });
+  report.progress = "missing-file:create-context";
+  const missingContext = await missing.wire.command("WebDriver:NewWindow", { type: contextType, focus: false });
+  report.progress = "missing-file:switch-context";
+  await missing.wire.command("WebDriver:SwitchToWindow", { handle: (missingContext.value ?? missingContext).handle, focus: false });
+  report.progress = "missing-file:probe-new-context";
   const stillMissing = await sample(missing, "missing-file:created-later", { crossSite: true });
   check("invalid file result is cached across new content processes", stillMissing.contentPid !== missingValue.contentPid && stillMissing.snapshot.status === 2 && stillMissing.page.timezone === reference.page.timezone);
   await stop(missing);
