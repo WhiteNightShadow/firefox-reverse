@@ -208,6 +208,14 @@ if os.environ.get("FRX_ALLOW_UNSANDBOXED_TRACE") == "1":
     ),
     ])
 else:
+    content = open(nbapath, encoding="utf-8").read()
+    start = content.find("#if defined(XP_WIN)\n  // firefox-reverse: content sandbox on Windows blocks engine-layer trace")
+    if start >= 0:
+        end = content.index("#endif\n", start) + len("#endif\n")
+        block = content[start:end]
+        if '_putenv("MOZ_DISABLE_CONTENT_SANDBOX=1");' not in block:
+            raise RuntimeError("unexpected legacy trace sandbox block")
+        open(nbapath, "w", encoding="utf-8").write(content[:start] + content[end:])
     print("  [skip] preserve content sandbox (unsandboxed trace requires explicit build opt-in)")
 
 print("\nAll Phase B patches applied successfully.")
