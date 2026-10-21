@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "release": "v0.26.2-preview.1",
+  "releaseKind": "prerelease",
+  "issue": 18,
+  "sourceCommit": "b27c0e6bd2da2174a113ee8b0d6cdbf6f46369a1",
+  "buildID": "20261021032749",
+  "host": {"system": "macOS", "version": "26.7.1", "architecture": "arm64"},
+  "package": {
+    "name": "firefox-reverse-v0.26.2-preview.1-macos-arm64.dmg",
+    "sha256": "d62b065914e7385f113dc4325f41bb9a9b05bde6f1fe86892f482d79637ac45e",
+    "xulSHA256": "498eca428da687fa52b8d7ae2bd1914f908c27dbdbe73c69181b264aa8986497",
+    "sidebarBundleSHA256": "5a623a827fbef18f7238666738ebbcdf684015d8f2d583ffea29341ebe711e62",
+    "signature": "ad-hoc verified, not Developer ID notarized",
+    "resourcesUnchangedAfterTests": true
+  },
+  "checks": {
+    "macOSAppDataNativeScenarios": 15,
+    "profileRecoveryScenarios": 5,
+    "nativeFingerprintAssertions": 213,
+    "pageAndAgentAssertions": 33,
+    "globalSystemPromptScenarios": 8,
+    "syntheticModelRequests": 11,
+    "nodeSelftestPrograms": 25,
+    "brandingUnitTests": 19,
+    "nativePolicyDecisions": 12,
+    "pinnedPatchApplication": "passed",
+    "readOnlyStartupDiagnostics": "passed"
+  },
+  "baseline": {
+    "release": "v0.26.1",
+    "xulSHA256": "b0df8f716c161c98f67f3720e5f17070606290053a99e991db8e469609ae9784",
+    "healthyLegacyAndExplicitPrivateRoots": "passed",
+    "deniedLegacyWithExistingPrivateProfile": "did not become ready; error process terminated by fixture"
+  },
+  "dataPreservation": [
+    "Native dedicated-profile mapping reused after removing MOZ_APP_DATA",
+    "Synthetic bookmark and real ConfigStore model setting retained",
+    "Restart reuses selected private root even after legacy root becomes available",
+    "Explicit root/cache overrides retain priority",
+    "No empty alternate root on ambiguous legacy access denial or disk errors",
+    "No migration, reset, profile-lock bypass or personal-profile modification"
+  ],
+  "limitations": [
+    "Actual macOS 27 TCC behavior awaits reporter verification; Issue #18 remains open.",
+    "App-data fixture redirects FSFindFolder and injects faults; child sandbox nesting is suppressed only in that fixture.",
+    "Agent, page and fingerprint regression ran separately with normal browser sandboxes.",
+    "Synthetic localhost model responses and pages, not paid model or third-party site acceptance.",
+    "Only ARM64 preview package built; stable v0.26.1 remains recommended for unaffected users."
+  ]
+}

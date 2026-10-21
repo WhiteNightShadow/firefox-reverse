@@ -14,6 +14,21 @@ Mozilla 已记录 [macOS 27 对 Firefox 数据目录的访问限制](https://bug
 
 **已有临时方案的测试者：** 先完整退出浏览器，保留独立数据目录及备份，只停用自己添加的 LaunchAgent 并清除临时启动变量，不删除 `profiles.ini`、书签或模型配置。正常打开预览包后核对原书签、原模型配置和重启持久性；失败时可以恢复原变量继续使用独立目录。不要分享模型 Key。
 
+安装时请替换原位置的应用，不要直接从 DMG 内运行：Firefox 的专用 profile 映射与应用安装路径有关，换一个路径可能创建另一个安装默认项。候选包只提供 macOS ARM64，采用 ad-hoc 签名，未做 Apple Developer ID 公证；它不是更改系统安全设置的建议，也不会修改 LaunchAgent 或全局启动变量。
+
+### 最终包验收（2026-10-21）
+
+[v0.26.2-preview.1](https://github.com/WhiteNightShadow/firefox-reverse/releases/tag/v0.26.2-preview.1) 的源码标记为 `b27c0e6bd2da2174a113ee8b0d6cdbf6f46369a1`，BuildID 为 `20261021032749`。安装包、XUL、侧栏资源的固定哈希及范围见[验证摘要](verification/macos-appdata-20261021/summary.json)。
+
+- 旧版 v0.26.1 对照：临时独立目录可启动，撤下变量并阻断旧根访问后未能进入 Marionette 就绪状态。测试主动终止错误进程，不把“进程存在”当启动成功，也不把主动终止称为浏览器崩溃。
+- 最终包 15 个原生场景通过：健康旧目录、真实专用 profile 映射、撤下变量后接续原书签和模型配置、选择持久化、显式覆盖、全新普通启动、注册表读取拒绝、确定缺失后的创建拒绝，以及 ENOSPC/EIO/EROFS、未知旧数据、文件占位、损坏备用注册表、显式目录访问拒绝。
+- 原有 5 个 Profile Manager 启动边界通过。正常浏览器沙箱下，213 项指纹、33 项页面/Agent 工具、8 类全局提示词场景和 11 条本地合成模型请求通过，测试后应用签名与资源哈希不变。
+- 轻量回归通过：25 个 Node 自测、19 项品牌测试、诊断与提示词验证器；另验证固定 Gecko 基线补丁应用和 12 个原生目录选择决策。
+
+目录故障测试使用 `scripts/verify-macos-appdata.py`，通过测试专用 dylib 将数据根重定向到临时目录，再用 Seatbelt 触发权限拒绝、在文件操作边界注入磁盘错误码；始终禁止测试进程访问实际 Firefox/FirefoxReverse 数据根。该夹具临时禁止 Firefox 子进程重复嵌套沙箱，只用于目录决策测试，**不修改或分发应用资源、不写入产品默认配置**。因此页面、Agent 和指纹回归另外在正常沙箱下完成。它不等同于 macOS 27 的 TCC 实机验收，也不代表第三方网站或付费模型服务兼容性。
+
+验收期间发现初稿使用的 `OpenANSIFileDesc` 会将不存在与访问拒绝折叠为同一个错误，已改为保留错误分类的 `OpenNSPRFileDesc`，重新编译并复验；未通过的初稿安装包没有发布。
+
 ## 先区分错误
 
 - “Firefox 配置文件无法加载/可能丢失或不可访问”通常来自 Firefox 的 **profile 用户数据目录**。它不是 `fingerprint.json`，创建一个同名 JSON 文件不能代替目录。
