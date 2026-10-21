@@ -27,6 +27,8 @@ with tempfile.TemporaryDirectory(prefix="frx-appdata-policy-") as temporary:
     assert 'GetUserDataDirectory(getter_AddRefs(global), false)' in block
     helper = (repo / "additions/toolkit/xre/FrxMacAppData.h").read_text()
     assert "->Exists(" not in helper, "Exists hides EPERM as false on Unix"
+    assert "->OpenANSIFileDesc(" not in helper, "ANSI open hides ENOENT/EPERM as generic failure"
+    assert "->OpenNSPRFileDesc(PR_RDONLY" in helper
     assert "Remove(" not in helper and "MoveTo" not in helper and "CopyTo" not in helper
     assert "NS_ERROR_FILE_CORRUPTED" in helper and 'marker->IsSymlink' in helper
     subprocess.run(["git", "apply", "--reverse", str(patch)], cwd=root, check=True)

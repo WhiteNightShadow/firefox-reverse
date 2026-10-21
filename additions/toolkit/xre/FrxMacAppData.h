@@ -7,6 +7,7 @@
 
 #include "FrxMacAppDataPolicy.h"
 #include "nsINIParser.h"
+#include "prio.h"
 
 namespace mozilla::frx {
 
@@ -99,10 +100,12 @@ inline nsresult ResolveMacAppData(nsIFile* legacy,
   if (NS_SUCCEEDED(rv)) {
     nsCOMPtr<nsIFile> ini;
     MOZ_TRY(AppDataChild(legacy, "profiles.ini"_ns, getter_AddRefs(ini)));
-    FILE* stream = nullptr;
-    rv = ini->OpenANSIFileDesc("r", &stream);
+    // OpenANSIFileDesc collapses ENOENT and EPERM to NS_ERROR_FAILURE.
+    // NSPR preserves both, which is essential for first-run compatibility.
+    PRFileDesc* stream = nullptr;
+    rv = ini->OpenNSPRFileDesc(PR_RDONLY, 0, &stream);
     if (NS_SUCCEEDED(rv)) {
-      fclose(stream);
+      PR_Close(stream);
     } else if (rv == NS_ERROR_FILE_NOT_FOUND) {
       rv = NS_OK;
     }
