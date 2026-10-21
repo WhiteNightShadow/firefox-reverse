@@ -1,6 +1,18 @@
 # macOS 启动排查
 
-适用于 [Issue #18](https://github.com/WhiteNightShadow/firefox-reverse/issues/18) 一类启动反馈。报告者已补充 v0.25.0、M1 Max、双击启动失败而直接执行带 `-no-remote` 可以启动。仍缺同一可执行文件/同一 profile 的对照诊断，不能据此认定 macOS 27 不兼容，也不能宣称已经修复其根因。
+适用于 [Issue #18](https://github.com/WhiteNightShadow/firefox-reverse/issues/18) 一类启动反馈。2026-10-19，@odtu945 已确认 v0.26.1 ARM64 应用未修改，通过 `MOZ_APP_DATA` 使用 `~/Library/Application Support/FirefoxReverse` 后完整重启仍可启动，且独立目录已有书签和模型配置；原 Firefox 目录从未创建成功。这些材料已足以进入候选包验证，不需要重复索取同样的信息。
+
+Mozilla 已记录 [macOS 27 对 Firefox 数据目录的访问限制](https://bugzilla.mozilla.org/show_bug.cgi?id=2068208)，也有[允许显式 profile 在注册表不可读时启动的上游修复](https://bugzilla.mozilla.org/show_bug.cgi?id=2069536)。上游后者不等于普通启动的目录创建问题已解决。本仓候选改动只处理默认数据根目录选择，不扩大系统权限、不绕过 profile 锁。
+
+## v0.26.2-preview.1 候选行为
+
+- 只作用于 macOS 默认 Firefox 应用命名空间；Windows/Linux、自定义 `App.Profile`、显式 `MOZ_APP_DATA` 保持原选择。显式 `MOZ_LOCAL_APP_DATA` 优先。
+- 可用的旧 `Firefox` 根目录继续使用。仅遇到 `EACCES/EPERM` 对应的访问拒绝才考虑 `FirefoxReverse`：旧根已确认不存在，或备用根有可读、格式有效且包含 profile 的 `profiles.ini`。无法读取不等于不存在。
+- 复用备用根时原地使用，绝不复制、删除、重建旧 profile。选择记录为备用根下的空文件 `.frx-appdata-v1`，以后普通启动继续使用该根，缓存对应 `~/Library/Caches/FirefoxReverse`。显式环境变量仍可覆盖选择。
+- 磁盘满、只读卷、I/O 错误、路径被文件占用、备用注册表损坏/不可读均不触发静默换目录。旧根访问被拒且无可识别备用 profile 时仍停止并提示诊断，不创建一套可能掩盖旧数据的空 profile。
+- 当前工作机是 macOS 26.7.1 ARM64。预览包需要报告者在撤下临时 LaunchAgent/环境变量后验证 macOS 27，Issue #18 保持开放；不能把合成权限故障测试等同于该系统实测。
+
+**已有临时方案的测试者：** 先完整退出浏览器，保留独立数据目录及备份，只停用自己添加的 LaunchAgent 并清除临时启动变量，不删除 `profiles.ini`、书签或模型配置。正常打开预览包后核对原书签、原模型配置和重启持久性；失败时可以恢复原变量继续使用独立目录。不要分享模型 Key。
 
 ## 先区分错误
 

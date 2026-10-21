@@ -96,6 +96,8 @@ jobs:
           # copying sidebar modules alone must not produce a misleading release.
           git -C "$UPSTREAM" apply --reverse --check \
             "$GITHUB_WORKSPACE/patches/agent-ui/0005-offer-profile-manager-for-missing-default.patch"
+          git -C "$UPSTREAM" apply --reverse --check \
+            "$GITHUB_WORKSPACE/patches/agent-ui/0006-macos-private-appdata-recovery.patch"
 
       - name: 同步全部 additions 到源码树（复用已 bootstrap 的树，增量编）
         run: |

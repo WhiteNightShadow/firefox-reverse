@@ -312,6 +312,11 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
+### v0.26.2-preview.1（macOS 启动候选修复）
+- **Issue #18**：为 macOS 默认数据目录增加受限恢复，访问拒绝时可原地接续已有 `FirefoxReverse` 独立 profile，并记住选择与独立缓存；可用旧目录和显式覆盖保持兼容，不搬迁、清空或解锁用户数据。
+- **边界与诊断**：权限错误不再当成目录缺失；磁盘故障、路径冲突、备用注册表损坏不自动换目录。只读诊断补充 `MOZ_APP_DATA/MOZ_LOCAL_APP_DATA` 和独立目录状态。
+- **预览范围**：本轮先提供 ARM64 候选验证，macOS 27 原问题仍待反馈用户实机确认，不替换 v0.26.1 稳定版推荐。详见[启动说明](docs/macos-startup-diagnostics.md)。
+
 ### v0.26.1（正式版，2026-10-12）
 - **全局附加 system 提示词（PR #21）**：感谢 [@awaxiaoyu](https://github.com/awaxiaoyu) 的贡献。侧栏设置可保存多行提示词，同一 profile 的模型配置和会话共享；追加到内置 system 后，从下一轮用户对话生效，当前任务与自动续跑保持原快照，避免重复追加。默认留空或清空后沿用内置提示词，不迁移旧用户配置。
 - **最终包验收**：五个平台均通过 8 类提示词场景、11 条本地合成模型请求，包内资源前后未修改且与固定源码一致。原有指纹检查按 Mac ARM64/Intel、Windows x86_64、Linux x86_64/ARM64 分别通过 213/197/212/182/182 项，各另通过 33 项页面/Agent 检查。[原生 CI 与报告](https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/38208742667)。
