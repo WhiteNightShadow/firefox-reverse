@@ -257,6 +257,23 @@ function fmtTokens(n) {
   return (value / 1000000).toFixed(1) + "M";
 }
 
+// 工具确认条的参数预览：多行字符串（代码/表达式）原样展示，整体截到 2000 字符。
+function confirmArgsPreview(args) {
+  if (args == null || args === "") return "";
+  let text;
+  if (typeof args === "object") {
+    text = Object.entries(args)
+      .map(([k, v]) => {
+        const s = typeof v === "string" ? v : JSON.stringify(v);
+        return s && s.includes("\n") ? `${k}:\n${s}` : `${k}: ${s}`;
+      })
+      .join("\n");
+  } else {
+    text = String(args);
+  }
+  return text.length > 2000 ? text.slice(0, 2000) + "\n…（已截断）" : text;
+}
+
 // chrome 特权全局（侧边栏文档 = chrome:// 系统 principal）。typeof 守卫，取不到则降级（按钮报错不崩）。
 const _CC = typeof Components !== "undefined" ? Components.classes : typeof Cc !== "undefined" ? Cc : null;
 const _CI = typeof Components !== "undefined" ? Components.interfaces : typeof Ci !== "undefined" ? Ci : null;
@@ -1058,6 +1075,13 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
 
   async function deleteThread(id, ev) {
     ev.stopPropagation();
+    // 删会话不会自动停引擎：运行中的先确认并停掉，否则它会在后台继续操作页面/文件，删除后 UI 也停不了它。
+    if (session && session.isRunning && session.isRunning(id)) {
+      if (!window.confirm("这个会话的 Agent 还在运行。删除前会先停止它，确定删除吗？")) {
+        return;
+      }
+      session.stop(id);
+    }
     await conversations.deleteThread(id);
     const list = await refreshThreads();
     if (id === currentId) {
@@ -1279,22 +1303,22 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           <span className="agent-confirm__msg">
             Agent 要调用工具 <b>{pendingConfirm.call.name}</b>，允许？
           </span>
+          {confirmArgsPreview(pendingConfirm.call.args) && (
+            <pre className="agent-confirm__args">{confirmArgsPreview(pendingConfirm.call.args)}</pre>
+          )}
           <span className="agent-confirm__btns">
             <button type="button" onClick={() => { pendingConfirm.resolve(true); setPendingConfirm(null); }}>批准</button>
             <button type="button" onClick={() => { pendingConfirm.resolve(false); setPendingConfirm(null); }}>拒绝</button>
             <button
               type="button"
-              title="本次及以后都不再询问（关闭确认模式，可在设置里重新开启）"
+              title="本轮后续工具不再询问；要彻底关闭确认，请到设置里取消勾选"
               onClick={() => {
                 autoApproveRef.current = true; // 本回合后续工具不再询问
-                if (store && store.setConfirmTools) {
-                  store.setConfirmTools(false); // 持久关闭，下次启动也不问
-                }
                 pendingConfirm.resolve(true, true); // all=true → 引擎本轮后续工具自动批准
                 setPendingConfirm(null);
               }}
             >
-              总是允许
+              本轮都允许
             </button>
           </span>
         </div>

@@ -15,7 +15,7 @@ try {
     outdir: temp, bundle: true, platform: "node", format: "esm",
     external: ["react"], outExtension: { ".js": ".mjs" },
   });
-  const { default: Markdown, markdownWebUrl } = await import(pathToFileURL(join(temp, "MarkdownContent.mjs")));
+  const { default: Markdown, markdownWebUrl, tooDeeplyNested } = await import(pathToFileURL(join(temp, "MarkdownContent.mjs")));
   const { AssistantBody, StepList } = await import(pathToFileURL(join(temp, "AgentPanel.mjs")));
   const render = text => renderToStaticMarkup(React.createElement(Markdown, null, text));
   const prose = render("## 结论\n\n**已完成** *验证* ~~旧假设~~ `navigator.language`\n\n> 引用\n\n1. 第一项\n2. 第二项\n\n- 一级\n  - 二级\n\n- [x] 完成\n- [ ] 待验证");
@@ -50,6 +50,16 @@ try {
   }
   assert.equal(markdownWebUrl("https://example.com/a"), "https://example.com/a");
   console.log("PASS raw HTML stays text, privileged URLs are blocked, images do not auto-load");
+
+  // 超深嵌套会让 Markdown 解析递归溢出：按纯文本显示，不解析、不抛错（侧栏不白屏）。
+  const deepQuote = ">".repeat(5000) + " 引用";
+  assert.equal(tooDeeplyNested(deepQuote), true);
+  assert.equal(tooDeeplyNested("- ".repeat(40) + "x"), true);
+  assert.equal(tooDeeplyNested("> > 两层引用\n- a\n  - b\n\n* * *\n------"), false);
+  const deep = render(deepQuote);
+  assert(deep.includes('<pre class="markdown-body__plain">') && !deep.includes("<blockquote>"));
+  assert(render("> > 两层引用").includes("<blockquote>"));
+  console.log("PASS pathological nesting falls back to plain text; normal nesting still renders");
 
   const stored = renderToStaticMarkup(React.createElement(AssistantBody, { content: "## 历史结论\n\n**保留**", steps: [] }));
   assert(stored.includes("<h2>历史结论</h2>") && stored.includes("<strong>保留</strong>"));

@@ -473,6 +473,8 @@ try {
   assert.deepEqual(opened.originalArgs.slice(0, 5), ["-marionette", "-remote-allow-system-access", "-no-remote", "-new-instance", "-profile"]);
   assert.equal(opened.originalArgs.includes("--marionette-port"), false);
   assert.equal(opened.launchEnvironment.MOZ_MARIONETTE, "1");
+  assert.equal("MOZ_FRX_PROXY_JSON" in opened.launchEnvironment, false);
+  assert.equal(launchCalls[0].environment.MOZ_FRX_PROXY_JSON, null);
   assert.deepEqual(JSON.parse(opened.launchEnvironment.MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS), {
     "marionette.port": 2829,
   });

@@ -938,6 +938,39 @@ patch_file(
 
 
 print("==> netwerk/protocol/http/nsHttpHandler.cpp")
+# v1 re-assigned a function-local static on every call while the socket thread
+# reads the same buffer (proxy CONNECT, HTTP/3). The configuration is immutable,
+# so resolve the override once and hand every thread the same constant string.
+FRX_USER_AGENT_SOURCE_V1 = (
+    "const nsCString& nsHttpHandler::UserAgent(bool aShouldResistFingerprinting) {\n"
+    "  static nsCString sFrxUserAgent;\n"
+    "  nsAutoCString frxUserAgent;\n"
+    "  if (mozilla::dom::FrxFingerprintConfig::GetHttpUserAgent(\n"
+    "          frxUserAgent)) {\n"
+    "    sFrxUserAgent = frxUserAgent;\n"
+    "    return sFrxUserAgent;\n"
+    "  }\n\n"
+    "  if (aShouldResistFingerprinting && !mSpoofedUserAgent.IsEmpty()) {\n"
+)
+FRX_USER_AGENT_SOURCE = (
+    "const nsCString& nsHttpHandler::UserAgent(bool aShouldResistFingerprinting) {\n"
+    "  static const mozilla::Maybe<nsCString> sFrxUserAgent = [] {\n"
+    "    nsAutoCString frxUserAgent;\n"
+    "    return mozilla::dom::FrxFingerprintConfig::GetHttpUserAgent(frxUserAgent)\n"
+    "               ? mozilla::Some(nsCString(frxUserAgent))\n"
+    "               : mozilla::Nothing();\n"
+    "  }();\n"
+    "  if (sFrxUserAgent) {\n"
+    "    return *sFrxUserAgent;\n"
+    "  }\n\n"
+    "  if (aShouldResistFingerprinting && !mSpoofedUserAgent.IsEmpty()) {\n"
+)
+migrate_if_present(
+    os.path.join(ROOT, "netwerk/protocol/http/nsHttpHandler.cpp"),
+    "make nsHttpHandler UserAgent override immutable",
+    FRX_USER_AGENT_SOURCE_V1,
+    FRX_USER_AGENT_SOURCE,
+)
 patch_file(
     os.path.join(ROOT, "netwerk/protocol/http/nsHttpHandler.cpp"),
     [
@@ -994,15 +1027,7 @@ patch_file(
             "override nsHttpHandler UserAgent source",
             "const nsCString& nsHttpHandler::UserAgent(bool aShouldResistFingerprinting) {\n"
             "  if (aShouldResistFingerprinting && !mSpoofedUserAgent.IsEmpty()) {\n",
-            "const nsCString& nsHttpHandler::UserAgent(bool aShouldResistFingerprinting) {\n"
-            "  static nsCString sFrxUserAgent;\n"
-            "  nsAutoCString frxUserAgent;\n"
-            "  if (mozilla::dom::FrxFingerprintConfig::GetHttpUserAgent(\n"
-            "          frxUserAgent)) {\n"
-            "    sFrxUserAgent = frxUserAgent;\n"
-            "    return sFrxUserAgent;\n"
-            "  }\n\n"
-            "  if (aShouldResistFingerprinting && !mSpoofedUserAgent.IsEmpty()) {\n",
+            FRX_USER_AGENT_SOURCE,
         ),
         (
             "override Accept-Language request header",

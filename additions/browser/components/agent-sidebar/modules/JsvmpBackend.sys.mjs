@@ -20,6 +20,35 @@ function traceDir() {
 }
 const PREFIX = "firefox-reverse-jsvmp";
 
+// 这三项是启动期 pref（LoadStartupJSPrefs）：影响之后新开的内容进程和下次启动。
+const JIT_PREFS = [
+  "javascript.options.blinterp",
+  "javascript.options.baselinejit",
+  "javascript.options.ion",
+];
+const JIT_HEALED_PREF = "extensions.firefox-reverse.jsvmp.jitPrefsHealed";
+
+// 旧版本 trace 时把三项写成 user 值 false 并立即落盘，没 stop 就退出/崩溃会让之后每次启动都没有 JIT。
+// 三项同时为 user 值 false 基本只可能是那次残留：清掉一次并记下，之后尊重用户自己的设置。
+function healPersistedJitPrefs() {
+  try {
+    if (Services.prefs.getBoolPref(JIT_HEALED_PREF, false)) {
+      return;
+    }
+    const stale = JIT_PREFS.every(
+      k => Services.prefs.prefHasUserValue(k) && !Services.prefs.getBoolPref(k, true)
+    );
+    if (stale) {
+      for (const k of JIT_PREFS) {
+        Services.prefs.clearUserPref(k);
+      }
+    }
+    Services.prefs.setBoolPref(JIT_HEALED_PREF, true);
+  } catch {
+    /* 无 Services（Node 自测）或无权限 */
+  }
+}
+
 // PathUtils.isAbsolute 在 Windows 只认反斜杠盘符路径（C:\…）；正斜杠的 C:/… 会被当成相对路径，
 // 拆段后 PathUtils.join(root,"C:",…) 拼成 <root>\C:\… 路径翻倍 → ENOENT（agent 常用正斜杠，真机实测踩到）。
 // 补全绝对判断：盘符(正/反斜杠) / UNC / posix。
@@ -44,6 +73,7 @@ export class JsvmpBackend {
     // _getWorkspaceRoot 接受可选 ctx，优先返回 ctx.workspaceRoot（会话级隔离），回退全局 setRoot()。
     this._getWorkspaceRoot =
       getWorkspaceRoot || (workspace ? ctx => workspace.getRoot(ctx) : null);
+    healPersistedJitPrefs();
   }
 
   /** 把随浏览器打包的离线工具脚本（chrome:// 内）落到 <工作目录>/.agent-tools/ 并缓存，返回工作目录相对路径。 */
@@ -523,7 +553,7 @@ export class JsvmpBackend {
 
   /** 把 trace 文件镜像到 <工作目录>/jsvmp/，让 trace 缓存落在用户打开的目录下。
    *  size+mtime 相同则跳过，避免重复拷贝大文件。返回目标路径或 null。 */
-  async _relayToWorkspace(f) {
+  async _relayToWorkspace(f, ctx) {
     try {
       const root = this._getWorkspaceRoot && this._getWorkspaceRoot(ctx);
       if (!root || !f) {
@@ -733,7 +763,7 @@ export class JsvmpBackend {
     }
     out.reverse(); // 收集时是尾→头，反转回时间顺序（旧→新）
     // 把 trace 镜像到工作目录（若已设），让缓存落在用户打开的目录下。
-    const workspaceCopy = await this._relayToWorkspace(f);
+    const workspaceCopy = await this._relayToWorkspace(f, ctx);
     return {
       ok: true,
       traceFile: f,
@@ -889,7 +919,7 @@ export class JsvmpBackend {
       let workspaceCopy = null;
       try {
         const f = await this._findTrace(ctx);
-        workspaceCopy = await this._relayToWorkspace(f);
+        workspaceCopy = await this._relayToWorkspace(f, ctx);
       } catch {
         /* ignore */
       }
@@ -1060,23 +1090,15 @@ export class JsvmpBackend {
     };
   }
 
-  /** trace 期间关 JIT 强制解释器（false）/ 恢复默认（true）。 */
+  /** trace 期间关 JIT 强制解释器（false）/ 恢复默认（true）。
+   *  只改默认分支：默认值不写进 prefs.js，没 stop 就退出或崩溃时，下次启动 JIT 自动恢复。 */
   _setJit(on) {
-    const keys = [
-      "javascript.options.blinterp",
-      "javascript.options.baselinejit",
-      "javascript.options.ion",
-    ];
     try {
-      for (const k of keys) {
-        if (on) {
-          Services.prefs.clearUserPref(k); // 恢复默认（JIT 开）
-        } else {
-          Services.prefs.setBoolPref(k, false); // 关，强制 js::Interpret
-        }
+      const defaults = Services.prefs.getDefaultBranch("");
+      for (const k of JIT_PREFS) {
+        Services.prefs.clearUserPref(k); // user 值会盖住默认分支（含旧版本残留的 false）
+        defaults.setBoolPref(k, on); // 上游默认值为 true
       }
-      // 立刻落盘：即使之后浏览器被强杀(非正常退出)，stop 的恢复也不会丢，避免 JIT 卡在关闭态。
-      Services.prefs.savePrefFile(null);
     } catch {
       /* 没权限/不存在就算了，trace 仍可抓顶层 */
     }

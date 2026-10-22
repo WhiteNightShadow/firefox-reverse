@@ -141,7 +141,8 @@ export class NotesBackend {
       all = all.filter(r => !toDrop.has(r));
       evicted = toDrop.size;
     }
-    await IOUtils.writeUTF8(f, all.map(r => JSON.stringify(r)).join("\n") + "\n");
+    // 先写临时文件再原子替换：写到一半崩溃或并发写入不会截断整份笔记。
+    await IOUtils.writeUTF8(f, all.map(r => JSON.stringify(r)).join("\n") + "\n", { tmpPath: f + ".tmp" });
     return {
       ok: true,
       saved: rec,

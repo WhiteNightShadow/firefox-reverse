@@ -83,6 +83,11 @@ const accountB = cs.createModelProfile({
 check("同渠道可保存多账号", cs.listModelProfiles().length, 2);
 check("新建配置自动选中", cs.getActiveModelProfileId(), accountB.id);
 check("当前配置读取账号 B Key", cs.getApiKey("custom"), "sk-account-b");
+const draft = cs.createModelProfile({ name: "未填 Key 的草稿", provider: "custom", apiKey: "" }, { activate: false });
+check("设置页新建草稿不切换当前配置", cs.getActiveModelProfileId(), accountB.id);
+check("草稿不影响当前 Key", cs.getApiKey("custom"), "sk-account-b");
+check("草稿不改写旧版 Key 镜像", cs.b.getString("extensions.firefox-reverse.agent.key.custom", ""), "sk-account-b");
+cs.deleteModelProfile(draft.id);
 cs.setActiveModelProfileId(accountA.id);
 check("历史配置切回账号 A", cs.getApiKey("custom"), "sk-account-a");
 check("切换模型配置保留全局提示词", cs.getGlobalSystemPrompt(), globalPrompt);

@@ -66,13 +66,22 @@ const CONFIRM_TOOLS = new Set([
   "hook_inject",
   "whitebox_diff",
   "cookies",
+  "fs_write",
+  "fs_copy",
+  "run_node",
+  "run_python",
+  "npm_install",
   "env_create",
   "env_update",
   "env_open",
   "env_close",
   "env_delete",
   "env_import",
+  "env_import_fingerprint",
   "env_generate_fingerprint",
+  "env_write_config",
+  "env_write_current_process_config",
+  "env_reset_current_process_default",
 ]);
 
 /** 全部内置工具的声明表（声明 ≠ 注册；注册由 backend 在场决定）。 */

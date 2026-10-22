@@ -178,11 +178,11 @@ ok(
     !fr.needsConfirm("page_screenshot") && !fr.needsConfirm("page_elements"),
   "确认标记正确（改动型需确认 / 只读免确认）"
 );
-// 工作目录工具：用户选了「自动执行不打断」→ run_node/run_python/fs_write 不需确认
+// 宿主机执行/写盘类工具：开启确认模式时也要确认（默认免确认模式由 autoApprove 放行，不受影响）；只读的免确认
 ok(
-  !fr.needsConfirm("run_node") && !fr.needsConfirm("run_python") && !fr.needsConfirm("fs_write") &&
+  fr.needsConfirm("run_node") && fr.needsConfirm("run_python") && fr.needsConfirm("fs_write") &&
     !fr.needsConfirm("fs_read") && !fr.needsConfirm("fs_list"),
-  "工作目录工具均免确认（自动执行模式）"
+  "执行/写盘类工具需确认，只读工作目录工具免确认"
 );
 ok((await fr.dispatch("fs_write", { path: "a.txt", content: "x" })).ok, "fs_write 可派发");
 ok((await fr.dispatch("run_node", { code: "1" })).ok, "run_node 可派发");
