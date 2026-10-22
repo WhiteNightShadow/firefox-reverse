@@ -279,6 +279,16 @@ const _CC = typeof Components !== "undefined" ? Components.classes : typeof Cc !
 const _CI = typeof Components !== "undefined" ? Components.interfaces : typeof Ci !== "undefined" ? Ci : null;
 const _SVC = typeof Services !== "undefined" ? Services : null;
 
+// 本侧栏所在的浏览器窗口是否就是用户当前所在（最近激活）的那个窗口。取不到宿主时按"是"处理（单窗口行为不变）。
+function isFrontWindow() {
+  try {
+    const host = typeof window !== "undefined" ? window.browsingContext?.topChromeWindow : null;
+    return !host || !_SVC || _SVC.wm.getMostRecentWindow("navigator:browser") === host;
+  } catch {
+    return true;
+  }
+}
+
 export default function AgentPanel({ buildClient, conversations, store, router, runAgentTurn, session, isVisionModel, workspace, notes, skill, toolNames = [], onOpenEnvironment, onOpenSettings, hidden = false }) {
   const [messages, setMessages] = useState([]); // 仅 user/assistant
   const [threads, setThreads] = useState([]); // 摘要列表
@@ -305,6 +315,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const curTextRef = useRef(-1); // 当前正在流式追加的 text step 下标
   const curThinkRef = useRef(-1); // 当前正在流式追加的 think(思考) step 下标
   const [extRunning, setExtRunning] = useState(null); // 外部(MCP)驱动、本面板没在显示的会话（忙时横幅提示用）
+  const [spectating, setSpectating] = useState(false); // 当前会话被别的浏览器窗口占用：本窗口只读查看（可看进度、不能发送）
   const openThreadRef = useRef(null); // 最新 openThread 闭包，供 listRunning 定时器自动跟随（避免 effect deps 抖动）
   const followingRef = useRef(false); // 自动跟随进行中（防重入，避免一轮没切完下一轮又发起）
   const triedFollowRef = useRef(null); // 上次尝试跟随的会话 id（切不成=被别窗口占用时不再每 1.5s 刷错横幅）
@@ -405,7 +416,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     const owner = ownerRef.current;
     const renew = () => {
       try {
-        session.renewThread && session.renewThread(currentId, owner);
+        // 续约失败 = 别的活窗口占着这条会话 → 本窗口只读查看；对方释放或失联后下一拍自动转回可发送。
+        if (session.renewThread) {
+          setSpectating(!session.renewThread(currentId, owner));
+        }
       } catch {
         /* ignore */
       }
@@ -568,17 +582,20 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           // ② 只在「真正空闲中性」才自动切：没在跑 + 没历史消息 + 没在输入，否则只弹横幅（不抢人）
           // 空闲=没在跑自己的回合(!busy) + 没在打字(!input)。停在哪条会话(哪怕有历史)都算空闲，
           // 自动切到新的在跑会话；triedFollowRef 保证只切一次、用户切回别处不会被每秒拽回（转横幅）。
+          // 只有用户当前所在的浏览器窗口才自动跟随；后台窗口只给横幅，避免后台窗口先抢走外部会话、
+          // 让用户正看着的窗口打不开（多窗口时各侧栏定时器谁先触发谁抢到，与用户在看哪个窗口无关）。
           const eligible =
             !busy &&
             !String(ui.input || "").trim() &&
             !!openThreadRef.current &&
-            !followingRef.current;
+            !followingRef.current &&
+            isFrontWindow();
           if (eligible && triedFollowRef.current !== target.id) {
-            triedFollowRef.current = target.id; // 试过这条；若没切成（被别窗口占用）下轮转横幅、不再每秒刷错
+            triedFollowRef.current = target.id; // 试过这条；若没切成（被别窗口占用）下轮转横幅，由用户点开只读查看
             followingRef.current = true;
             setExtRunning(null);
             try {
-              await openThreadRef.current(target.id);
+              await openThreadRef.current(target.id, { auto: true });
             } finally {
               followingRef.current = false;
             }
@@ -811,6 +828,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     if (!text || busy) {
       return;
     }
+    if (spectating) {
+      setError("这个会话正在另一个浏览器窗口打开，本窗口只能查看。先点上方「在此窗口接管」，再在这里发送。");
+      return;
+    }
     setError(null);
     setNotice(null);
     const userMsg = { role: "user", content: text };
@@ -954,6 +975,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     if (session && session.acquireThread) {
       session.acquireThread([t.id], ownerRef.current); // 认领新线程（预留）→ 别的窗口认领不到，不会串对话
     }
+    setSpectating(false);
     setCurrentId(t.id);
     setMessages([]);
     setCancellationPending(false);
@@ -988,18 +1010,21 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     chooseMode(mode === "assist" ? "auto" : "assist");
   }
 
-  async function openThread(id) {
-    // 切到历史会话：先认领；若已被**别的窗口**打开 → 不切、提示（避免两窗口绑同一条线程串对话）。切回当前条不用认领。
+  async function openThread(id, { auto = false } = {}) {
+    // 切到历史会话：先认领。已被**别的活窗口**打开时：自动跟随不切（交给横幅）；用户主动打开则只读查看——
+    // 能看进度、不能发送，需要时点「在此窗口接管」。同一时刻只有一个窗口能往这条会话里发，避免对话串。
+    let heldElsewhere = false;
     if (id !== currentId && session && session.acquireThread) {
-      const got = session.acquireThread([id], ownerRef.current);
-      if (!got) {
-        setError("该会话已在另一个浏览器窗口打开，不能在此窗口同时打开（避免对话串）。");
-        setShowHistory(false);
-        return;
+      heldElsewhere = !session.acquireThread([id], ownerRef.current);
+      if (heldElsewhere && auto) {
+        return false;
       }
     }
     const t = await conversations.getThread(id);
     if (t) {
+      if (id !== currentId) {
+        setSpectating(heldElsewhere);
+      }
       setCurrentId(t.id);
       setMessages(t.messages);
       setCancellationPending(t.cancellationPending === true);
@@ -1015,6 +1040,16 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       setBusy(!!(session && session.isRunning && session.isRunning(t.id)));
     }
     setShowHistory(false);
+    return !!t;
+  }
+
+  // 「在此窗口接管」：把这条会话的占用转到本窗口；原窗口下次心跳续约失败后自动转为只读查看。
+  function takeOverThread() {
+    if (session && session.takeOverThread && currentId) {
+      session.takeOverThread(currentId, ownerRef.current);
+    }
+    setSpectating(false);
+    setError(null);
   }
 
   openThreadRef.current = openThread; // 每渲染更新，供「自动跟随」定时器调用最新闭包
@@ -1130,6 +1165,15 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         >
           ⚡ 外部(MCP)正在驱动另一个会话（{extRunning.nSteps} 步）· 点击实时跟随
         </button>
+      )}
+
+      {spectating && (
+        <div className="agent-spectate" role="status">
+          <span>这个会话正在另一个浏览器窗口打开，这里只能查看进度。</span>
+          <button type="button" onClick={takeOverThread} title="把这条会话转到本窗口，原窗口变为只读查看">
+            在此窗口接管
+          </button>
+        </div>
       )}
 
       {notice && (

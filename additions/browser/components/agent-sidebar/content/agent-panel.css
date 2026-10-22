@@ -623,7 +623,8 @@ body {
 }
 
 .agent-panel__notice,
-.agent-cancel-boundary {
+.agent-cancel-boundary,
+.agent-spectate {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -651,6 +652,19 @@ body {
 .agent-cancel-boundary {
   color: color-mix(in srgb, #b45309 72%, FieldText);
   background: color-mix(in srgb, #f59e0b 12%, transparent);
+}
+/* 会话被别的浏览器窗口占用：只读查看 + 接管按钮 */
+.agent-spectate {
+  color: color-mix(in srgb, #2563eb 70%, FieldText);
+  background: color-mix(in srgb, #3b82f6 10%, transparent);
+}
+.agent-spectate span { flex: 1; }
+.agent-spectate button {
+  flex: none;
+  font: inherit;
+  padding: 3px 10px;
+  border-radius: var(--frx-radius-sm);
+  cursor: pointer;
 }
 
 /* ──────────────────────────────────────────────────────────

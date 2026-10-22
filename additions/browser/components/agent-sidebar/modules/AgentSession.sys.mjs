@@ -315,23 +315,31 @@ export const agentSession = {
     }
     return null;
   },
-  /** 心跳续约：本窗口持有 currentId 期间定时调，刷新 ts 证明自己还活着→别的窗口在 TTL 内认领不到。
-   *  仅当本 owner 仍持有(或预留为空=已被回收则重新认领)时续；预留已被别的活窗口接管则返回 false(本窗口已失去)。 */
+  /** 心跳续约：本窗口显示 currentId 期间定时调，刷新 ts 证明自己还活着→别的窗口在 TTL 内认领不到。
+   *  本 owner 持有 / 预留为空 / 原持有窗口已失联(过 TTL) → 续上并返回 true；别的活窗口持有 → 返回 false，
+   *  UI 据此把本窗口置为只读查看（可看进度、不能发送，需要时点「在此窗口接管」）。 */
   renewThread(threadId, owner) {
-    const s = sessions.get(threadId);
-    if (!s) {
-      return false;
-    }
+    const s = getOrInit(threadId);
     const token = owner || "anon";
+    const now = Date.now();
     if (!s.reservation) {
-      s.reservation = { owner: token, ts: Date.now() };
+      s.reservation = { owner: token, ts: now };
       return true;
     }
     if (s.reservation.owner !== token) {
-      return false;                             // 已被别的活窗口接管，不抢回
+      if (now - s.reservation.ts < RESERVE_TTL_MS) {
+        return false;                           // 别的活窗口持有（或已被接管）→ 本窗口只读查看，不抢回
+      }
+      s.reservation = { owner: token, ts: now }; // 持有窗口已失联（过 TTL 没续约）→ 只读方接手
+      return true;
     }
-    s.reservation.ts = Date.now();
+    s.reservation.ts = now;
     return true;
+  },
+  /** 用户在本窗口明确点了「在此窗口接管」：把预留直接转给本窗口。原持有窗口下次心跳续约失败 → 转为只读查看。 */
+  takeOverThread(threadId, owner) {
+    getOrInit(threadId).reservation = { owner: owner || "anon", ts: Date.now() };
+    return threadId;
   },
   /** 释放本窗口对某线程的预留（侧栏切走该线程 / pagehide / 关闭窗口时调）。释放后该线程可被任意窗口重开续看。
    *  传了 owner 则只释放自己的预留(不抢释放别窗口的)；不传 owner=旧式无条件释放。引擎后台仍跑不受影响。 */
