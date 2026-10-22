@@ -9,12 +9,17 @@ namespace mozilla::frx {
 
 enum class AppDataFailure { None, AccessDenied, Other };
 
-// A denied stat is not evidence that a user's old data does not exist.
-constexpr bool CanUsePrivateAppData(AppDataFailure failure,
-                                    bool legacyKnownAbsent,
-                                    bool existingPrivateProfile) {
-  return failure == AppDataFailure::AccessDenied &&
-         (legacyKnownAbsent || existingPrivateProfile);
+// macOS 27 denies non-Mozilla apps the Firefox data root by name. Only that
+// access denial switches roots; disk, I/O and file-type failures never do.
+constexpr bool CanUsePrivateAppData(AppDataFailure failure) {
+  return failure == AppDataFailure::AccessDenied;
+}
+
+// A denied stat is not evidence that a user's old data does not exist: when a
+// new private profile starts while the old root may hold data, say so once.
+constexpr bool NeedsLegacyDataNotice(bool legacyKnownAbsent,
+                                     bool existingPrivateProfile) {
+  return !legacyKnownAbsent && !existingPrivateProfile;
 }
 
 }  // namespace mozilla::frx

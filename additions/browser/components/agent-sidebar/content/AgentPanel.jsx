@@ -279,6 +279,10 @@ const _CC = typeof Components !== "undefined" ? Components.classes : typeof Cc !
 const _CI = typeof Components !== "undefined" ? Components.interfaces : typeof Ci !== "undefined" ? Ci : null;
 const _SVC = typeof Services !== "undefined" ? Services : null;
 
+// macOS 上原 Firefox 数据目录访问被拒、启动层改用独立目录新建配置时留下的标记（见 FrxMacAppData.h），提示一次。
+const APPDATA_NOTICE_FILE = ".frx-appdata-notice-v1";
+const APPDATA_NOTICE_SHOWN = "extensions.firefox-reverse.appdataNoticeShown";
+
 // 本侧栏所在的浏览器窗口是否就是用户当前所在（最近激活）的那个窗口。取不到宿主时按"是"处理（单窗口行为不变）。
 function isFrontWindow() {
   try {
@@ -396,6 +400,28 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       cancelled = true;
     };
   }, [conversations, refreshThreads]);
+
+  // 原数据目录不可读时启动层已改用独立目录并新建了配置：告诉用户旧目录没动，免得以为数据丢了。
+  useEffect(() => {
+    try {
+      if (!_SVC || !_CI || _SVC.prefs.getBoolPref(APPDATA_NOTICE_SHOWN, false)) {
+        return;
+      }
+      const root = _SVC.dirsvc.get("UAppData", _CI.nsIFile);
+      const flag = root.clone();
+      flag.append(APPDATA_NOTICE_FILE);
+      if (!flag.exists()) {
+        return;
+      }
+      _SVC.prefs.setBoolPref(APPDATA_NOTICE_SHOWN, true);
+      setNotice(
+        `无法读取原数据目录「${root.parent.path}/Firefox」（macOS 27 会拦截这个目录），已改用独立目录「${root.path}」并新建了配置。` +
+          "原目录没有被改动或删除；如需找回之前的书签和设置，请看项目文档 docs/macos-startup-diagnostics.md。"
+      );
+    } catch {
+      /* 非 macOS 或取不到数据目录：不提示 */
+    }
+  }, []);
 
   // 续看：mount/切线程时若该线程仍在后台跑，置 busy → 启动下面的轮询续看（引擎从未中断）。
   useEffect(() => {

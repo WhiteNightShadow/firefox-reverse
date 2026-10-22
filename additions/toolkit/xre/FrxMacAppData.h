@@ -118,27 +118,35 @@ inline nsresult ResolveMacAppData(nsIFile* legacy,
   const auto failure = rv == NS_ERROR_FILE_ACCESS_DENIED
                            ? AppDataFailure::AccessDenied
                            : AppDataFailure::Other;
-  bool existingPrivateProfile = false;
-  if (failure == AppDataFailure::AccessDenied) {
-    MOZ_TRY(PrivateProfileState(alternate, &existingPrivateProfile));
-  }
-  if (!CanUsePrivateAppData(failure, before == NS_ERROR_FILE_NOT_FOUND,
-                           existingPrivateProfile)) {
+  if (!CanUsePrivateAppData(failure)) {
     PR_fprintf(PR_STDERR,
                "Firefox Reverse: default macOS app-data directory unavailable "
-               "(0x%08x); no automatic empty-profile fallback. Preserve your "
+               "(0x%08x); no automatic fallback for this error. Preserve your "
                "data; use the read-only startup diagnostic.\n",
                static_cast<unsigned>(rv));
     return rv;
   }
-  // PrivateProfileState rejected unreadable/malformed registries above.
+  // Unreadable or malformed private registries are rejected, never replaced.
+  bool existingPrivateProfile = false;
+  MOZ_TRY(PrivateProfileState(alternate, &existingPrivateProfile));
   MOZ_TRY(CreateAppDataDirectory(alternate));
   rv = marker->Create(nsIFile::NORMAL_FILE_TYPE, 0600);
   NS_ENSURE_TRUE(NS_SUCCEEDED(rv) || rv == NS_ERROR_FILE_ALREADY_EXISTS, rv);
+  const bool notice = NeedsLegacyDataNotice(before == NS_ERROR_FILE_NOT_FOUND,
+                                            existingPrivateProfile);
+  if (notice) {
+    // Read by the browser UI to explain once that the old root was untouched.
+    nsCOMPtr<nsIFile> noticeFile;
+    if (NS_SUCCEEDED(AppDataChild(alternate, ".frx-appdata-notice-v1"_ns,
+                                  getter_AddRefs(noticeFile)))) {
+      (void)noticeFile->Create(nsIFile::NORMAL_FILE_TYPE, 0600);
+    }
+  }
   selected = alternate;
   PR_fprintf(PR_STDERR,
              "Firefox Reverse: using independent macOS app-data directory "
-             "FirefoxReverse; existing profiles are retained in place.\n");
+             "FirefoxReverse; existing profiles are retained in place%s.\n",
+             notice ? "; the unreadable Firefox root was left untouched" : "");
   return NS_OK;
 }
 
