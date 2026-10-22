@@ -216,6 +216,7 @@ def main():
             assert result["saved"] == "retained" and result["model"] == "fixture-model" and result["bookmarkRetained"] is True
             assert Path(result["localData"]) == owned / "cache/FirefoxReverse"
             assert (private / ".frx-appdata-v1").is_file()
+            assert not (private / ".frx-appdata-notice-v1").exists(), "Resuming an existing profile needs no notice"
             results.append(result)
             registry(denied, "other-legacy")
             result = run(app, owned, dylib, "sticky-restart", dedicated=True)
@@ -240,20 +241,38 @@ def main():
             result = run(app, blocked_ini, dylib, "registry-read-denied", deny=("file-read*", ini))
             assert Path(result["profile"]) == preserved and result["recoveryLogged"]
             assert ini.read_bytes() == before, "Denied legacy registry was rewritten"
+            assert not (blocked_ini / "support/FirefoxReverse/.frx-appdata-notice-v1").exists()
             results.append(result)
 
             fresh = fixture("fresh")
             result = run(app, fresh, dylib, "known-missing-create-denied", deny=("file-write-create", fresh / "support/Firefox"))
             assert Path(result["appData"]) == fresh / "support/FirefoxReverse" and result["recoveryLogged"]
+            assert not (fresh / "support/FirefoxReverse/.frx-appdata-notice-v1").exists(), "No old data can exist here"
             results.append(result)
 
-            for name, fault in (("disk-full", errno.ENOSPC), ("io-failure", errno.EIO), ("read-only", errno.EROFS), ("unknown-legacy", None), ("legacy-file", None), ("invalid-private", None), ("denied-explicit", None)):
+            # Unreadable existing Firefox root and no private profile: typically the
+            # official Firefox data on macOS 27. Start a new private profile, keep the
+            # old root untouched and leave a one-time notice for the browser UI.
+            unknown = fixture("unknown-legacy")
+            unknown_legacy = unknown / "support/Firefox"
+            unknown_legacy.mkdir()
+            (unknown_legacy / "retain.txt").write_text("legacy-data")
+            result = run(app, unknown, dylib, "unknown-legacy", deny=("file-read* file-write*", unknown_legacy), dedicated=True)
+            unknown_private = unknown / "support/FirefoxReverse"
+            assert Path(result["appData"]) == unknown_private and result["recoveryLogged"]
+            assert Path(result["profile"]).is_relative_to(unknown_private)
+            assert (unknown_private / ".frx-appdata-v1").is_file()
+            assert (unknown_private / ".frx-appdata-notice-v1").is_file()
+            assert (unknown_legacy / "retain.txt").read_text() == "legacy-data", "Unreadable legacy root was modified"
+            results.append(result)
+
+            for name, fault in (("disk-full", errno.ENOSPC), ("io-failure", errno.EIO), ("read-only", errno.EROFS), ("legacy-file", None), ("invalid-private", None), ("denied-explicit", None)):
                 folder = fixture(name)
                 legacy = folder / "support/Firefox"
                 alternate = folder / "support/FirefoxReverse"
                 deny = None
                 overrides = None
-                if name in ("unknown-legacy", "invalid-private", "denied-explicit"):
+                if name in ("invalid-private", "denied-explicit"):
                     legacy.mkdir()
                     deny = ("file-read* file-write*", legacy)
                 if name == "legacy-file":
@@ -267,7 +286,7 @@ def main():
                     deny = ("file-read* file-write*", legacy)
                 result = run(app, folder, dylib, name, deny=deny, overrides=overrides, fail=True, fault=fault)
                 assert not (alternate / ".frx-appdata-v1").exists() and not result["recoveryLogged"]
-                if name in ("disk-full", "io-failure", "read-only", "unknown-legacy", "legacy-file"):
+                if name in ("disk-full", "io-failure", "read-only", "legacy-file"):
                     assert not alternate.exists(), "Failure created an empty independent root"
                 if name == "legacy-file":
                     assert legacy.read_text() == "retain-file"
