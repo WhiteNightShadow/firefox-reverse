@@ -45,20 +45,25 @@ function makeStore() {
       return null;
     },
     renewThread(threadId, owner) {
-      const s = sessions.get(threadId);
-      if (!s) {
-        return false;
-      }
+      const s = getOrInit(threadId);
       const token = owner || "anon";
       if (!s.reservation) {
         s.reservation = { owner: token, ts: now() };
         return true;
       }
       if (s.reservation.owner !== token) {
-        return false;
+        if (now() - s.reservation.ts < RESERVE_TTL_MS) {
+          return false;
+        }
+        s.reservation = { owner: token, ts: now() };
+        return true;
       }
       s.reservation.ts = now();
       return true;
+    },
+    takeOverThread(threadId, owner) {
+      getOrInit(threadId).reservation = { owner: owner || "anon", ts: now() };
+      return threadId;
     },
     releaseThread(threadId, owner) {
       const s = sessions.get(threadId);
@@ -139,6 +144,27 @@ st = makeStore();
 st.acquireThread(["A"], "winA"); // A 被 winA 占
 const got = st.acquireThread(["A", "B"], "winB"); // A 被活占 → 取 B
 check("多候选跳过被占取下一个", got, "B");
+
+// 10) 只读查看方：持有窗口活着时续约失败（保持只读）；持有窗口失联过 TTL 后自动接手
+st = makeStore();
+st.acquireThread(["T"], "winA");
+check("持有窗口活着：只读方续约失败", st.renewThread("T", "winB"), false);
+st.advance(RESERVE_TTL_MS + 1);
+check("持有窗口失联：只读方续约即接手", st.renewThread("T", "winB"), true);
+check("接手后原持有窗口回来也不抢回", st.renewThread("T", "winA"), false);
+
+// 11) 「在此窗口接管」：用户明确接管 → 立即转给本窗口，原持有窗口下次续约失败转只读
+st = makeStore();
+st.acquireThread(["T"], "winA");
+st.takeOverThread("T", "winB");
+check("接管方续约成功", st.renewThread("T", "winB"), true);
+check("原持有窗口续约失败（转只读查看）", st.renewThread("T", "winA"), false);
+check("第三个窗口认领不到", st.acquireThread(["T"], "winC"), null);
+
+// 12) 续约尚无状态的线程（如刚新建）= 认领，不会误判成只读
+st = makeStore();
+check("续约新线程即认领", st.renewThread("NEW", "winA"), true);
+check("别窗口随后认领不到", st.acquireThread(["NEW"], "winB"), null);
 
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS");
 process.exit(fail ? 1 : 0);

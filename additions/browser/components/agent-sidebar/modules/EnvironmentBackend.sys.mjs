@@ -2346,7 +2346,8 @@ export class EnvironmentBackend {
       MOZ_FRX_FINGERPRINT_JSON: isNativeFingerprint(runtimeConfig.fingerprint) ? null : JSON.stringify(runtimeConfig.fingerprint),
       MOZ_FRX_PARENT_CONFIG_TOKEN: null,
       MOZ_FRX_PROXY_CONFIG: runtimeConfig.proxyPath,
-      MOZ_FRX_PROXY_JSON: JSON.stringify(runtimeConfig.proxy),
+      // 没有任何代码读取它，却会把代理用户名/密码明文带进子进程环境；null 同时清掉继承值。
+      MOZ_FRX_PROXY_JSON: null,
       MOZ_FRX_TRACE_DIR: env.traceDir,
       MOZ_FRX_CONTROL_DIR: env.controlDir,
       MOZ_WEBAPI_TRACE_FILE: PathUtils.join(env.traceDir, "webapi.ndjson"),
@@ -2439,7 +2440,8 @@ export class EnvironmentBackend {
       originalCommand: launch.originalCommand,
       originalArgs: launch.originalArgs,
       argv0: launch.argv0,
-      launchEnvironment: childEnv,
+      // 结果会进入工具输出和会话记录：只回显实际设置的变量，null（删除继承值）不回显。
+      launchEnvironment: Object.fromEntries(Object.entries(childEnv).filter(([, value]) => value != null)),
       environment: shortEnv(env),
     };
   }

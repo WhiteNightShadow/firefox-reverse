@@ -409,6 +409,15 @@ body {
   overflow-wrap: normal;
   word-break: normal;
 }
+/* 嵌套过深或解析失败的内容按纯文本显示 */
+.markdown-body pre.markdown-body__plain {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .markdown-body__table {
   max-width: 100%;
   overflow-x: auto;
@@ -614,7 +623,8 @@ body {
 }
 
 .agent-panel__notice,
-.agent-cancel-boundary {
+.agent-cancel-boundary,
+.agent-spectate {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -643,6 +653,19 @@ body {
   color: color-mix(in srgb, #b45309 72%, FieldText);
   background: color-mix(in srgb, #f59e0b 12%, transparent);
 }
+/* 会话被别的浏览器窗口占用：只读查看 + 接管按钮 */
+.agent-spectate {
+  color: color-mix(in srgb, #2563eb 70%, FieldText);
+  background: color-mix(in srgb, #3b82f6 10%, transparent);
+}
+.agent-spectate span { flex: 1; }
+.agent-spectate button {
+  flex: none;
+  font: inherit;
+  padding: 3px 10px;
+  border-radius: var(--frx-radius-sm);
+  cursor: pointer;
+}
 
 /* ──────────────────────────────────────────────────────────
    工具确认对话
@@ -664,6 +687,34 @@ body {
   font: inherit;
   padding: 5px 8px;
   border-radius: var(--frx-radius-sm);
+  cursor: pointer;
+}
+.agent-confirm__args {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--in-content-border-color, ThreeDShadow);
+  border-radius: var(--frx-radius-sm);
+  background: var(--in-content-box-background, Field);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: calc(11px * var(--frx-font-scale, 1));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 顶层渲染兜底：任何渲染异常都显示错误和重载入口，而不是整个侧栏白屏 */
+.agent-fatal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+.agent-fatal button {
+  align-self: flex-start;
+  font: inherit;
+  padding: 5px 12px;
   cursor: pointer;
 }
 

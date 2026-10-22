@@ -57,12 +57,58 @@ const components = {
   pre: ({ children }) => <pre tabIndex={0}>{children}</pre>,
 };
 
+// 引用/列表嵌套过深会让 Markdown 解析递归溢出；超过阈值直接按纯文本显示，不再尝试解析。
+const MAX_NESTING = 32;
+const NESTING_PREFIX = /^(?:[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t])))+/;
+const NESTING_MARK = />|[-*+]|\d{1,9}[.)]/g;
+
+export function tooDeeplyNested(text) {
+  for (const line of text.split("\n")) {
+    const prefix = NESTING_PREFIX.exec(line);
+    if (prefix && prefix[0].match(NESTING_MARK).length > MAX_NESTING) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function PlainText({ text }) {
+  return <pre className="markdown-body__plain">{text}</pre>;
+}
+
+// 解析或渲染抛错时退回纯文本，避免一条异常回复让整个侧栏白屏；文本变化后重新尝试。
+class MarkdownBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false, text: props.text };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  static getDerivedStateFromProps(props, state) {
+    return props.text === state.text ? null : { failed: false, text: props.text };
+  }
+
+  render() {
+    return this.state.failed ? <PlainText text={this.props.text} /> : this.props.children;
+  }
+}
+
 export default memo(function MarkdownContent({ children }) {
+  const text = typeof children === "string" ? children : String(children ?? "");
   return (
     <div className="markdown-body">
-      <ReactMarkdown remarkPlugins={plugins} components={components} urlTransform={markdownWebUrl}>
-        {typeof children === "string" ? children : String(children ?? "")}
-      </ReactMarkdown>
+      {tooDeeplyNested(text) ? (
+        <PlainText text={text} />
+      ) : (
+        <MarkdownBoundary text={text}>
+          <ReactMarkdown remarkPlugins={plugins} components={components} urlTransform={markdownWebUrl}>
+            {text}
+          </ReactMarkdown>
+        </MarkdownBoundary>
+      )}
     </div>
   );
 });

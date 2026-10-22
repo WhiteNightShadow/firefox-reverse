@@ -83,7 +83,7 @@ jobs:
         working-directory: additions/browser/components/agent-sidebar
         run: |
           set -e
-          npm ci || npm install
+          npm ci   # 严格按 lock 安装；失败就失败，不回退 npm install（会按 caret 重新解析、改写 lock）
           npm run build
           test -f content/agent-sidebar.bundle.js   # 确保产物存在，否则后面 jar 打包会失败
 

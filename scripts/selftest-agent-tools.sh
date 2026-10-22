@@ -42,6 +42,8 @@ SELFTESTS=(
   selftest-page-interaction.mjs
   selftest-thread-reservation.mjs
   selftest-workspace.mjs
+  selftest-scripts.mjs
+  selftest-jsvmp-backend.mjs
   selftest-environment.mjs
   selftest-native-fingerprint.mjs
   selftest-e2e.mjs

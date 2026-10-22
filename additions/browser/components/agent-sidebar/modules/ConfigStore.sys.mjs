@@ -205,7 +205,8 @@ export class ConfigStore {
     return { ...p };
   }
 
-  createModelProfile(input = {}) {
+  /** activate=false 只保存草稿、不切换当前配置（设置页新建时还没填 Key，保存后才激活）。 */
+  createModelProfile(input = {}, { activate = true } = {}) {
     const { profiles } = this._ensureProfiles();
     if (profiles.length >= MAX_MODEL_PROFILES) {
       throw new Error(`模型配置最多 ${MAX_MODEL_PROFILES} 条`);
@@ -220,8 +221,10 @@ export class ConfigStore {
     const p = normalizeProfile({ ...input, id: profileId(), name, createdAt: now, updatedAt: now });
     profiles.push(p);
     this._writeProfiles(profiles);
-    this.b.setString(ACTIVE_MODEL_PROFILE_KEY, p.id);
-    this._syncLegacy(p);
+    if (activate) {
+      this.b.setString(ACTIVE_MODEL_PROFILE_KEY, p.id);
+      this._syncLegacy(p);
+    }
     return { ...p };
   }
 

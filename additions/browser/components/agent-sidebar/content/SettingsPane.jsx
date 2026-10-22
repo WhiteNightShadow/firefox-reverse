@@ -105,9 +105,9 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         baseUrl: isCustom ? customUrl : "",
         protocol: isCustom ? customProtocol : "openai",
         reasoningEffort: isCustom ? customReasoningEffort : "auto",
-      });
+      }, { activate: false });
       refreshProfiles(p.id);
-      loadProfile(p, "已新建配置，请填写账号信息后保存");
+      loadProfile(p, "已新建配置，请填写账号信息后保存；保存后才会切换为当前配置");
     } catch (e) {
       setError((e && e.message) || String(e));
     }

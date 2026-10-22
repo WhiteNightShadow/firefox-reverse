@@ -36,6 +36,11 @@ function shortNameFromUrl(url) {
   }
   return withExt(base.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80));
 }
+// path 参数只是文件名：只取 basename，绝对路径/../ 都不能把文件写到落盘目录之外。
+function safeFileName(raw, fallback) {
+  const name = String(raw || "").split(/[\\/]/).pop();
+  return name && name !== "." && name !== ".." ? name : fallback;
+}
 
 export class ScriptsBackend {
   constructor({ page, workspace } = {}) {
@@ -158,13 +163,12 @@ export class ScriptsBackend {
         const dir = PathUtils.join(root, sub);
         await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
         const raw = path && !PathUtils.isAbsolute(path) ? path : shortNameFromUrl(url);
-        const fname = raw.split(/[\\/]/).pop() || "blob.bin";
+        const fname = safeFileName(raw, "blob.bin");
         out = PathUtils.join(dir, fname);
         rel = sub + "/" + fname;
       } else {
         const dir = await this.corpusDir();
-        const name = path || sanitize(url);
-        out = PathUtils.isAbsolute(name) ? name : PathUtils.join(dir, name);
+        out = PathUtils.join(dir, safeFileName(path, sanitize(url)));
         rel = out;
       }
       await IOUtils.write(out, bytes); // 原始字节写，不经文本编码
@@ -202,7 +206,7 @@ export class ScriptsBackend {
       await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
       // 默认用 URL 的 basename（短、可预测）；Agent 也可传 path 指定短名。只取 basename 防路径穿越。
       const raw = path && !PathUtils.isAbsolute(path) ? path : shortNameFromUrl(url);
-      const fname = raw.split(/[\\/]/).pop() || "script.js";
+      const fname = safeFileName(raw, "script.js");
       const out = PathUtils.join(dir, fname);
       // A4 产物完整性②：若目标已存在且**远大于**新内容（>10×）→ 默认拒绝覆盖（疑似用残片覆盖好文件）。
       if (!force) {
@@ -236,8 +240,7 @@ export class ScriptsBackend {
       };
     }
     const dir = await this.corpusDir();
-    const name = path || withExt(sanitize(url));
-    const out = PathUtils.isAbsolute(name) ? name : PathUtils.join(dir, name);
+    const out = PathUtils.join(dir, safeFileName(path, withExt(sanitize(url))));
     await IOUtils.writeUTF8(out, text);
     return { ok: true, url, path: out, bytes: text.length };
   }

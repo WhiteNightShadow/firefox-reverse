@@ -102,6 +102,31 @@ function App({ mods }) {
   );
 }
 
+// 顶层兜底：任何渲染异常都显示错误和重载入口，而不是整个侧栏白屏。
+class PanelErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  render() {
+    const { error } = this.state;
+    if (!error) {
+      return this.props.children;
+    }
+    return (
+      <div className="agent-fatal" role="alert">
+        <div>侧栏渲染出错：{String((error && error.message) || error)}</div>
+        <button type="button" onClick={() => location.reload()}>重新加载侧栏</button>
+      </div>
+    );
+  }
+}
+
 function main() {
   const rootEl = document.getElementById("root");
   let mods;
@@ -112,7 +137,11 @@ function main() {
     rootEl.textContent = e.message;
     return;
   }
-  createRoot(rootEl).render(<App mods={mods} />);
+  createRoot(rootEl).render(
+    <PanelErrorBoundary>
+      <App mods={mods} />
+    </PanelErrorBoundary>
+  );
 }
 
 main();
