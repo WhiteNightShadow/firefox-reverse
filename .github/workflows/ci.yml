@@ -1,0 +1,76 @@
+# Firefox-Reverse · push / PR 自动检查
+#
+# selftests：侧栏与 Agent 工具的离线自测、构建脚本单测（即本地的 scripts/selftest-agent-tools.sh）。
+# patch-pipeline：在锁定的 Firefox 基线上把 scripts/apply-patches.sh 整条流程跑两遍。第一遍必须全部
+#   打上；第二遍必须一个文件都不改（编译机复用同一棵源码树，每次发布都会重跑）。只稀疏检出补丁涉及的
+#   几十个文件（scripts/upstream-paths.py），不下载整个 Firefox 源码。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 与 release.yml / scripts/bootstrap.sh 的锁定基线一致
+  FIREFOX_REV: cebc55aab4d2661d1f6c2d1526362947ec4016c1
+
+jobs:
+  selftests:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 安装侧栏依赖
+        working-directory: additions/browser/components/agent-sidebar
+        run: npm ci
+      - name: Agent 工具与构建脚本自测
+        run: bash scripts/selftest-agent-tools.sh
+
+  patch-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 稀疏拉取锁定基线
+        run: |
+          set -euo pipefail
+          git init -q upstream
+          git -C upstream remote add origin https://github.com/mozilla-firefox/firefox.git
+          python3 scripts/upstream-paths.py | sed 's|^|/|' | git -C upstream sparse-checkout set --no-cone --stdin
+          git -C upstream fetch --depth 1 --filter=blob:none origin "$FIREFOX_REV"
+          git -C upstream checkout -q --detach FETCH_HEAD
+          test "$(git -C upstream rev-parse HEAD)" = "$FIREFOX_REV"
+      - name: 第一遍：应用全部补丁
+        run: UPSTREAM_DIR=upstream bash scripts/apply-patches.sh
+      - name: 第二遍：必须没有任何改动
+        run: |
+          set -euo pipefail
+          marker="$RUNNER_TEMP/second-pass"
+          touch "$marker"
+          sleep 1
+          UPSTREAM_DIR=upstream bash scripts/apply-patches.sh
+          changed=$(find upstream -path upstream/.git -prune -o -type f -newer "$marker" -print)
+          if [[ -n "$changed" ]]; then
+            echo "::error::第二遍改动了源码树（编译机每次发布都会因此多编）："
+            echo "$changed"
+            exit 1
+          fi
+      - name: 锁定基线上的启动期补丁检查
+        run: |
+          python3 scripts/tests/test-profile-recovery.py upstream
+          python3 scripts/tests/test-macos-appdata.py upstream

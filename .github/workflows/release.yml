@@ -65,7 +65,7 @@ jobs:
         include:
           - arch: arm64
             asset_arch: arm64
-            mozconfig: mozconfig.mac
+            mozconfig: configs/mozconfig.macos-arm64
             objdir: obj-aarch64-apple-darwin
             file_marker: arm64
           - arch: x86_64
@@ -79,44 +79,34 @@ jobs:
       - name: Checkout 补丁集
         uses: actions/checkout@v4
 
-      - name: 构建侧栏前端 bundle（bundle 是构建产物、未入库，CI 现编）
-        working-directory: additions/browser/components/agent-sidebar
-        run: |
-          set -e
-          npm ci   # 严格按 lock 安装；失败就失败，不回退 npm install（会按 caret 重新解析、改写 lock）
-          npm run build
-          test -f content/agent-sidebar.bundle.js   # 确保产物存在，否则后面 jar 打包会失败
-
-      - name: 校验锁定 Firefox 基线与 Agent 父级注册
+      - name: 校验锁定 Firefox 基线与 mozconfig
         run: |
           set -e
           test "$(git -C "$UPSTREAM" rev-parse HEAD)" = "$FIREFOX_REV"
-          grep -Fq '"agent-sidebar"' "$UPSTREAM/browser/components/moz.build"
-          # A cached source tree must contain the native startup change too;
-          # copying sidebar modules alone must not produce a misleading release.
-          git -C "$UPSTREAM" apply --reverse --check \
-            "$GITHUB_WORKSPACE/patches/agent-ui/0005-offer-profile-manager-for-missing-default.patch"
-          git -C "$UPSTREAM" apply --reverse --check \
-            "$GITHUB_WORKSPACE/patches/agent-ui/0006-macos-private-appdata-recovery.patch"
+          # mozconfig 以仓库为准。编译机源码树里以前未入库的 mozconfig.mac 若还在，必须与仓库版本一致，
+          # 否则停下，免得换成仓库配置后悄悄改了编译选项。核对后可删掉编译机上的旧文件。
+          legacy="$UPSTREAM/mozconfig.mac"
+          if [[ "${{ matrix.arch }}" == arm64 && -f "$legacy" ]]; then
+            normalize() { sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$' || true; }
+            if ! diff <(normalize "$legacy") <(normalize "${{ matrix.mozconfig }}"); then
+              echo "::error::编译机上的 mozconfig.mac 与仓库 ${{ matrix.mozconfig }} 不一致，先把差异同步进仓库"
+              exit 1
+            fi
+          fi
 
-      - name: 同步全部 additions 到源码树（复用已 bootstrap 的树，增量编）
+      - name: 应用补丁集（可重复执行：已打的补丁跳过，侧栏 bundle 现编，additions 增量同步并清理已删除的文件）
         run: |
           set -e
-          rsync -a \
-            --exclude node_modules --exclude dev --exclude README.md \
-            --exclude '*.jsx' --exclude 'package*.json' --exclude .gitignore \
-            "$GITHUB_WORKSPACE/additions/" "$UPSTREAM/"
+          UPSTREAM_DIR="$UPSTREAM" ./scripts/apply-patches.sh
+          grep -Fq '"agent-sidebar"' "$UPSTREAM/browser/components/moz.build"
+          test -f "$UPSTREAM/browser/components/agent-sidebar/content/agent-sidebar.bundle.js"
           node "$GITHUB_WORKSPACE/scripts/check-branding-assets.mjs" "$UPSTREAM"
 
       - name: mach build + package（${{ matrix.arch }}）
         working-directory: ${{ env.UPSTREAM }}
         run: |
           set -e
-          if [[ "${{ matrix.mozconfig }}" = configs/* ]]; then
-            export MOZCONFIG="$GITHUB_WORKSPACE/${{ matrix.mozconfig }}"
-          else
-            export MOZCONFIG="${{ matrix.mozconfig }}"
-          fi
+          export MOZCONFIG="$GITHUB_WORKSPACE/${{ matrix.mozconfig }}"
           export MOZ_BUILD_DATE="$(date -u +%Y%m%d%H%M%S)"
           ./mach configure --with-branding=browser/branding/unofficial
           python3 "$GITHUB_WORKSPACE/scripts/verify-branding.py" --objdir "$UPSTREAM/${{ matrix.objdir }}"
@@ -186,17 +176,14 @@ jobs:
           git -C upstream fetch --depth 1 origin "$FIREFOX_REV"
           git -C upstream checkout --detach FETCH_HEAD
           test "$(git -C upstream rev-parse HEAD)" = "$FIREFOX_REV"
-      - name: 应用 additions
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 应用补丁集（与 mac 发布、CI 同一入口）
         shell: bash
         run: |
           set -e
-          for module in agent-ui branding; do
-            for patch in firefox-reverse/patches/$module/*.patch; do
-              git -C upstream apply --index "$GITHUB_WORKSPACE/$patch"
-            done
-          done
-          cp -R firefox-reverse/additions/. upstream/
-          python firefox-reverse/scripts/apply-fingerprint-config.py upstream
+          UPSTREAM_DIR=upstream PYTHON=python bash firefox-reverse/scripts/apply-patches.sh
           node firefox-reverse/scripts/check-branding-assets.mjs upstream
       - name: bootstrap + build + package
         shell: bash

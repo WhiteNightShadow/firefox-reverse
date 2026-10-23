@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# 按 patches/README.md 顺序应用所有补丁，并把 additions/ 下的新文件 copy 到 upstream/。
+# 按 patches/README.md 顺序应用所有补丁，把 additions/ 同步到 upstream/，再跑源码补丁器。
+# 可重复执行：已应用的 git 补丁跳过；additions 只复制有变化的文件并清掉已删除的；Python 补丁器幂等。
+# 本地、CI 和编译机的长期源码树都用这一个入口，保证三处打出来的源码一致。
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPSTREAM_DIR="${UPSTREAM_DIR:-$REPO_ROOT/upstream}"
+SIDEBAR_DIR="$REPO_ROOT/additions/browser/components/agent-sidebar"
+PYTHON="${PYTHON:-python3}"
 
 # 应用顺序（见 patches/README.md）
 MODULES=(
@@ -23,6 +27,7 @@ if [[ ! -d "$UPSTREAM_DIR" ]]; then
   exit 1
 fi
 
+UPSTREAM_DIR="$(cd "$UPSTREAM_DIR" && pwd)"
 cd "$UPSTREAM_DIR"
 
 for module in "${MODULES[@]}"; do
@@ -34,24 +39,36 @@ for module in "${MODULES[@]}"; do
       echo "[apply-patches] $module: 无 .patch 文件，跳过"
       continue
     fi
-    echo "[apply-patches] $module: applying ${#files[@]} patches"
+    echo "[apply-patches] $module: ${#files[@]} patches"
     for p in "${files[@]}"; do
+      # 能整体反向应用 = 已经打过，跳过；否则正向应用。两者都不行说明源码树和补丁对不上，直接失败。
+      if git apply --reverse --check "$p" >/dev/null 2>&1; then
+        echo "  [skip] $(basename "$p") (already applied)"
+        continue
+      fi
       git apply --index "$p"
+      echo "  [done] $(basename "$p")"
     done
   fi
 done
 
-# 拷贝 additions/
-if [[ -d "$REPO_ROOT/additions" ]]; then
-  if [[ -n "$(find "$REPO_ROOT/additions" -mindepth 1 -not -name 'README.md' -print -quit 2>/dev/null)" ]]; then
-    echo "[apply-patches] copying additions/ to $UPSTREAM_DIR"
-    # 排除 agent-sidebar 的前端开发文件（Firefox 构建只需 bundle/html/css + .sys.mjs）
-    rsync -a --exclude README.md --exclude node_modules --exclude dev \
-      --exclude '*.jsx' --exclude 'package*.json' --exclude .gitignore \
-      "$REPO_ROOT/additions/" "$UPSTREAM_DIR/"
-  fi
+if [[ -d "$SIDEBAR_DIR" ]]; then
+  # 侧栏 bundle 和生成的 PageAccessibility.sys.mjs 不入库：每次现编，避免把旧 bundle 打进安装包。
+  # 依赖缺失或 package-lock.json 比已装依赖新时才 npm ci。
+  (
+    cd "$SIDEBAR_DIR"
+    if [[ ! -f node_modules/.package-lock.json || package-lock.json -nt node_modules/.package-lock.json ]]; then
+      npm ci
+    fi
+    npm run build
+    test -f content/agent-sidebar.bundle.js
+  )
 fi
 
-python3 "$REPO_ROOT/scripts/apply-fingerprint-config.py" "$UPSTREAM_DIR"
+# 同步 additions/（前端开发文件、文档等由 sync-additions.py 的默认排除规则过滤）
+"$PYTHON" "$REPO_ROOT/scripts/sync-additions.py" "$REPO_ROOT/additions" "$UPSTREAM_DIR"
+
+"$PYTHON" "$REPO_ROOT/scripts/apply-fingerprint-config.py" "$UPSTREAM_DIR"
+"$PYTHON" "$REPO_ROOT/scripts/apply-phase-b.py" "$UPSTREAM_DIR"
 
 echo "[apply-patches] done."
