@@ -55,15 +55,22 @@ export function nativeFingerprintDefaults(config, audioSeed) {
   return next;
 }
 
-export function validateNativeFingerprint(config, { installedFonts } = {}) {
-  if (!isNativeFingerprint(config)) {
-    if (config?.consistency && config.consistency.mode !== "legacy") throw new Error("unsupported fingerprint consistency mode");
-    return;
-  }
-  if (config.consistency.version !== 1) throw new Error("unsupported fingerprint consistency version");
+// Mirrors the hard checks in FrxFingerprintConfig.cpp LoadConfig for every mode.
+// A config failing them loads as Invalid: every override is dropped silently and
+// navigator.webdriver falls back to true under Marionette.
+export function validateFingerprintContract(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("fingerprint configuration must be a JSON object");
   if (new TextEncoder().encode(JSON.stringify(config)).length > 1024 * 1024) throw new Error("fingerprint configuration exceeds 1 MiB");
-  if (typeof config.enabled !== "boolean") throw new Error("fingerprint.enabled must be boolean");
-  if (!config.enabled) return;
+  if (typeof config.enabled !== "boolean") throw new Error("fingerprint.enabled must be boolean (write the complete configuration, not a partial one)");
+  if (!config.enabled || config.consistency === undefined) return;
+  const policy = config.consistency;
+  if (!policy || typeof policy !== "object" || Array.isArray(policy) || ![NATIVE_CONSISTENCY_MODE, "legacy"].includes(policy.mode)) throw new Error("unsupported fingerprint consistency mode");
+  if (policy.version !== 1) throw new Error("unsupported fingerprint consistency version");
+}
+
+export function validateNativeFingerprint(config, { installedFonts } = {}) {
+  validateFingerprintContract(config);
+  if (!isNativeFingerprint(config) || !config.enabled) return;
   if (active(config.protection, "resistFingerprinting", false) || active(config.protection, "fingerprintingProtection", false)) throw new Error("RFP/FPP cannot be combined with native-consistent overrides");
   for (const group of ["navigator", "screen", "window", "webgl", "canvas", "audio", "fonts", "http", "intl"]) {
     const value = config[group];

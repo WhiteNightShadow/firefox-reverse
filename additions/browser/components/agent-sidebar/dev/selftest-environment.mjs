@@ -26,6 +26,9 @@ globalThis.IOUtils = {
   async readJSON(p) {
     return JSON.parse(await fs.readFile(p, "utf8"));
   },
+  async readUTF8(p) {
+    return fs.readFile(p, "utf8");
+  },
   async writeJSON(p, data) {
     await fs.mkdir(path.dirname(p), { recursive: true });
     await fs.writeFile(p, JSON.stringify(data, null, 2));
@@ -517,6 +520,86 @@ try {
   assert.equal(failedStatus.environment.runtime.marionetteStatus, "process-exited");
   assert.equal(failedStatus.environment.runtime.stopReason, "process-exited-before-marionette");
   Services.appinfo.OS = "Darwin";
+
+  // ── 指纹静默失效：与 C++ 硬约束一致、native TLS 复位、关闭覆盖仍隐藏 webdriver、主浏览器代理不被改写 ──
+  const contractBase = (await backend.readConfig({ id, type: "fingerprint" })).config;
+  await assert.rejects(
+    backend.writeConfig({ id, config: { intl: { enabled: true, locale: { enabled: true, value: "zh-CN" } } } }),
+    /enabled must be boolean/
+  );
+  const badPolicy = structuredClone(contractBase);
+  badPolicy.consistency = { mode: "legacy" };
+  await assert.rejects(backend.writeConfig({ id, config: badPolicy }), /consistency version/);
+
+  const nativeTls = structuredClone(contractBase);
+  nativeTls.tls = { enabled: true, zeroRtt: false, echGrease: true };
+  const nativeTlsPrefs = backend._fingerprintUserPrefs(nativeTls).join("\n");
+  assert.match(nativeTlsPrefs, /user_pref\("security.tls.enable_0rtt_data", true\)/);
+  assert.match(nativeTlsPrefs, /user_pref\("network.http.http3.enable_0rtt", true\)/);
+  assert.match(nativeTlsPrefs, /user_pref\("security.tls.grease_http3_enable", false\)/);
+  const legacyTls = structuredClone(contractBase);
+  legacyTls.consistency = { mode: "legacy", version: 1 };
+  legacyTls.tls = { echGrease: true };
+  const legacyTlsPrefs = backend._fingerprintUserPrefs(legacyTls).join("\n");
+  assert.match(legacyTlsPrefs, /user_pref\("security.tls.ech.grease_http3", true\)/);
+  assert.match(legacyTlsPrefs, /user_pref\("security.tls.grease_http3_enable", false\)/);
+  legacyTls.tls.http3Grease = true;
+  assert.match(backend._fingerprintUserPrefs(legacyTls).join("\n"), /user_pref\("security.tls.grease_http3_enable", true\)/);
+
+  const disabledFp = structuredClone(contractBase);
+  disabledFp.enabled = false;
+  await backend.writeConfig({ id, config: disabledFp });
+  const disabledEnv = await backend._loadEnv(id);
+  const disabledRuntime = await backend._syncProfileRuntimeConfig(disabledEnv);
+  const hiddenWebdriver = { enabled: true, navigator: { webdriver: { enabled: true, value: false } } };
+  assert.deepEqual(disabledRuntime.engineFingerprint, hiddenWebdriver);
+  assert.equal(disabledRuntime.fingerprint.enabled, false);
+  assert.deepEqual(JSON.parse(await fs.readFile(disabledRuntime.fingerprintPath, "utf8")), hiddenWebdriver);
+  const disabledUserJs = backend._profileUserJs(disabledEnv, 2900, disabledRuntime);
+  const enginePref = disabledUserJs.match(/user_pref\("frx.fingerprint.config.json", (".*")\);/);
+  assert.deepEqual(JSON.parse(JSON.parse(enginePref[1])), hiddenWebdriver);
+  assert.doesNotMatch(disabledUserJs, /media\.peerconnection\.ice\.no_host/, "disabled overrides must not add WebRTC prefs");
+  await backend.writeConfig({ id, config: contractBase });
+
+  const mainProfile = path.join(root, "main-profile");
+  await fs.mkdir(mainProfile, { recursive: true });
+  await fs.writeFile(path.join(mainProfile, "user.js"), [
+    'user_pref("network.proxy.type", 5);',
+    "// >>> Firefox Reverse current-process fingerprint prefs",
+    'user_pref("network.proxy.no_proxies_on", "localhost,127.0.0.1,::1");',
+    'user_pref("network.proxy.type", 0);',
+    "// <<< Firefox Reverse current-process fingerprint prefs",
+    "",
+  ].join("\n"));
+  const clearedPrefs = [];
+  const savedPrefs0 = { ...Services.prefs };
+  Object.assign(Services.prefs, {
+    prefHasUserValue: () => true,
+    clearUserPref: name => clearedPrefs.push(name),
+    setStringPref() {},
+    setBoolPref() {},
+    getBoolPref: (_name, fallback) => fallback,
+  });
+  globalThis.Ci = { nsIFile: {} };
+  Services.dirsvc.get = () => ({ path: mainProfile });
+  try {
+    const mainFp = (await backend.readCurrentProcessConfig({ type: "fingerprint" })).config;
+    mainFp.enabled = true;
+    await backend.writeCurrentProcessConfig({ type: "fingerprint", config: mainFp });
+    const mainUserJs = await fs.readFile(path.join(mainProfile, "user.js"), "utf8");
+    assert.equal(mainUserJs.match(/network\.proxy\.type/g).length, 1, "only the user's own proxy line remains");
+    assert.match(mainUserJs, /user_pref\("network.proxy.type", 5\);/);
+    assert.ok(clearedPrefs.includes("network.proxy.type") && clearedPrefs.includes("network.proxy.no_proxies_on"), "stale direct-proxy prefs from the old block are cleared");
+  } finally {
+    Services.dirsvc.get = () => { throw new Error("dirsvc unavailable in selftest"); };
+    delete globalThis.Ci;
+    for (const key of Object.keys(Services.prefs)) {
+      if (!(key in savedPrefs0)) {
+        delete Services.prefs[key];
+      }
+    }
+    Object.assign(Services.prefs, savedPrefs0);
+  }
 
   await backend.delete({ id, confirm: true });
   await backend.delete({ id: importedEnv.id, confirm: true });

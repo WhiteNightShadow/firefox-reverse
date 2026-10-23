@@ -55,6 +55,19 @@ const AUTOMATION_STEALTH_PREFS = {
   "media.navigator.permission.disabled": false,
   "media.navigator.streams.fake": false,
 };
+// Firefox 153 出厂值；运行时优先读默认分支，读不到才用这里的值。
+const FIREFOX_TLS_DEFAULTS = {
+  "security.tls.version.min": 3,
+  "security.tls.version.max": 4,
+  "network.http.http3.enable": true,
+  "network.http.http3.enable_0rtt": true,
+  "security.tls.enable_0rtt_data": true,
+  "security.ssl.enable_alpn": true,
+  "security.tls.ech.grease_probability": 100,
+  "security.tls.ech.grease_http3": true,
+  "security.tls.grease_http3_enable": false,
+  "security.tls.enable_kyber": true,
+};
 let timerModuleCache;
 
 function nowISO() {
@@ -1278,6 +1291,11 @@ export class EnvironmentBackend {
         defaults[key] = safe(() => typeof value === "boolean" ? branch.getBoolPref(key) : typeof value === "number" ? branch.getIntPref(key) : branch.getStringPref(key), value);
       }
       for (const [key, value] of Object.entries(nativeRenderingPrefs(renderingConfig, defaults))) pushUserPref(lines, key, value);
+      // 原生一致：TLS/QUIC 握手保持 Firefox 出厂值，否则和 Firefox UA 对不上。写复位值而不是不写：
+      // 旧版本写进 prefs.js 的偏离值（关 0-RTT、开 QUIC GREASE）只删 user.js 行不会失效。
+      for (const [key, fallback] of Object.entries(FIREFOX_TLS_DEFAULTS)) {
+        pushUserPref(lines, key, safe(() => (typeof fallback === "boolean" ? branch.getBoolPref(key) : branch.getIntPref(key)), fallback));
+      }
     }
     if (!fingerprint || fingerprint.enabled === false) {
       return lines;
@@ -1325,7 +1343,7 @@ export class EnvironmentBackend {
     }
 
     const tls = fingerprint.tls || {};
-    if (tls.enabled !== false) {
+    if (!native && tls.enabled !== false) {
       pushUserPref(lines, "security.tls.version.min", configInt(tls, "minVersion", 1, 4, 3));
       pushUserPref(lines, "security.tls.version.max", configInt(tls, "maxVersion", 1, 4, 4));
       pushUserPref(lines, "network.http.http3.enable", configBool(tls, "http3", true));
@@ -1334,7 +1352,8 @@ export class EnvironmentBackend {
       pushUserPref(lines, "security.ssl.enable_alpn", configBool(tls, "alpn", true));
       pushUserPref(lines, "security.tls.ech.grease_probability", configInt(tls, "echGreaseProbability", 0, 100, 100));
       pushUserPref(lines, "security.tls.ech.grease_http3", configBool(tls, "echGrease", true));
-      pushUserPref(lines, "security.tls.grease_http3_enable", configBool(tls, "echGrease", true));
+      // QUIC 传输层 GREASE 与 ECH GREASE 是两回事，单独开关，默认同 Firefox（关）。
+      pushUserPref(lines, "security.tls.grease_http3_enable", configBool(tls, "http3Grease", false));
       pushUserPref(lines, "security.tls.enable_kyber", configBool(tls, "kyber", true));
     }
 
@@ -1472,7 +1491,8 @@ export class EnvironmentBackend {
     pushUserPrefs(lines, AUTOMATION_STEALTH_PREFS);
     if (p) {
       lines.push(`user_pref("frx.fingerprint.config.path", ${JSON.stringify(p.runtimeFingerprintPath)});`);
-      lines.push(`user_pref("frx.fingerprint.config.json", ${JSON.stringify(isNativeFingerprint(runtimeConfig.fingerprint) ? "" : JSON.stringify(runtimeConfig.fingerprint || {}))});`);
+      const engineFingerprint = runtimeConfig.engineFingerprint || this._engineFingerprint(runtimeConfig.fingerprint);
+      lines.push(`user_pref("frx.fingerprint.config.json", ${JSON.stringify(isNativeFingerprint(engineFingerprint) ? "" : JSON.stringify(engineFingerprint || {}))});`);
       lines.push(`user_pref("frx.proxy.config.path", ${JSON.stringify(p.runtimeProxyPath)});`);
       lines.push(`user_pref("frx.environment.id", ${JSON.stringify(env.id)});`);
       lines.push(`user_pref("frx.environment.name", ${JSON.stringify(envDisplayName(env))});`);
@@ -1498,19 +1518,29 @@ export class EnvironmentBackend {
     });
   }
 
+  // 环境总以 -marionette 启动：指纹覆盖关闭时 C++ 不接管 navigator.webdriver，会回落成 true 暴露自动化。
+  // 交给引擎的配置在关闭时只保留"隐藏 webdriver"，其余仍是原生——和 AUTOMATION_STEALTH_PREFS 一样属于自动化隐藏。
+  _engineFingerprint(fingerprint) {
+    return fingerprint && fingerprint.enabled === false
+      ? { enabled: true, navigator: { webdriver: field(false) } }
+      : fingerprint;
+  }
+
   async _syncProfileRuntimeConfig(env) {
     const p = this._paths(env.id);
     await IOUtils.makeDirectory(p.profileFrxDir, { ignoreExisting: true, createAncestors: true });
     const fingerprint = await this._readJSON(env.fingerprintPath, null);
     if (!fingerprint || typeof fingerprint !== "object" || Array.isArray(fingerprint)) throw new Error("environment fingerprint configuration is missing or invalid");
     this._validateFingerprint(fingerprint);
+    const engineFingerprint = this._engineFingerprint(fingerprint);
     const proxy = await this._readJSON(env.proxyPath, this._defaultProxy());
-    await this._writeJSON(p.runtimeFingerprintPath, fingerprint);
+    await this._writeJSON(p.runtimeFingerprintPath, engineFingerprint);
     await this._writeJSON(p.runtimeProxyPath, proxy);
     return {
       fingerprintPath: p.runtimeFingerprintPath,
       proxyPath: p.runtimeProxyPath,
       fingerprint,
+      engineFingerprint,
       proxy,
     };
   }
@@ -1548,7 +1578,9 @@ export class EnvironmentBackend {
       `user_pref("frx.proxy.config.path", ${JSON.stringify(p.runtimeProxyPath || p.proxyPath)});`,
       `user_pref("frx.current_process.fingerprint.enabled", true);`,
       ...this._fingerprintUserPrefs(fingerprint || {}, nativeRenderingManaged),
-      ...this._proxyUserPrefs(proxy || {}, fingerprint || {}),
+      // 主浏览器只在明确启用代理时才写代理 pref；否则保留用户自己的代理设置（Firefox 默认跟随系统），
+      // 不能因为只改了时区就把主浏览器改成直连。
+      ...(proxy && proxy.enabled === true ? this._proxyUserPrefs(proxy, fingerprint || {}) : []),
     ];
     const names = userPrefNames(prefLines);
     let oldText = "";
@@ -1557,10 +1589,18 @@ export class EnvironmentBackend {
     } catch {
       oldText = "";
     }
-    oldText = oldText.replace(
-      new RegExp(`${USERJS_BLOCK_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${USERJS_BLOCK_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`, "g"),
-      ""
-    );
+    const blockRe = new RegExp(`${USERJS_BLOCK_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${USERJS_BLOCK_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`, "g");
+    // 上一版托管块写过、这一版不再写的 pref（如旧版本无条件写入的 network.proxy.type=0）：
+    // user.js 删行不会撤销 prefs.js 里已保存的值，需要显式清掉，回到默认值。
+    const dropped = new Set();
+    for (const match of oldText.matchAll(blockRe)) {
+      for (const name of userPrefNames(String(match[0]).split(/\r?\n/))) {
+        if (!names.has(name)) {
+          dropped.add(name);
+        }
+      }
+    }
+    oldText = oldText.replace(blockRe, "");
     const kept = oldText
       .split(/\r?\n/)
       .filter(line => {
@@ -1572,6 +1612,15 @@ export class EnvironmentBackend {
     const block = [USERJS_BLOCK_START, ...prefLines, USERJS_BLOCK_END].join("\n");
     const next = (kept ? kept + "\n\n" : "") + block + "\n";
     await IOUtils.writeUTF8(p.profileUserJsPath, next, { tmpPath: p.profileUserJsPath + ".tmp" });
+    for (const name of dropped) {
+      try {
+        if (Services.prefs.prefHasUserValue(name)) {
+          Services.prefs.clearUserPref(name);
+        }
+      } catch {
+        /* best effort */
+      }
+    }
     if (p.runtimeFingerprintPath) {
       await this._writeJSON(p.runtimeFingerprintPath, fingerprint || {});
     }
@@ -2343,7 +2392,7 @@ export class EnvironmentBackend {
       MOZ_FRX_ENVS_ROOT: this._root,
       MOZ_FRX_FINGERPRINT_CONFIG: runtimeConfig.fingerprintPath,
       // Subprocess null removes an inherited value; empty string is Invalid.
-      MOZ_FRX_FINGERPRINT_JSON: isNativeFingerprint(runtimeConfig.fingerprint) ? null : JSON.stringify(runtimeConfig.fingerprint),
+      MOZ_FRX_FINGERPRINT_JSON: isNativeFingerprint(runtimeConfig.engineFingerprint) ? null : JSON.stringify(runtimeConfig.engineFingerprint),
       MOZ_FRX_PARENT_CONFIG_TOKEN: null,
       MOZ_FRX_PROXY_CONFIG: runtimeConfig.proxyPath,
       // 没有任何代码读取它，却会把代理用户名/密码明文带进子进程环境；null 同时清掉继承值。
@@ -2615,7 +2664,6 @@ export class EnvironmentBackend {
       throw new Error("environment already exists; pass overwrite:true to replace its configs");
     }
     const importedBrowser = payload.fingerprint ? browserFamilyFromFingerprint(payload.fingerprint) : "firefox";
-    if (payload.fingerprint) this._validateFingerprint(payload.fingerprint);
     if (!exists && payload.fingerprint && importedBrowser !== "firefox") {
       throw new Error("new environments only accept Firefox fingerprint JSON; Chrome-like imports are no longer supported");
     }
@@ -2643,6 +2691,7 @@ export class EnvironmentBackend {
     ) {
       throw new Error("this environment only accepts Firefox fingerprint configuration");
     }
+    if (payload.fingerprint) this._validateFingerprint(payload.fingerprint);
 
     const ts = nowISO();
     if (payload.fingerprint) {

@@ -488,13 +488,17 @@ export function FingerprintForm({ fingerprint, setFingerprint }) {
         <CheckField label="WebRTC no_host" checked={fieldValue({ webrtc }, "webrtc", "noHost", true)} onChange={v => set("webrtc", "noHost", v)} />
         <CheckField label="mDNS hostnames" checked={fieldValue({ webrtc }, "webrtc", "obfuscateHostAddresses", true)} onChange={v => set("webrtc", "obfuscateHostAddresses", v)} />
 
-        <Field label="TLS min" type="number" value={fieldValue({ tls }, "tls", "minVersion", 3)} onChange={v => set("tls", "minVersion", v)} />
-        <Field label="TLS max" type="number" value={fieldValue({ tls }, "tls", "maxVersion", 4)} onChange={v => set("tls", "maxVersion", v)} />
-        <CheckField label="HTTP/3" checked={fieldValue({ tls }, "tls", "http3", true)} onChange={v => set("tls", "http3", v)} />
-        <CheckField label="ALPN" checked={fieldValue({ tls }, "tls", "alpn", true)} onChange={v => set("tls", "alpn", v)} />
-        <CheckField label="0-RTT" checked={fieldValue({ tls }, "tls", "zeroRtt", false)} onChange={v => set("tls", "zeroRtt", v)} />
-        <CheckField label="ECH GREASE" checked={fieldValue({ tls }, "tls", "echGrease", true)} onChange={v => set("tls", "echGrease", v)} />
-        <CheckField label="Kyber" checked={fieldValue({ tls }, "tls", "kyber", true)} onChange={v => set("tls", "kyber", v)} />
+        {/* 原生一致：TLS/QUIC 固定为 Firefox 出厂值（握手指纹要和 Firefox UA 对得上），不提供开关 */}
+        {!native && <>
+          <Field label="TLS min" type="number" value={fieldValue({ tls }, "tls", "minVersion", 3)} onChange={v => set("tls", "minVersion", v)} />
+          <Field label="TLS max" type="number" value={fieldValue({ tls }, "tls", "maxVersion", 4)} onChange={v => set("tls", "maxVersion", v)} />
+          <CheckField label="HTTP/3" checked={fieldValue({ tls }, "tls", "http3", true)} onChange={v => set("tls", "http3", v)} />
+          <CheckField label="ALPN" checked={fieldValue({ tls }, "tls", "alpn", true)} onChange={v => set("tls", "alpn", v)} />
+          <CheckField label="0-RTT" checked={fieldValue({ tls }, "tls", "zeroRtt", false)} onChange={v => set("tls", "zeroRtt", v)} />
+          <CheckField label="ECH GREASE" checked={fieldValue({ tls }, "tls", "echGrease", true)} onChange={v => set("tls", "echGrease", v)} />
+          <CheckField label="HTTP/3 GREASE" checked={fieldValue({ tls }, "tls", "http3Grease", false)} onChange={v => set("tls", "http3Grease", v)} />
+          <CheckField label="Kyber" checked={fieldValue({ tls }, "tls", "kyber", true)} onChange={v => set("tls", "kyber", v)} />
+        </>}
         {!native && <CheckField label="RFP" checked={fieldValue({ protection }, "protection", "resistFingerprinting", false)} onChange={v => set("protection", "resistFingerprinting", v)} />}
         {!native && <CheckField label="FPP" checked={fieldValue({ protection }, "protection", "fingerprintingProtection", false)} onChange={v => set("protection", "fingerprintingProtection", v)} />}
       </div>
