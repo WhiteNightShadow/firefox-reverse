@@ -36,6 +36,14 @@ function shortNameFromUrl(url) {
   }
   return withExt(base.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80));
 }
+// 只抓网页资源：file:/chrome:/resource:/moz-extension: 等本机或浏览器内部地址一律拒绝，
+// 否则特权 fetch 能把任意本地文件拷进语料目录（再经 code_search 进入模型上下文）。
+function assertWebUrl(url) {
+  if (!/^(https?|data|blob):/i.test(url)) {
+    throw new Error(`只能抓 http(s)、data:、blob: 网页资源，不接受「${String(url).split(":")[0]}:」地址；本地文件请用 fs_read。`);
+  }
+  return url;
+}
 // path 参数只是文件名：只取 basename，绝对路径/../ 都不能把文件写到落盘目录之外。
 function safeFileName(raw, fallback) {
   const name = String(raw || "").split(/[\\/]/).pop();
@@ -68,8 +76,8 @@ export class ScriptsBackend {
   /** 短名 → 完整 URL。Agent 常从 initiatorStack/scripts_list 拿到的是短名(如 index.Dy4x2G-f.js)，
    *  直接 fetch 短名会 "is not a valid URL"。这里按 basename 在**页面已加载脚本**里匹配回完整 URL。 */
   async _resolveUrl(url) {
-    if (/^(https?|data|blob|file|chrome|resource|moz-extension):/i.test(url)) {
-      return url; // 已是完整 URL/可 fetch 的协议
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+      return assertWebUrl(url); // 已是完整 URL：只放行网页资源协议
     }
     const base = String(url).split(/[\\/]/).pop();
     let urls = [];
@@ -88,7 +96,7 @@ export class ScriptsBackend {
     };
     const cands = urls.filter(u => baseOf(u) === base);
     if (cands.length === 1) {
-      return cands[0];
+      return assertWebUrl(cands[0]); // 页面本身是 file:// 时，匹配回来的也可能是本地地址
     }
     if (cands.length > 1) {
       throw new Error(
