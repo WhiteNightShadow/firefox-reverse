@@ -236,7 +236,7 @@ Agent 的推进遵循一条务实路线——**先拿到能用的，再追求吃
 # 1. 取得锁定的 Firefox 153.0a1 源码到 upstream/（首次）
 bash scripts/bootstrap.sh
 
-# 2. 应用本仓库的 additions（agent-sidebar + 引擎层 C++ 补丁）
+# 2. 应用补丁集：git 补丁、侧栏 bundle、additions 同步、指纹与 phase-b 源码补丁（可重复执行）
 bash scripts/apply-patches.sh
 
 # 3. 编译 + 打包
@@ -247,7 +247,7 @@ cd upstream && ./mach build && ./mach package
 - 指纹配置层：`additions/dom/base/FrxFingerprintConfig.*`、`NavigatorUAData.*` 及 `scripts/apply-fingerprint-config.py` 写入的 Gecko / Necko 接入点。
 - 引擎观测层：`additions/js/...` 的 SpiderMonkey trace 与 `additions/dom/bindings/...` 的 WebAPI trace。
 - 环境数据不写进仓库或构建目录，运行时默认落在 `~/.firefox-reverse/environments`。
-- 自动化构建脚本见 `.github/workflows/release.yml`。
+- 自动化构建脚本见 `.github/workflows/release.yml`，编译选项在 `configs/mozconfig.*`；push / PR 时 `.github/workflows/ci.yml` 跑自测，并在锁定基线上把补丁流程跑两遍。
 
 ---
 

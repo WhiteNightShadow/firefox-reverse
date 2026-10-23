@@ -9,6 +9,8 @@ const localeMozBuildPath = fileURLToPath(new URL("../preferences/moz.build", imp
 const fingerprintPatchPath = fileURLToPath(new URL("../../../../../scripts/apply-fingerprint-config.py", import.meta.url));
 const agentUiPatchPath = fileURLToPath(new URL("../../../../../patches/agent-ui/0001-register-agent-sidebar.patch", import.meta.url));
 const releaseWorkflowPath = fileURLToPath(new URL("../../../../../.github/workflows/release.yml", import.meta.url));
+const ciWorkflowPath = fileURLToPath(new URL("../../../../../.github/workflows/ci.yml", import.meta.url));
+const applyPatchesPath = fileURLToPath(new URL("../../../../../scripts/apply-patches.sh", import.meta.url));
 const bootstrapPath = fileURLToPath(new URL("../../../../../scripts/bootstrap.sh", import.meta.url));
 const buildRelinkPath = fileURLToPath(new URL("../../../../../scripts/force-build-id-relink.sh", import.meta.url));
 const source = fs.readFileSync(mozBuildPath, "utf8");
@@ -101,10 +103,48 @@ for (const expected of [
   "./mach configure",
   'scripts/force-build-id-relink.sh" "$UPSTREAM/${{ matrix.objdir }}"',
   'grep -F "SourceStamp=$MOZ_SOURCE_CHANGESET"',
-  "python firefox-reverse/scripts/apply-fingerprint-config.py upstream",
+  // 两条发布路径都走与 CI 相同的补丁流水线，mozconfig 都来自仓库
+  'UPSTREAM_DIR="$UPSTREAM" ./scripts/apply-patches.sh',
+  "UPSTREAM_DIR=upstream PYTHON=python bash firefox-reverse/scripts/apply-patches.sh",
+  "mozconfig: configs/mozconfig.macos-arm64",
+  "mozconfig: configs/mozconfig.macos-x64",
+  'export MOZCONFIG="$GITHUB_WORKSPACE/${{ matrix.mozconfig }}"',
 ]) {
   if (!releaseWorkflow.includes(expected)) {
     console.error(`FAIL: release workflow is not pinned/reproducible: ${expected}`);
+    process.exit(1);
+  }
+}
+for (const forbidden of ["rsync -a", "cp -R firefox-reverse/additions", "mozconfig: mozconfig.mac\n"]) {
+  if (releaseWorkflow.includes(forbidden)) {
+    console.error(`FAIL: release workflow bypasses the patch pipeline: ${JSON.stringify(forbidden)}`);
+    process.exit(1);
+  }
+}
+
+const applyPatches = fs.readFileSync(applyPatchesPath, "utf8");
+for (const expected of [
+  'git apply --reverse --check "$p"',
+  "scripts/sync-additions.py",
+  "scripts/apply-fingerprint-config.py",
+  "scripts/apply-phase-b.py",
+  "npm run build",
+]) {
+  if (!applyPatches.includes(expected)) {
+    console.error(`FAIL: apply-patches.sh is not the complete, repeatable pipeline: ${expected}`);
+    process.exit(1);
+  }
+}
+
+const ciWorkflow = fs.readFileSync(ciWorkflowPath, "utf8");
+for (const expected of [
+  "FIREFOX_REV: cebc55aab4d2661d1f6c2d1526362947ec4016c1",
+  "bash scripts/selftest-agent-tools.sh",
+  "UPSTREAM_DIR=upstream bash scripts/apply-patches.sh",
+  '-newer "$marker"',
+]) {
+  if (!ciWorkflow.includes(expected)) {
+    console.error(`FAIL: CI does not check the pinned patch pipeline: ${expected}`);
     process.exit(1);
   }
 }

@@ -6,7 +6,7 @@
 
 1. **`0001-use-firefox-reverse-app-icon.patch`** — 改 `browser/app/macbuild/Contents/Info.plist.in`，
    删掉 `CFBundleIconName`/`AppIcon` 两行。
-2. **`additions/browser/branding/unofficial/`** — 由仓库根目录 `logo.png` 生成的图标资源（rsync 覆盖上游同名文件）：
+2. **`additions/browser/branding/unofficial/`** — 由仓库根目录 `logo.png` 生成的图标资源（同步时覆盖上游同名文件，从 additions 删除后会还原上游版本）：
    - `firefox.icns`（app/dock 图标，含 16→1024 全尺寸）
    - `default16.png … default256.png`（窗口/关于页内嵌图标）
    - `firefox.ico` / `newtab.ico` / `newwindow.ico` / `pbmode.ico`（Windows 与标签页相关图标）

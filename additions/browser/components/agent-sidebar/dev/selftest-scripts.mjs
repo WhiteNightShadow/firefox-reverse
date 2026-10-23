@@ -82,5 +82,33 @@ ok(
   "所有写入都在落盘目录内"
 );
 
+// 只抓网页资源：本机文件和浏览器内部地址不能借 scripts_save 拷进语料目录
+const fetched = [];
+const realFetch = globalThis.fetch;
+globalThis.fetch = async url => {
+  fetched.push(url);
+  return realFetch(url);
+};
+for (const url of ["file:///etc/hosts", "chrome://browser/content/browser.xhtml", "resource://gre/modules/Timer.sys.mjs", "moz-extension://abc/x.js"]) {
+  let error = "";
+  try {
+    await backend.save({ url });
+  } catch (e) {
+    error = e.message;
+  }
+  ok(/只能抓 http\(s\)/.test(error), "拒绝 " + url.split(":")[0] + ": 地址");
+}
+const localPage = new ScriptsBackend({ page: { eval: async () => ({ value: ["file:///Users/someone/site/app.js"] }) } });
+let shortNameError = "";
+try {
+  await localPage.save({ url: "app.js" });
+} catch (e) {
+  shortNameError = e.message;
+}
+ok(/只能抓 http\(s\)/.test(shortNameError), "短名匹配回 file:// 地址同样拒绝");
+ok(fetched.length === 0, "被拒地址一次都没有发起 fetch");
+await backend.save({ url: "data:text/javascript,console.log(1)" });
+ok(fetched.length === 1, "data: 网页资源仍可保存");
+
 console.log(`\nScriptsBackend selftest: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -55,6 +55,19 @@ const AUTOMATION_STEALTH_PREFS = {
   "media.navigator.permission.disabled": false,
   "media.navigator.streams.fake": false,
 };
+// Firefox 153 出厂值；运行时优先读默认分支，读不到才用这里的值。
+const FIREFOX_TLS_DEFAULTS = {
+  "security.tls.version.min": 3,
+  "security.tls.version.max": 4,
+  "network.http.http3.enable": true,
+  "network.http.http3.enable_0rtt": true,
+  "security.tls.enable_0rtt_data": true,
+  "security.ssl.enable_alpn": true,
+  "security.tls.ech.grease_probability": 100,
+  "security.tls.ech.grease_http3": true,
+  "security.tls.grease_http3_enable": false,
+  "security.tls.enable_kyber": true,
+};
 let timerModuleCache;
 
 function nowISO() {
@@ -461,6 +474,118 @@ function processSlotLabel(port) {
   return "Firefox Reverse";
 }
 
+// 经环境自己的 Marionette 端口请求正常退出：浏览器会先落盘 cookie/localStorage/会话再退出，
+// 避免刚登录就关窗导致登录态丢失。帧格式 `<字节数>:<JSON>`。退出前核对会话的 moz:profile：
+// 记录过期、端口已被别的浏览器占用时不能让别人的浏览器退出。外部自动化正占着会话时 NewSession
+// 会失败。这些情况都返回 false，由调用方退回信号终止。
+async function marionetteQuit(port, { profileSuffix = "", timeoutMs = 5000 } = {}) {
+  const sts = Cc["@mozilla.org/network/socket-transport-service;1"].getService(Ci.nsISocketTransportService);
+  const transport = sts.createTransport([], "127.0.0.1", port, null, null);
+  const input = transport.openInputStream(0, 0, 0).QueryInterface(Ci.nsIAsyncInputStream);
+  const output = transport.openOutputStream(0, 0, 0).QueryInterface(Ci.nsIAsyncOutputStream);
+  const reader = Cc["@mozilla.org/binaryinputstream;1"].createInstance(Ci.nsIBinaryInputStream);
+  reader.setInputStream(input);
+  const writer = Cc["@mozilla.org/binaryoutputstream;1"].createInstance(Ci.nsIBinaryOutputStream);
+  writer.setOutputStream(output);
+  const thread = Services.tm.currentThread;
+  let pending = [];
+  const readMore = () =>
+    new Promise((resolve, reject) => {
+      input.asyncWait(
+        {
+          onInputStreamReady(stream) {
+            try {
+              const available = stream.available();
+              if (!available) {
+                reject(new Error("marionette connection closed"));
+                return;
+              }
+              pending = pending.concat(reader.readByteArray(available));
+              resolve();
+            } catch (e) {
+              reject(e);
+            }
+          },
+        },
+        0,
+        0,
+        thread
+      );
+    });
+  const readFrame = async () => {
+    for (;;) {
+      const colon = pending.indexOf(0x3a);
+      if (colon > 0) {
+        const length = Number(String.fromCharCode(...pending.slice(0, colon)));
+        if (pending.length >= colon + 1 + length) {
+          const body = new TextDecoder().decode(new Uint8Array(pending.slice(colon + 1, colon + 1 + length)));
+          pending = pending.slice(colon + 1 + length);
+          return JSON.parse(body);
+        }
+      }
+      await readMore();
+    }
+  };
+  let nextId = 0;
+  const command = async (name, params) => {
+    const id = ++nextId;
+    const body = new TextEncoder().encode(JSON.stringify([0, id, name, params]));
+    await new Promise(resolve => output.asyncWait({ onOutputStreamReady: () => resolve() }, 0, 0, thread));
+    writer.writeByteArray([...new TextEncoder().encode(body.length + ":"), ...body]);
+    for (;;) {
+      const message = await readFrame();
+      if (Array.isArray(message) && message[0] === 1 && message[1] === id) {
+        if (message[2]) {
+          throw new Error(`${name}: ${message[2].error || "failed"}`);
+        }
+        return message[3];
+      }
+    }
+  };
+  const job = (async () => {
+    await readFrame();
+    const session = await command("WebDriver:NewSession", {});
+    const profile = String(session?.capabilities?.["moz:profile"] || "").replace(/\\/g, "/").toLowerCase();
+    if (profileSuffix && !profile.endsWith(profileSuffix.toLowerCase())) {
+      await command("WebDriver:DeleteSession", {}).catch(() => {});
+      throw new Error("marionette port belongs to another browser");
+    }
+    try {
+      await command("Marionette:Quit", { flags: ["eForceQuit"] });
+    } catch (e) {
+      // 退出请求已发出、应答前连接就断了：浏览器已经在退出，不能再当失败去补发终止信号。
+      if (!/connection closed|NS_BASE_STREAM_CLOSED/.test(String(e?.message || e))) {
+        throw e;
+      }
+    }
+  })();
+  job.catch(() => {});
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = scheduleTimeout(() => reject(new Error("marionette quit timed out")), timeoutMs);
+  });
+  try {
+    await Promise.race([job, timeout]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    cancelTimeout(timer);
+    for (const stream of [input, output]) {
+      try {
+        stream.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    try {
+      transport.close(Cr.NS_OK);
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
 export class EnvironmentBackend {
   constructor(opts = {}) {
     this._root = opts.root || this._defaultRoot();
@@ -468,12 +593,31 @@ export class EnvironmentBackend {
     this._subprocess = opts.subprocess || null;
     this._portProbe = typeof opts.portProbe === "function" ? opts.portProbe : null;
     this._portReadyProbe = typeof opts.portReadyProbe === "function" ? opts.portReadyProbe : null;
+    this._marionetteQuit = typeof opts.marionetteQuit === "function" ? opts.marionetteQuit : null;
     this._startupTimeoutMs = Math.max(1, Number(opts.startupTimeoutMs) || DEFAULT_STARTUP_TIMEOUT_MS);
     this._startupPollMs = Math.max(1, Number(opts.startupPollMs) || DEFAULT_STARTUP_POLL_MS);
+    this._closeWaitMs = Math.max(1, Number(opts.closeWaitMs) || 15000);
     this._systemCommands = new Map();
     this._procs = new Map();
     this._procDrains = new Map();
     this._procOutputTails = new Map();
+    this._locks = new Map();
+    this._reservedPorts = new Set();
+  }
+
+  // 同一浏览器进程内，把同一资源（manifest、单个环境、环境启停、端口分配）的读改写串行化，
+  // 避免 UI、Agent 工具和 MCP 同时操作时互相覆盖。不同 key 之间可以嵌套，同一 key 不可重入。
+  _withLock(key, fn) {
+    const previous = this._locks.get(key) || Promise.resolve();
+    const run = previous.then(() => fn());
+    const tail = run.catch(() => {});
+    this._locks.set(key, tail);
+    void tail.then(() => {
+      if (this._locks.get(key) === tail) {
+        this._locks.delete(key);
+      }
+    });
+    return run;
   }
 
   get root() {
@@ -673,29 +817,42 @@ export class EnvironmentBackend {
     await this._writeJSON(this._manifestPath(), manifest);
   }
 
-  async _saveEnv(env) {
+  async _saveEnv(env, { create = false } = {}) {
+    await this._withLock(`env:${env.id}`, () => this._writeEnv(env, { create }));
+  }
+
+  async _writeEnv(env, { create = false } = {}) {
+    // 环境已被并发删除时不能再写回来（_writeJSON 会补建目录，留下只有 env.json 的僵尸环境）。
+    if (!create && !(await IOUtils.exists(this._paths(env.id).envPath))) {
+      throw new Error("environment not found: " + env.id);
+    }
     env.updatedAt = nowISO();
     await this._writeJSON(this._paths(env.id).envPath, env);
     await this._upsertManifest(env);
   }
 
   async _upsertManifest(env) {
-    const manifest = await this._loadManifest();
-    const summary = shortEnv(env);
-    const i = manifest.environments.findIndex(e => e.id === env.id);
-    if (i >= 0) {
-      manifest.environments[i] = summary;
-    } else {
-      manifest.environments.push(summary);
-    }
-    manifest.environments.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
-    await this._saveManifest(manifest);
+    await this._withLock("manifest", async () => {
+      const manifest = await this._loadManifest();
+      const summary = shortEnv(env);
+      const i = manifest.environments.findIndex(e => e.id === env.id);
+      if (i >= 0) {
+        manifest.environments[i] = summary;
+      } else {
+        manifest.environments.push(summary);
+      }
+      manifest.environments.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+      await this._saveManifest(manifest);
+    });
   }
 
-  async _removeFromManifest(id) {
-    const manifest = await this._loadManifest();
-    manifest.environments = manifest.environments.filter(e => e.id !== id);
-    await this._saveManifest(manifest);
+  async _removeFromManifest(ids) {
+    const drop = new Set([].concat(ids));
+    await this._withLock("manifest", async () => {
+      const manifest = await this._loadManifest();
+      manifest.environments = manifest.environments.filter(e => !drop.has(e.id));
+      await this._saveManifest(manifest);
+    });
   }
 
   _validateId(id) {
@@ -1278,6 +1435,11 @@ export class EnvironmentBackend {
         defaults[key] = safe(() => typeof value === "boolean" ? branch.getBoolPref(key) : typeof value === "number" ? branch.getIntPref(key) : branch.getStringPref(key), value);
       }
       for (const [key, value] of Object.entries(nativeRenderingPrefs(renderingConfig, defaults))) pushUserPref(lines, key, value);
+      // 原生一致：TLS/QUIC 握手保持 Firefox 出厂值，否则和 Firefox UA 对不上。写复位值而不是不写：
+      // 旧版本写进 prefs.js 的偏离值（关 0-RTT、开 QUIC GREASE）只删 user.js 行不会失效。
+      for (const [key, fallback] of Object.entries(FIREFOX_TLS_DEFAULTS)) {
+        pushUserPref(lines, key, safe(() => (typeof fallback === "boolean" ? branch.getBoolPref(key) : branch.getIntPref(key)), fallback));
+      }
     }
     if (!fingerprint || fingerprint.enabled === false) {
       return lines;
@@ -1325,7 +1487,7 @@ export class EnvironmentBackend {
     }
 
     const tls = fingerprint.tls || {};
-    if (tls.enabled !== false) {
+    if (!native && tls.enabled !== false) {
       pushUserPref(lines, "security.tls.version.min", configInt(tls, "minVersion", 1, 4, 3));
       pushUserPref(lines, "security.tls.version.max", configInt(tls, "maxVersion", 1, 4, 4));
       pushUserPref(lines, "network.http.http3.enable", configBool(tls, "http3", true));
@@ -1334,7 +1496,8 @@ export class EnvironmentBackend {
       pushUserPref(lines, "security.ssl.enable_alpn", configBool(tls, "alpn", true));
       pushUserPref(lines, "security.tls.ech.grease_probability", configInt(tls, "echGreaseProbability", 0, 100, 100));
       pushUserPref(lines, "security.tls.ech.grease_http3", configBool(tls, "echGrease", true));
-      pushUserPref(lines, "security.tls.grease_http3_enable", configBool(tls, "echGrease", true));
+      // QUIC 传输层 GREASE 与 ECH GREASE 是两回事，单独开关，默认同 Firefox（关）。
+      pushUserPref(lines, "security.tls.grease_http3_enable", configBool(tls, "http3Grease", false));
       pushUserPref(lines, "security.tls.enable_kyber", configBool(tls, "kyber", true));
     }
 
@@ -1472,7 +1635,8 @@ export class EnvironmentBackend {
     pushUserPrefs(lines, AUTOMATION_STEALTH_PREFS);
     if (p) {
       lines.push(`user_pref("frx.fingerprint.config.path", ${JSON.stringify(p.runtimeFingerprintPath)});`);
-      lines.push(`user_pref("frx.fingerprint.config.json", ${JSON.stringify(isNativeFingerprint(runtimeConfig.fingerprint) ? "" : JSON.stringify(runtimeConfig.fingerprint || {}))});`);
+      const engineFingerprint = runtimeConfig.engineFingerprint || this._engineFingerprint(runtimeConfig.fingerprint);
+      lines.push(`user_pref("frx.fingerprint.config.json", ${JSON.stringify(isNativeFingerprint(engineFingerprint) ? "" : JSON.stringify(engineFingerprint || {}))});`);
       lines.push(`user_pref("frx.proxy.config.path", ${JSON.stringify(p.runtimeProxyPath)});`);
       lines.push(`user_pref("frx.environment.id", ${JSON.stringify(env.id)});`);
       lines.push(`user_pref("frx.environment.name", ${JSON.stringify(envDisplayName(env))});`);
@@ -1498,19 +1662,29 @@ export class EnvironmentBackend {
     });
   }
 
+  // 环境总以 -marionette 启动：指纹覆盖关闭时 C++ 不接管 navigator.webdriver，会回落成 true 暴露自动化。
+  // 交给引擎的配置在关闭时只保留"隐藏 webdriver"，其余仍是原生——和 AUTOMATION_STEALTH_PREFS 一样属于自动化隐藏。
+  _engineFingerprint(fingerprint) {
+    return fingerprint && fingerprint.enabled === false
+      ? { enabled: true, navigator: { webdriver: field(false) } }
+      : fingerprint;
+  }
+
   async _syncProfileRuntimeConfig(env) {
     const p = this._paths(env.id);
     await IOUtils.makeDirectory(p.profileFrxDir, { ignoreExisting: true, createAncestors: true });
     const fingerprint = await this._readJSON(env.fingerprintPath, null);
     if (!fingerprint || typeof fingerprint !== "object" || Array.isArray(fingerprint)) throw new Error("environment fingerprint configuration is missing or invalid");
     this._validateFingerprint(fingerprint);
+    const engineFingerprint = this._engineFingerprint(fingerprint);
     const proxy = await this._readJSON(env.proxyPath, this._defaultProxy());
-    await this._writeJSON(p.runtimeFingerprintPath, fingerprint);
+    await this._writeJSON(p.runtimeFingerprintPath, engineFingerprint);
     await this._writeJSON(p.runtimeProxyPath, proxy);
     return {
       fingerprintPath: p.runtimeFingerprintPath,
       proxyPath: p.runtimeProxyPath,
       fingerprint,
+      engineFingerprint,
       proxy,
     };
   }
@@ -1548,7 +1722,9 @@ export class EnvironmentBackend {
       `user_pref("frx.proxy.config.path", ${JSON.stringify(p.runtimeProxyPath || p.proxyPath)});`,
       `user_pref("frx.current_process.fingerprint.enabled", true);`,
       ...this._fingerprintUserPrefs(fingerprint || {}, nativeRenderingManaged),
-      ...this._proxyUserPrefs(proxy || {}, fingerprint || {}),
+      // 主浏览器只在明确启用代理时才写代理 pref；否则保留用户自己的代理设置（Firefox 默认跟随系统），
+      // 不能因为只改了时区就把主浏览器改成直连。
+      ...(proxy && proxy.enabled === true ? this._proxyUserPrefs(proxy, fingerprint || {}) : []),
     ];
     const names = userPrefNames(prefLines);
     let oldText = "";
@@ -1557,10 +1733,18 @@ export class EnvironmentBackend {
     } catch {
       oldText = "";
     }
-    oldText = oldText.replace(
-      new RegExp(`${USERJS_BLOCK_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${USERJS_BLOCK_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`, "g"),
-      ""
-    );
+    const blockRe = new RegExp(`${USERJS_BLOCK_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${USERJS_BLOCK_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`, "g");
+    // 上一版托管块写过、这一版不再写的 pref（如旧版本无条件写入的 network.proxy.type=0）：
+    // user.js 删行不会撤销 prefs.js 里已保存的值，需要显式清掉，回到默认值。
+    const dropped = new Set();
+    for (const match of oldText.matchAll(blockRe)) {
+      for (const name of userPrefNames(String(match[0]).split(/\r?\n/))) {
+        if (!names.has(name)) {
+          dropped.add(name);
+        }
+      }
+    }
+    oldText = oldText.replace(blockRe, "");
     const kept = oldText
       .split(/\r?\n/)
       .filter(line => {
@@ -1572,6 +1756,15 @@ export class EnvironmentBackend {
     const block = [USERJS_BLOCK_START, ...prefLines, USERJS_BLOCK_END].join("\n");
     const next = (kept ? kept + "\n\n" : "") + block + "\n";
     await IOUtils.writeUTF8(p.profileUserJsPath, next, { tmpPath: p.profileUserJsPath + ".tmp" });
+    for (const name of dropped) {
+      try {
+        if (Services.prefs.prefHasUserValue(name)) {
+          Services.prefs.clearUserPref(name);
+        }
+      } catch {
+        /* best effort */
+      }
+    }
     if (p.runtimeFingerprintPath) {
       await this._writeJSON(p.runtimeFingerprintPath, fingerprint || {});
     }
@@ -1715,7 +1908,7 @@ export class EnvironmentBackend {
     const runtimeConfig = await this._syncProfileRuntimeConfig(env);
     await this._writeProfilePrefs(env, null, runtimeConfig);
     await this._writeJSON(p.runtimePath, env.runtime);
-    await this._saveEnv(env);
+    await this._saveEnv(env, { create: true });
     return { ok: true, environment: shortEnv(env) };
   }
 
@@ -1944,7 +2137,12 @@ export class EnvironmentBackend {
     return env;
   }
 
-  async update({ id, name } = {}) {
+  // 会写环境目录的操作与打开、关闭、删除互斥：删除递归清目录时不能有人同时往里写文件。
+  update(args = {}) {
+    return this._withLock(`lifecycle:${args.id}`, () => this._update(args));
+  }
+
+  async _update({ id, name } = {}) {
     if (!id) {
       throw new Error("id required");
     }
@@ -1996,7 +2194,7 @@ export class EnvironmentBackend {
       return env;
     }
     if (isRuntimeActive(rt) && rt.pid) {
-      const state = await this._pidState(rt.pid, env.id);
+      const state = await this._pidState(rt.pid, env.id, env);
       if (state === PROCESS_DEAD) {
         env.runtime = {
           ...rt,
@@ -2029,6 +2227,7 @@ export class EnvironmentBackend {
   async list({ refresh = true } = {}) {
     const manifest = await this._loadManifest();
     const out = [];
+    const missing = [];
     for (const item of manifest.environments || []) {
       try {
         let env = await this._loadEnv(item.id);
@@ -2036,9 +2235,17 @@ export class EnvironmentBackend {
           env = await this._refreshRuntime(env);
         }
         out.push(shortEnv(env));
-      } catch {
+      } catch (e) {
+        // 目录已经不在的索引项（并发删除留下的幽灵条目）：从索引里清掉，不再显示成删不掉的环境。
+        if (/environment not found/.test(String(e?.message || ""))) {
+          missing.push(item.id);
+          continue;
+        }
         out.push(item);
       }
+    }
+    if (missing.length) {
+      await this._removeFromManifest(missing);
     }
     out.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
     return { ok: true, root: this._root, count: out.length, environments: out };
@@ -2058,7 +2265,7 @@ export class EnvironmentBackend {
 
   async _usedPorts(exceptId = null) {
     const manifest = await this._loadManifest();
-    const used = new Set([this._currentMarionettePort()]);
+    const used = new Set([this._currentMarionettePort(), ...this._reservedPorts]);
     for (const item of manifest.environments || []) {
       if (item.id === exceptId) {
         continue;
@@ -2285,19 +2492,51 @@ export class EnvironmentBackend {
   }
 
   async _saveRuntime(env) {
-    await this._writeJSON(this._paths(env.id).runtimePath, env.runtime || {});
-    await this._saveEnv(env);
+    await this._withLock(`env:${env.id}`, async () => {
+      // 只落 runtime：启动要等最多 90 秒，期间别处可能改了名称或一致性策略，
+      // 不能拿启动前读到的旧对象整份写回去。
+      const latest = await this._readJSON(this._paths(env.id).envPath, null);
+      if (!latest || latest.id !== env.id) {
+        throw new Error("environment not found: " + env.id);
+      }
+      Object.assign(env, { ...latest, runtime: env.runtime });
+      await this._writeJSON(this._paths(env.id).runtimePath, env.runtime || {});
+      await this._writeEnv(env);
+    });
   }
 
   async open({ id, url, port, firefoxBin } = {}) {
     if (!id) {
       throw new Error("id required");
     }
-    let env = await this._refreshRuntime(await this._loadEnv(String(id)));
-    if ((env.runtime.status === "running" || env.runtime.status === "starting" || env.runtime.status === "closing") && env.runtime.pid) {
-      return { ok: true, alreadyRunning: true, environment: shortEnv(env) };
+    // 检查运行状态、分配端口、拉起进程放在同一把锁里：同一环境被并发打开时不会在同一个 profile 上起第二个实例。
+    // 等 Marionette 就绪（最长 90 秒）在锁外进行，不挡住期间的关闭等操作。
+    const launched = await this._withLock(`lifecycle:${id}`, () => this._spawn({ id: String(id), url, port, firefoxBin }));
+    if (launched.alreadyRunning) {
+      return launched.alreadyRunning;
     }
-    const marionettePort = await this._allocatePort(env, port);
+    return this._finishOpen(launched);
+  }
+
+  async _spawn({ id, url, port, firefoxBin }) {
+    const env = await this._refreshRuntime(await this._loadEnv(id));
+    if ((env.runtime.status === "running" || env.runtime.status === "starting" || env.runtime.status === "closing") && env.runtime.pid) {
+      return { alreadyRunning: { ok: true, alreadyRunning: true, environment: shortEnv(env) } };
+    }
+    // 端口分配全局串行，分到即预留，直到带端口的运行状态落盘：两个环境同时打开不会分到同一个端口。
+    const marionettePort = await this._withLock("ports", async () => {
+      const chosen = await this._allocatePort(env, port);
+      this._reservedPorts.add(chosen);
+      return chosen;
+    });
+    try {
+      return await this._spawnWithPort(env, marionettePort, { url, firefoxBin });
+    } finally {
+      this._reservedPorts.delete(marionettePort);
+    }
+  }
+
+  async _spawnWithPort(env, marionettePort, { url, firefoxBin }) {
     const bin = firefoxBin || this._getFirefoxBin();
     const runtimeConfig = await this._syncProfileRuntimeConfig(env);
     await this._writeProfilePrefs(env, marionettePort, runtimeConfig);
@@ -2343,7 +2582,7 @@ export class EnvironmentBackend {
       MOZ_FRX_ENVS_ROOT: this._root,
       MOZ_FRX_FINGERPRINT_CONFIG: runtimeConfig.fingerprintPath,
       // Subprocess null removes an inherited value; empty string is Invalid.
-      MOZ_FRX_FINGERPRINT_JSON: isNativeFingerprint(runtimeConfig.fingerprint) ? null : JSON.stringify(runtimeConfig.fingerprint),
+      MOZ_FRX_FINGERPRINT_JSON: isNativeFingerprint(runtimeConfig.engineFingerprint) ? null : JSON.stringify(runtimeConfig.engineFingerprint),
       MOZ_FRX_PARENT_CONFIG_TOKEN: null,
       MOZ_FRX_PROXY_CONFIG: runtimeConfig.proxyPath,
       // 没有任何代码读取它，却会把代理用户名/密码明文带进子进程环境；null 同时清掉继承值。
@@ -2398,6 +2637,10 @@ export class EnvironmentBackend {
       processArgv0: launch.argv0,
     };
     await this._saveRuntime(env);
+    return { env, proc, marionettePort, launch, childEnv };
+  }
+
+  async _finishOpen({ env, proc, marionettePort, launch, childEnv }) {
     const startup = await this._waitForMarionette(proc, marionettePort);
     if (startup.exited) {
       const output = String(this._procOutputTails.get(env.id) || "").trim();
@@ -2450,47 +2693,100 @@ export class EnvironmentBackend {
     if (!id) {
       throw new Error("id required");
     }
-    const env = await this._loadEnv(String(id));
-    const pid = env.runtime?.pid || null;
-    env.runtime = {
-      ...(env.runtime || {}),
-      status: "closing",
-      lastClosingAt: nowISO(),
-    };
-    await this._saveRuntime(env);
+    return this._withLock(`lifecycle:${id}`, () => this._close(String(id)));
+  }
+
+  async _close(id) {
+    const env = await this._loadEnv(id);
+    const rt = env.runtime || {};
     const proc = this._procs.get(env.id);
-    let forced = false;
-    if (proc && proc.kill) {
-      try {
-        proc.kill();
-        if (proc.wait) {
-          await Promise.race([proc.wait(), delay(15000)]);
-        }
-      } catch {
-        /* process may already be gone */
-      }
-      const procPid = pid || proc.pid || null;
-      if (procPid && (await this._pidAlive(procPid))) {
-        forced = await this._killPid(procPid, { force: true });
-      }
-      this._procs.delete(env.id);
-      this._procDrains.delete(env.id);
-      this._procOutputTails.delete(env.id);
-    } else if (pid) {
-      const res = await this._terminatePid(pid);
-      forced = res.forced;
-    }
-    env.runtime = {
-      ...(env.runtime || {}),
-      status: "stopped",
-      pid: null,
-      lastStoppedAt: nowISO(),
-      stopReason: forced ? "forced-kill-after-timeout" : "closed",
-      marionetteReady: false,
-      marionetteStatus: "stopped",
+    const local = !!proc && proc.exitCode == null;
+    const pid = (local && proc.pid) || rt.pid || null;
+    const stopped = stopReason => {
+      env.runtime = {
+        ...(env.runtime || {}),
+        status: "stopped",
+        pid: null,
+        lastStoppedAt: nowISO(),
+        stopReason,
+        marionetteReady: false,
+        marionetteStatus: "stopped",
+      };
     };
+    // 记录的 pid 已不属于这个环境（已退出，或重启后被别的程序复用）：一个信号都不发，直接记为已停止。
+    const identity = local ? PROCESS_ALIVE : pid ? await this._pidState(pid, env.id, env, { strict: true }) : PROCESS_DEAD;
+    if (identity === PROCESS_DEAD) {
+      this._forgetProcess(env.id);
+      stopped("process-not-found");
+      await this._saveRuntime(env);
+      return { ok: true, environment: shortEnv(env) };
+    }
+    env.runtime = { ...rt, status: "closing", lastClosingAt: nowISO() };
+    await this._saveRuntime(env);
+    const gone = async () => (local ? proc.exitCode != null : (await this._pidState(pid, env.id, env)) === PROCESS_DEAD);
+    const waitGone = async ms => {
+      for (const until = Date.now() + ms; Date.now() < until; await delay(250)) {
+        if (await gone()) {
+          return true;
+        }
+      }
+      return gone();
+    };
+    // ① 先请浏览器自己退出：正常落盘 cookie/localStorage/会话，刚登录就关也不会丢登录态。
+    let reason = "closed";
+    let exited = !!rt.marionettePort && (await this._quitViaMarionette(rt.marionettePort, env)) && (await waitGone(this._closeWaitMs));
+    // ② 退不掉再发终止信号，等不到才强杀。认不出这个 pid 是不是本环境时（查不了进程命令行）一个信号都不发。
+    if (!exited && identity === PROCESS_UNKNOWN) {
+      env.runtime = { ...(env.runtime || {}), status: "running", stopReason: "close-failed", lastCloseFailedAt: nowISO() };
+      await this._saveRuntime(env);
+      return { ok: false, error: "无法确认该进程属于这个环境，没有发送终止信号；请手动结束该进程后重试。", environment: shortEnv(env) };
+    }
+    if (!exited) {
+      reason = "terminated";
+      if (local && proc.kill) {
+        try {
+          proc.kill();
+        } catch {
+          /* process may already be gone */
+        }
+        exited = await waitGone(this._closeWaitMs);
+        if (!exited && pid && (await this._killPid(pid, { force: true }))) {
+          reason = "forced-kill-after-timeout";
+          exited = await waitGone(5000);
+        }
+      } else {
+        const res = await this._terminatePid(pid, env);
+        exited = res.ok;
+        if (res.forced) {
+          reason = "forced-kill-after-timeout";
+        }
+      }
+    }
+    if (!exited) {
+      // 进程还在：不能记成已停止，否则下次打开会在仍被占用的 profile 上再起一个实例。
+      env.runtime = { ...(env.runtime || {}), status: "running", stopReason: "close-failed", lastCloseFailedAt: nowISO() };
+      await this._saveRuntime(env);
+      return { ok: false, error: "环境进程没有退出，已保持运行状态；请稍后重试或手动结束该进程。", environment: shortEnv(env) };
+    }
+    this._forgetProcess(env.id);
+    stopped(reason);
     await this._saveRuntime(env);
     return { ok: true, environment: shortEnv(env) };
+  }
+
+  async _quitViaMarionette(port, env) {
+    const options = { profileSuffix: `/${env.id}/profile` };
+    try {
+      return this._marionetteQuit ? !!(await this._marionetteQuit(Number(port), options)) : await marionetteQuit(Number(port), options);
+    } catch {
+      return false;
+    }
+  }
+
+  _forgetProcess(envId) {
+    this._procs.delete(envId);
+    this._procDrains.delete(envId);
+    this._procOutputTails.delete(envId);
   }
 
   async delete({ id, confirm = false } = {}) {
@@ -2500,16 +2796,18 @@ export class EnvironmentBackend {
     if (confirm !== true) {
       throw new Error("confirm:true required to delete an environment");
     }
-    const env = await this._refreshRuntime(await this._loadEnv(String(id)));
-    if (env.runtime?.status === "running" || env.runtime?.status === "starting" || env.runtime?.status === "closing") {
-      throw new Error("environment is running; close it before delete");
-    }
-    await IOUtils.remove(env.rootPath, { recursive: true, ignoreAbsent: true });
-    await this._removeFromManifest(env.id);
-    this._procs.delete(env.id);
-    this._procDrains.delete(env.id);
-    this._procOutputTails.delete(env.id);
-    return { ok: true, deleted: env.id };
+    // 与打开、关闭互斥；删目录时再持有环境写锁，进行中的写入要么先完成再被删掉，要么在删除后失败。
+    return this._withLock(`lifecycle:${id}`, async () => {
+      const env = await this._refreshRuntime(await this._loadEnv(String(id)));
+      if (env.runtime?.status === "running" || env.runtime?.status === "starting" || env.runtime?.status === "closing") {
+        throw new Error("environment is running; close it before delete");
+      }
+      // 只删按 root + id 推导出的目录：env.json 里存的绝对路径可能来自迁移前的位置，不能据此递归删除。
+      await this._withLock(`env:${env.id}`, () => IOUtils.remove(this._paths(env.id).rootPath, { recursive: true, ignoreAbsent: true }));
+      await this._removeFromManifest(env.id);
+      this._forgetProcess(env.id);
+      return { ok: true, deleted: env.id };
+    });
   }
 
   _configPath(env, type) {
@@ -2536,7 +2834,11 @@ export class EnvironmentBackend {
     return { ok: true, id: env.id, type, path, config };
   }
 
-  async writeConfig({ id, type = "fingerprint", config, text } = {}) {
+  writeConfig(args = {}) {
+    return this._withLock(`lifecycle:${args.id}`, () => this._writeConfig(args));
+  }
+
+  async _writeConfig({ id, type = "fingerprint", config, text } = {}) {
     if (!id) {
       throw new Error("id required");
     }
@@ -2602,7 +2904,11 @@ export class EnvironmentBackend {
     return { data, envMeta, fingerprint, proxy, generateOptions };
   }
 
-  async importEnvironment({ id, name, text, config, overwrite = false } = {}) {
+  importEnvironment(args = {}) {
+    return this._withLock(`lifecycle:${args.id}`, () => this._importEnvironment(args));
+  }
+
+  async _importEnvironment({ id, name, text, config, overwrite = false } = {}) {
     await this._ensureRoot();
     const payload = this._importPayload({ text, config });
     const finalName = String(name || payload.data.name || payload.envMeta.name || "Imported Environment").trim();
@@ -2615,10 +2921,10 @@ export class EnvironmentBackend {
       throw new Error("environment already exists; pass overwrite:true to replace its configs");
     }
     const importedBrowser = payload.fingerprint ? browserFamilyFromFingerprint(payload.fingerprint) : "firefox";
-    if (payload.fingerprint) this._validateFingerprint(payload.fingerprint);
     if (!exists && payload.fingerprint && importedBrowser !== "firefox") {
       throw new Error("new environments only accept Firefox fingerprint JSON; Chrome-like imports are no longer supported");
     }
+    if (payload.fingerprint) this._validateFingerprint(payload.fingerprint);
 
     let env;
     if (!exists) {
@@ -2668,7 +2974,7 @@ export class EnvironmentBackend {
       hasFingerprint: !!payload.fingerprint,
       hasProxy: !!payload.proxy,
     };
-    await this._saveEnv(env);
+    await this._saveEnv(env, { create: true });
     const running = isRuntimeActive(env.runtime);
     await this._stageEnvironmentConfig(env);
     return {
@@ -2684,7 +2990,11 @@ export class EnvironmentBackend {
     };
   }
 
-  async generateFingerprint({ id, options = {} } = {}) {
+  generateFingerprint(args = {}) {
+    return this._withLock(`lifecycle:${args.id}`, () => this._generateFingerprint(args));
+  }
+
+  async _generateFingerprint({ id, options = {} } = {}) {
     if (!id) {
       throw new Error("id required");
     }
@@ -2924,7 +3234,11 @@ export class EnvironmentBackend {
     };
   }
 
-  async captureFingerprint({ id } = {}) {
+  captureFingerprint(args = {}) {
+    return this._withLock(`lifecycle:${args.id}`, () => this._captureFingerprint(args));
+  }
+
+  async _captureFingerprint({ id } = {}) {
     if (!id) {
       throw new Error("id required");
     }
@@ -3068,7 +3382,11 @@ export class EnvironmentBackend {
     return captures.length ? captures[captures.length - 1] : "";
   }
 
-  async importFingerprint({ id, capturePath, capture, text } = {}) {
+  importFingerprint(args = {}) {
+    return this._withLock(`lifecycle:${args.id}`, () => this._importFingerprint(args));
+  }
+
+  async _importFingerprint({ id, capturePath, capture, text } = {}) {
     if (!id) {
       throw new Error("id required");
     }
@@ -3136,7 +3454,11 @@ export class EnvironmentBackend {
     return output;
   }
 
-  async _pidState(pid, envId = null) {
+  // PID 会被系统复用：env.json 里记下的 pid 在浏览器或系统重启后可能已属于别的程序。传入 env 时
+  // 同时核对身份——Unix 看命令行里是否有该环境的 profile；Windows 看映像名是否是 Firefox，strict
+  // 时（要发终止信号前）再查命令行，因为 Firefox 自己就有很多 firefox.exe 子进程——
+  // 对不上就当该环境已退出，后续也不会向这个 pid 发任何信号。
+  async _pidState(pid, envId = null, env = null, { strict = false } = {}) {
     if (!pid) {
       return PROCESS_DEAD;
     }
@@ -3166,15 +3488,28 @@ export class EnvironmentBackend {
           return PROCESS_UNKNOWN;
         }
         for (const line of String(out).split(/\r?\n/)) {
-          const match = line.match(/^"[^"]*","(\d+)"/);
-          if (match && Number(match[1]) === Number(pid)) {
-            return PROCESS_ALIVE;
+          const match = line.match(/^"([^"]*)","(\d+)"/);
+          if (match && Number(match[2]) === Number(pid)) {
+            if (!env || !strict) {
+              return env && !this._isEnvImage(match[1], env) ? PROCESS_DEAD : PROCESS_ALIVE;
+            }
+            if (!this._isEnvImage(match[1], env)) {
+              return PROCESS_DEAD;
+            }
+            const command = await this._windowsProcessCommand(pid);
+            return command === null ? PROCESS_UNKNOWN : this._commandMatchesEnv(command, env) ? PROCESS_ALIVE : PROCESS_DEAD;
           }
         }
         return PROCESS_DEAD;
       }
+      if (env) {
+        const command = await this._unixProcessCommand(pid);
+        if (command !== null) {
+          return command && this._commandMatchesEnv(command, env) ? PROCESS_ALIVE : PROCESS_DEAD;
+        }
+      }
       proc = await Subprocess.call({
-        command: "/bin/kill",
+        command: await this._unixCommand("kill"),
         arguments: ["-0", String(pid)],
         stderr: "stdout",
       });
@@ -3185,11 +3520,79 @@ export class EnvironmentBackend {
     }
   }
 
-  async _pidAlive(pid, envId = null) {
-    return (await this._pidState(pid, envId)) === PROCESS_ALIVE;
+  // 优先用系统目录里的 ps/kill，不经 PATH 查找（避免被同名程序顶替）；都没有时才按 PATH 找。
+  async _unixCommand(name) {
+    if (this._systemCommands.has(name)) {
+      return this._systemCommands.get(name);
+    }
+    for (const dir of ["/bin", "/usr/bin"]) {
+      const candidate = `${dir}/${name}`;
+      if (await IOUtils.exists(candidate).catch(() => false)) {
+        this._systemCommands.set(name, candidate);
+        return candidate;
+      }
+    }
+    try {
+      return await this._resolveSystemCommand(name);
+    } catch {
+      return `/bin/${name}`;
+    }
   }
 
-  async _terminatePid(pid) {
+  // 返回 pid 的完整命令行；进程不存在返回 ""；ps 不可用返回 null（退回只判断存活）。
+  async _unixProcessCommand(pid) {
+    try {
+      const proc = await this._getSubprocess().call({
+        command: await this._unixCommand("ps"),
+        arguments: ["-ww", "-o", "command=", "-p", String(pid)],
+        stderr: "stdout",
+      });
+      const out = await this._readProcessOutput(proc);
+      const r = await proc.wait();
+      return r.exitCode === 0 ? String(out) : "";
+    } catch {
+      return null;
+    }
+  }
+
+  // Windows 上查进程命令行（PowerShell / CIM）；查不了返回 null，表示身份无法确认。
+  async _windowsProcessCommand(pid) {
+    try {
+      const proc = await this._getSubprocess().call({
+        command: await this._resolveSystemCommand("powershell.exe"),
+        arguments: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `[Console]::OutputEncoding = [Text.Encoding]::UTF8; (Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").CommandLine`,
+        ],
+        stderr: "stdout",
+      });
+      const out = await this._readProcessOutput(proc);
+      const r = await proc.wait();
+      return r.exitCode === 0 ? String(out) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // 按命令行里的 "<环境 id>/profile" 核对：id 只含 ASCII（ENV_ID_RE），不受系统输出编码影响
+  // （Windows 中文用户目录），后面必须紧跟分隔符或结尾，避免 profile2 之类的误配。
+  _commandMatchesEnv(command, env) {
+    const flags = safe(() => Services.appinfo.OS, "") === "WINNT" ? "i" : "";
+    return new RegExp(`[\\\\/]${env.id}[\\\\/]profile(?![^\\s"'\\\\/])`, flags).test(String(command));
+  }
+
+  _isEnvImage(image, env) {
+    const bin = env.runtime?.firefoxBin || this._firefoxBin || "firefox.exe";
+    return String(image).toLowerCase() === String(bin).split(/[\\/]/).pop().toLowerCase();
+  }
+
+  async _pidAlive(pid, envId = null, env = null) {
+    return (await this._pidState(pid, envId, env)) === PROCESS_ALIVE;
+  }
+
+  async _terminatePid(pid, env = null) {
     if (!pid) {
       return { ok: false, forced: false };
     }
@@ -3198,14 +3601,14 @@ export class EnvironmentBackend {
       return { ok: false, forced: false };
     }
     for (let i = 0; i < 60; i++) {
-      if ((await this._pidState(pid)) === PROCESS_DEAD) {
+      if ((await this._pidState(pid, null, env)) === PROCESS_DEAD) {
         return { ok: true, forced: false };
       }
       await delay(250);
     }
     const forced = await this._killPid(pid, { force: true });
     for (let i = 0; i < 20; i++) {
-      if ((await this._pidState(pid)) === PROCESS_DEAD) {
+      if ((await this._pidState(pid, null, env)) === PROCESS_DEAD) {
         return { ok: true, forced };
       }
       await delay(250);
@@ -3220,7 +3623,7 @@ export class EnvironmentBackend {
       return false;
     }
     try {
-      const command = os === "WINNT" ? await this._resolveSystemCommand("taskkill.exe") : "/bin/kill";
+      const command = os === "WINNT" ? await this._resolveSystemCommand("taskkill.exe") : await this._unixCommand("kill");
       const proc = await Subprocess.call(
         os === "WINNT"
           ? { command, arguments: ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])], stderr: "stdout" }

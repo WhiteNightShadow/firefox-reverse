@@ -18,7 +18,7 @@ ROOT = sys.argv[1]
 
 def patch_file(path, transformations):
     """Apply a list of (description, old, new) tuples to a file."""
-    content = open(path).read()
+    content = open(path, encoding="utf-8").read()
     changed = False
     for desc, old, new in transformations:
         if new in content:
@@ -31,7 +31,7 @@ def patch_file(path, transformations):
         changed = True
         print(f"  [done] {desc}")
     if changed:
-        open(path, "w").write(content)
+        open(path, "w", encoding="utf-8").write(content)
 
 
 # ---------------------------------------------------------------------------

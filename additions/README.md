@@ -1,6 +1,6 @@
 # additions/
 
-新增的源文件，纯增量、不修改任何上游 firefox 文件。`scripts/apply-patches.sh` 在 patch 阶段后将本目录的文件按对应路径 copy 到 `upstream/`。
+新增的源文件，按对应路径放进 `upstream/`（少数品牌资源会覆盖上游同名文件）。`scripts/apply-patches.sh` 在 patch 阶段后调用 `scripts/sync-additions.py` 同步：只复制内容有变化的文件；从本目录删除的文件，下次同步时也会从 `upstream/` 删除（覆盖过的上游文件则还原）。
 
 ## 子目录结构
 

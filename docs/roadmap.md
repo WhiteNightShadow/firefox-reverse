@@ -12,8 +12,8 @@
 - [x] 远程 Linux x86_64 编译跑通（11 分 36 秒）→ `firefox-153.0a1.en-US.linux-x86_64.tar.xz` 98 MB
 - [x] 远程 cross-compile macOS arm64 跑通（25 分 46 秒）→ `firefox-153.0a1.en-US.mac.dmg` 106 MB
 - [x] mac 本地安装验证 OK（用户 2026-05-21 确认能打开）
-- [x] `mozconfig.mac` cross-compile 配置可复用
-- [ ] `scripts/apply-patches.sh` 实际跑通（等第一个真实 patch 出现）
+- [x] macOS cross-compile 配置入库（`configs/mozconfig.macos-arm64` / `configs/mozconfig.macos-x64`）
+- [x] `scripts/apply-patches.sh` 可重复执行，CI 在锁定基线上每次验证
 
 **基线选定**：mozilla-firefox/firefox `main` 分支，commit `cebc55aab4d` (HEAD on 2026-05-21)，对应 Firefox 153.0a1 nightly。后续可考虑锁定到 ESR。
 
