@@ -21,6 +21,8 @@ run npm --prefix "$SIDEBAR_DIR" run build
 
 SELFTESTS=(
   selftest-markdown.mjs
+  selftest-markdown-streaming.mjs
+  selftest-panel-live.mjs
   selftest-addons.mjs
   selftest-config.mjs
   selftest-global-system-prompt.mjs
