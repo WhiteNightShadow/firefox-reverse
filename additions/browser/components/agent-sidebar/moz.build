@@ -15,7 +15,6 @@ EXTRA_JS_MODULES.agentsidebar += [
     "modules/ContextProjection.sys.mjs",
     "modules/ConversationStore.sys.mjs",
     "modules/EnvironmentBackend.sys.mjs",
-    "modules/EnvironmentBackendCurrent.sys.mjs",
     "modules/JsvmpBackend.sys.mjs",
     "modules/LedgerBackend.sys.mjs",
     "modules/LlmClient.sys.mjs",

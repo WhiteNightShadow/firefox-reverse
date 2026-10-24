@@ -39,6 +39,7 @@ SELFTESTS=(
   selftest-retry.mjs
   selftest-anthropic.mjs
   selftest-toolrouter.mjs
+  selftest-tool-metadata.mjs
   selftest-page-interaction.mjs
   selftest-thread-reservation.mjs
   selftest-workspace.mjs
