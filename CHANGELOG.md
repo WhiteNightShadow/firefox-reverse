@@ -6,6 +6,7 @@
 
 | 日期 | 版本号 | 改版内容（一句话） |
 |------|--------|--------------------|
+| 2026-10-24 | v0.26.2 | 正式版：issue #18 macos数据目录修复转正，旧`Firefox`根目录被拒时接续已有独立profile或新建独立配置，感谢@leihualiang报告、@odtu945定位根因并在真实macos 27上实测；环境关闭先走环境内退出通道，修复windows进程核对；流式回复增量渲染；环境后端按职责拆分，构建可重复执行，指纹配置按引擎约束校验。五目标六包统一SourceStamp/BuildID，mac arm64/intel、windows、linux x86_64/arm64指纹回归分别通过213/197/212/182/182项，各通过33项页面/agent检查和8类提示词场景/11条合成请求；[原生ci](https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/40084257624)。 |
 | 2026-10-21 | v0.26.2-preview.1 | Issue #18 macOS 默认应用数据目录候选修复：仅访问拒绝且有安全接续依据时选用独立根，原地保留已有书签/模型配置，记录选择并隔离缓存；显式覆盖与可用旧根优先，不对磁盘/路径/注册表故障静默换目录。使用保留错误类型的 NSPR 读取，避免混淆首次启动与访问拒绝；补齐 errno 只读诊断。最终 ARM64 包通过 15 项目录场景、5 项旧启动边界、213 项指纹、33 项页面/Agent、8 类提示词/11 条合成请求；真实 macOS 27 待报告者验证，Issue 保持开放，预览不替代稳定版。 |
 | 2026-10-12 | v0.26.1 | 合入 @awaxiaoyu 的 PR #21：profile 级全局附加 system 提示词，默认空值兼容、下一轮生效、自动续跑不重复追加。五目标六包完成构建，固定源码与最终包资源核对通过；每个平台均通过 8 类场景/11 条合成模型请求、33 项页面/Agent 检查，Mac ARM64/Intel、Windows、Linux x86_64/ARM64 指纹回归分别通过 213/197/212/182/182 项。[原生 CI](https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/38208742667) 全部通过，Mac 另通过启动边界与隔离升级检查；附件仅发布安装/便携包。 |
 | 2026-10-11 | v0.26.0 正式验收 | 五目标六包统一 SourceStamp/BuildID；Mac ARM64/Intel、Windows x86_64、Linux x86_64/ARM64 原生指纹检查分别通过 213/197/212/182/182 项，各通过 33 项页面/Agent 检查；Mac ARM64/Linux x86_64 各通过 5 类启动边界，Windows 另通过 6 次截图/退出及 Ledger 回归。通过[原生 CI](https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/38126954615)，附件仅发布安装/便携包。Intel/Linux 无头 GPU 与 Linux 缺失字体不在验证范围内；本地覆盖安装后指纹 213 项及页面/Agent 33 项复验通过。 |

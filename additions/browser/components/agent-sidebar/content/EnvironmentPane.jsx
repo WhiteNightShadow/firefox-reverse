@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { isNativeFingerprint, nativeFingerprintDefaults } from "../modules/NativeFingerprintPolicy.sys.mjs";
 
 const CURRENT_PROCESS_TARGET = "__current_process__";
@@ -507,7 +507,6 @@ export function FingerprintForm({ fingerprint, setFingerprint }) {
 }
 
 export default function EnvironmentPane({ env, onClose }) {
-  const currentProcessEnvRef = useRef(null);
   const [items, setItems] = useState([]);
   const [currentProcess, setCurrentProcess] = useState(null);
   const [root, setRoot] = useState("");
@@ -618,25 +617,11 @@ export default function EnvironmentPane({ env, onClose }) {
     }
   }, [fingerprint, tab]);
 
+  // 当前主进程的指纹接口都在主环境后端上。缺方法说明侧栏和后端模块不是同一版本，直接报出来，
+  // 不再退回到另一份旧后端（那份旧拷贝没有后续修复，会把主浏览器代理改成直连）。
   async function getCurrentProcessApi(name, { silent = false } = {}) {
     if (typeof env?.[name] === "function") {
       return env;
-    }
-    try {
-      if (!currentProcessEnvRef.current) {
-        const { EnvironmentBackend } = ChromeUtils.importESModule(
-          "resource:///modules/agentsidebar/EnvironmentBackendCurrent.sys.mjs"
-        );
-        currentProcessEnvRef.current = new EnvironmentBackend();
-      }
-      if (typeof currentProcessEnvRef.current?.[name] === "function") {
-        return currentProcessEnvRef.current;
-      }
-    } catch (e) {
-      if (!silent) {
-        setError(`当前主进程指纹后端加载失败：${(e && e.message) || String(e)}`);
-      }
-      return null;
     }
     if (!silent) {
       const available = [

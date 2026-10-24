@@ -132,6 +132,7 @@ function newState() {
     pendingConfirm: null, // { id, name, args, resolve }
     _notifyTimer: null, // 节流定时器
     _lastNotify: 0, // 上次广播时刻
+    rev: 0, // 状态每变一次 +1（只增不减）：UI 轮询时据此跳过没有变化的拍子
     checkpointSeq: 0, // 自增：每次上下文压缩落盘一条 checkpoint 回复就 +1，UI 据此重载并起新气泡
     usage: emptyUsage(), // current run only; aggregate is persisted on the thread
     lastUsage: null,
@@ -148,8 +149,13 @@ function getOrInit(threadId) {
   return s;
 }
 
+// 状态变了之后调用 notify / notifyThrottled：版本号立即前进（UI 轮询看的是它），只有广播本身会被节流。
 function notify(s) {
   // 立即广播（结构性事件：tool/round/confirm/done/error）。会清掉待发的节流定时器。
+  s.rev++;
+  broadcast(s);
+}
+function broadcast(s) {
   if (s._notifyTimer) {
     _clearTimeout(s._notifyTimer);
     s._notifyTimer = null;
@@ -167,19 +173,21 @@ function notify(s) {
 // 节流广播（高频流式 delta/reasoning）：把"每 token 一次跨 realm 调用"降到 ~20 次/秒，
 // 否则内容进程被每 token 的快照+渲染压垮→看起来不流式、很慢。带 trailing：突发结束后补发一次。
 function notifyThrottled(s) {
+  s.rev++;
   const now = Date.now();
   const since = now - (s._lastNotify || 0);
   if (since >= NOTIFY_THROTTLE_MS) {
-    notify(s);
+    broadcast(s);
   } else if (!s._notifyTimer) {
     s._notifyTimer = _setTimeout(() => {
       s._notifyTimer = null;
-      notify(s);
+      broadcast(s);
     }, NOTIFY_THROTTLE_MS - since);
   }
 }
 function snapshot(s) {
   return {
+    rev: s.rev,
     running: s.running,
     settled: s.settled,
     steps: s.steps.slice(),

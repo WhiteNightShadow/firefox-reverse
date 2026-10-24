@@ -180,4 +180,31 @@ for (const expected of [
   }
 }
 
-console.log(`moz.build order, parent registration, pinned release baseline, locale defaults, and fingerprint isolation: OK (${entries.length} files)`);
+// 启动分类清单：要在 moz.build 里登记，每一行都要指向登记过的模块和它真实导出的方法。
+const manifestBlock = source.match(/EXTRA_COMPONENTS\s*\+=\s*\[([\s\S]*?)\n\]/);
+const manifests = manifestBlock ? [...manifestBlock[1].matchAll(/"([^"]+)"/g)].map(match => match[1]) : [];
+if (!manifests.includes("agent-sidebar.manifest")) {
+  console.error("FAIL: agent-sidebar.manifest is not registered in EXTRA_COMPONENTS");
+  process.exit(1);
+}
+const categoryLines = fs
+  .readFileSync(fileURLToPath(new URL("../agent-sidebar.manifest", import.meta.url)), "utf8")
+  .split("\n")
+  .filter(line => line.startsWith("category "));
+for (const line of categoryLines) {
+  const [, category, url, entry] = line.split(/\s+/);
+  const moduleName = url.match(/^resource:\/\/\/modules\/agentsidebar\/(.+\.sys\.mjs)$/)?.[1];
+  const [object, method] = String(entry).split(".");
+  const moduleSource = moduleName && entries.includes(`modules/${moduleName}`) ? fs.readFileSync(fileURLToPath(new URL(`../modules/${moduleName}`, import.meta.url)), "utf8") : "";
+  const exported = moduleSource.match(new RegExp(`export const ${object} = \\{([\\s\\S]*?)\\n\\};`));
+  if (!category || !exported || !new RegExp(`\\n  (?:async )?${method}\\(`).test(exported[1])) {
+    console.error(`FAIL: manifest entry does not resolve to a registered module export: ${line}`);
+    process.exit(1);
+  }
+}
+if (categoryLines.length < 2) {
+  console.error("FAIL: agent-sidebar.manifest lost its startup categories");
+  process.exit(1);
+}
+
+console.log(`moz.build order, parent registration, startup categories, pinned release baseline, locale defaults, and fingerprint isolation: OK (${entries.length} files)`);

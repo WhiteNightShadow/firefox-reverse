@@ -29,7 +29,7 @@ Mozilla 已记录 [macOS 27 对 Firefox 数据目录的访问限制](https://bug
 
 验收期间发现初稿使用的 `OpenANSIFileDesc` 会将不存在与访问拒绝折叠为同一个错误，已改为保留错误分类的 `OpenNSPRFileDesc`，重新编译并复验；未通过的初稿安装包没有发布。
 
-## 下一版调整：旧目录不可读时不再停在报错
+## v0.26.2：旧目录不可读时不再停在报错
 
 预览包有一种情况仍会停止，并弹出“配置文件无法加载”：旧 `Firefox` 根目录存在但访问被拒，同时 `FirefoxReverse` 里没有 profile。这恰好是装过官方 Firefox 的 macOS 27 机器上最常见的情况——旧根属于官方 Firefox，被系统按名字拦截，Firefox Reverse 无法确认里面有没有自己的数据，用户双击就打不开。
 
@@ -38,9 +38,15 @@ Mozilla 已记录 [macOS 27 对 Firefox 数据目录的访问限制](https://bug
 - 访问被拒（`EACCES/EPERM`）一律改用 `FirefoxReverse`。备用根已有可读、有效的 profile 时原地接续；否则在备用根新建配置。
 - 旧根原样保留，不读取、不复制、不删除。新建配置时，会在备用根留下空标记 `.frx-appdata-notice-v1`。Agent 侧栏首次打开时据此提示一次，说明旧目录没有改动，数据没有丢。
 - 以下情况仍然停止并提示诊断，不切换目录：磁盘满、只读卷、I/O 错误、路径被文件占用、备用注册表损坏或不可读，以及显式 `MOZ_APP_DATA` 指向不可读目录。
-- 原生场景脚本 `scripts/verify-macos-appdata.py` 里的 `unknown-legacy` 已改为成功场景，并断言旧根内容不变、写入一次性提示标记。新包在编译机构建后需要重新跑这套场景。
+- 原生场景脚本 `scripts/verify-macos-appdata.py` 里的 `unknown-legacy` 已改为成功场景，并断言旧根内容不变、写入一次性提示标记。
 
 已用临时方案（`MOZ_APP_DATA` 加 `-profile`）启动的用户不受影响：显式变量仍然优先。
+
+### v0.26.2最终包验收（2026-10-24）
+
+- 2026-10-22，@odtu945在真实macos 27拦截环境中确认预览版的无变量启动、数据保留、关闭重开和重启后启动均通过（[记录](community/issue-18-odtu945.md)）。v0.26.2保留这条接续路径，并加上上面“旧目录不可读、又没有独立profile”的新建分支，对应原报告（[记录](community/issue-18-leihualiang.md)）的情况。
+- [v0.26.2](https://github.com/WhiteNightShadow/firefox-reverse/releases/tag/v0.26.2)源码标记为`adeb5100a6d43382bd0e26e9ab8461dcadbdbd79`，BuildID为`20261024082441`。macos 26.7.1 arm64上，最终包15个原生场景全部通过，包括`resume-existing-private`（旧根被拒、接续已有独立profile）和`unknown-legacy`（旧根被拒、没有独立profile时新建配置）；正常沙箱下213项指纹、33项页面/agent、8类提示词场景/11条合成请求通过，测试后签名与`XUL`哈希不变。intel包在原生runner上通过197项指纹及同样的页面/提示词检查。范围见[验证摘要](verification/release-v0.26.2/summary.json)。
+- 这仍是故障注入和本机回归，不等同于macos 27的tcc实机验收；issue #18待原报告者在v0.26.2上确认后关闭。
 
 ## 先区分错误
 

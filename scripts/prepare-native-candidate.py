@@ -96,7 +96,7 @@ with zipfile.ZipFile(resource_root / "omni.ja") as archive:
     assert b"#promiseXULFrameLoaderCreated" in extension_parent
     extension_parent_sha = hashlib.sha256(extension_parent).hexdigest()
 assert tag[1:] in expected.decode()
-modules = ["EnvironmentBackend", "NativeFingerprintPolicy", "ConfigStore", "AgentSession", "SidebarTypography", "LlmClient", "PageBackend", "PageInteractionBackend", "PageInteractionCore", "AgentInteractionChild", "Tools"]
+modules = ["EnvironmentBackend", "EnvironmentCommon", "EnvironmentControl", "EnvironmentCurrentProcess", "EnvironmentFingerprint", "EnvironmentPrefs", "EnvironmentProcess", "EnvironmentStore", "NativeFingerprintPolicy", "ConfigStore", "AgentSession", "SidebarTypography", "LlmClient", "PageBackend", "PageInteractionBackend", "PageInteractionCore", "AgentInteractionChild", "Tools"]
 with zipfile.ZipFile(resource_root / "browser/omni.ja") as archive:
     ui_prefix = "chrome/browser/content/browser/agent-sidebar/"
     bundle_sha = hashlib.sha256(archive.read(ui_prefix + "agent-sidebar.bundle.js")).hexdigest()
@@ -108,6 +108,8 @@ with zipfile.ZipFile(resource_root / "browser/omni.ja") as archive:
         expected = subprocess.check_output(["git", "show", f"{commit}:additions/browser/components/agent-sidebar/modules/{module}.sys.mjs"])
         assert archive.read(f"modules/agentsidebar/{module}.sys.mjs") == expected, f"stale module: {module}"
     assert b"MIT License" in archive.read("modules/agentsidebar/PageAccessibility.sys.mjs"), "missing accessibility bundle/license"
+    registered = "\n".join(archive.read(n).decode("utf-8", "replace") for n in archive.namelist() if n.endswith(".manifest"))
+    assert "EnvironmentControl.sys.mjs EnvironmentControl.firstWindowReady" in registered, "environment quit channel is not registered"
     assert "右击或下拉显示历史" in archive.read("localization/zh-CN/browser/browserContext.ftl").decode()
 report = {"package": name, "packageSHA256": sha(package), "xulSHA256": sha(xul), "binaryArchitecture": architecture, "sidebarBundleSHA256": bundle_sha, "extensionParentSHA256": extension_parent_sha, "sourceCommit": commit, "buildID": build_id, "modules": modules, "status": "passed"}
 report["branding"] = branding_report

@@ -151,7 +151,7 @@ function ToolStep({ step }) {
 function TextSeg({ step, live }) {
   return (
     <div className="msg__textseg">
-      <MarkdownContent>{step.text}</MarkdownContent>
+      <MarkdownContent streaming={live}>{step.text}</MarkdownContent>
       {live ? <span className="msg__cursor">▌</span> : null}
     </div>
   );
@@ -163,7 +163,7 @@ function ThinkSeg({ step, live }) {
     <details className="msg__think" open>
       <summary className="msg__think-label">💭 思考过程</summary>
       <div className="msg__think-body">
-        <MarkdownContent>{step.text}</MarkdownContent>
+        <MarkdownContent streaming={live}>{step.text}</MarkdownContent>
         {live ? <span className="msg__cursor">▌</span> : null}
       </div>
     </details>
@@ -318,6 +318,9 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const stepsRef = useRef([]); // 过程步骤的可变副本（闭包里更新）
   const curTextRef = useRef(-1); // 当前正在流式追加的 text step 下标
   const curThinkRef = useRef(-1); // 当前正在流式追加的 think(思考) step 下标
+  // 实时轮询上一拍处理过的快照版本：版本没变（比如工具还在跑）就跳过这一拍。清空实时区时要置为 -1，
+  // 否则下一拍会因为版本没变而跳过，清掉的步骤和确认条不会再显示出来。
+  const liveRevRef = useRef(-1);
   const [extRunning, setExtRunning] = useState(null); // 外部(MCP)驱动、本面板没在显示的会话（忙时横幅提示用）
   const [spectating, setSpectating] = useState(false); // 当前会话被别的浏览器窗口占用：本窗口只读查看（可看进度、不能发送）
   const openThreadRef = useRef(null); // 最新 openThread 闭包，供 listRunning 定时器自动跟随（避免 effect deps 抖动）
@@ -492,12 +495,18 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     let stopped = false;
     let timer = null;
     let lastCkpt = 0; // 已处理到的 checkpoint 序号（本轮起始为 0）
+    liveRevRef.current = -1;
     const tick = () => {
       if (stopped) {
         return;
       }
       const snap = session.getState(currentId);
+      if (snap && snap.running && snap.rev !== undefined && snap.rev === liveRevRef.current) {
+        timer = setTimeout(tick, 80);
+        return;
+      }
       if (snap && snap.running) {
+        liveRevRef.current = snap.rev;
         // 上下文压缩落盘了一条 checkpoint 回复 → 从 store 重载历史(新气泡出现)，live 区随即显示新段。
         if ((snap.checkpointSeq || 0) > lastCkpt) {
           lastCkpt = snap.checkpointSeq;
@@ -772,6 +781,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     stepsRef.current = [];
     curTextRef.current = -1;
     curThinkRef.current = -1;
+    liveRevRef.current = -1;
     setLiveSteps([]);
   }
   function onStreamDelta(chunk) {

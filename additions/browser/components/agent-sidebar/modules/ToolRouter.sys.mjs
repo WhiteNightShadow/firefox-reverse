@@ -45,6 +45,8 @@ export class ToolRouter {
       parameters: spec.parameters || { type: "object", properties: {} },
       handler: spec.handler,
       needsConfirm: !!spec.needsConfirm, // 改动型工具（执行 JS/导航/改包/落盘）需用户批准（A3 要求）
+      repeatExempt: !!spec.repeatExempt, // 同参数重复调用不算空转（见 Tools.sys.mjs 的工具特性说明）
+      progress: !!spec.progress, // 调用成功即算前进
     });
     return this;
   }
@@ -65,6 +67,18 @@ export class ToolRouter {
   needsConfirm(name) {
     const t = this._tools.get(name);
     return !!(t && t.needsConfirm);
+  }
+
+  /** 同参数重复调用是否豁免空转熔断（滚动、导航、trace 开关等每次都可能产生新状态）。 */
+  isRepeatExempt(name) {
+    const t = this._tools.get(name);
+    return !!(t && t.repeatExempt);
+  }
+
+  /** 调用成功是否直接算「前进」（落盘类工具）。 */
+  countsAsProgress(name) {
+    const t = this._tools.get(name);
+    return !!(t && t.progress);
   }
 
   names() {
