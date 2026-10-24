@@ -137,6 +137,18 @@ MOZ_JSVMP_TRACE_FILE=<env/traces/jsvmp.ndjson>
 
 这样内容进程天然继承当前环境，不需要猜当前 tab 属于哪个环境。
 
+后端按职责拆成几个模块，对外入口仍是 `EnvironmentBackend`：
+
+```text
+EnvironmentBackend.sys.mjs         对外入口：创建、配置、打开/关闭/删除，以及这些操作之间的锁和运行状态
+EnvironmentStore.sys.mjs           目录布局、manifest.json / env.json 读写与按 key 加锁
+EnvironmentProcess.sys.mjs         启动参数、Marionette 端口与退出请求、pid 身份核对、终止信号
+EnvironmentFingerprint.sys.mjs     指纹生成、校验、采集与导入（纯函数）
+EnvironmentPrefs.sys.mjs           指纹/代理 → user.js，以及主浏览器 user.js 的托管块（纯函数）
+EnvironmentCurrentProcess.sys.mjs  主浏览器自己的指纹和代理配置
+EnvironmentCommon.sys.mjs          共用常量和小工具
+```
+
 ### 4.2 C++ 配置服务
 
 新增一个小的配置缓存服务，例如：

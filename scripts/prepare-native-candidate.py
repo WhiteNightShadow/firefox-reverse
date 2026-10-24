@@ -96,7 +96,7 @@ with zipfile.ZipFile(resource_root / "omni.ja") as archive:
     assert b"#promiseXULFrameLoaderCreated" in extension_parent
     extension_parent_sha = hashlib.sha256(extension_parent).hexdigest()
 assert tag[1:] in expected.decode()
-modules = ["EnvironmentBackend", "NativeFingerprintPolicy", "ConfigStore", "AgentSession", "SidebarTypography", "LlmClient", "PageBackend", "PageInteractionBackend", "PageInteractionCore", "AgentInteractionChild", "Tools"]
+modules = ["EnvironmentBackend", "EnvironmentCommon", "EnvironmentCurrentProcess", "EnvironmentFingerprint", "EnvironmentPrefs", "EnvironmentProcess", "EnvironmentStore", "NativeFingerprintPolicy", "ConfigStore", "AgentSession", "SidebarTypography", "LlmClient", "PageBackend", "PageInteractionBackend", "PageInteractionCore", "AgentInteractionChild", "Tools"]
 with zipfile.ZipFile(resource_root / "browser/omni.ja") as archive:
     ui_prefix = "chrome/browser/content/browser/agent-sidebar/"
     bundle_sha = hashlib.sha256(archive.read(ui_prefix + "agent-sidebar.bundle.js")).hexdigest()
