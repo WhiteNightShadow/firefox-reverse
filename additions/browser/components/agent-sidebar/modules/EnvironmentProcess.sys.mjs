@@ -300,6 +300,8 @@ export class EnvironmentProcesses {
     return SP && SP.Subprocess;
   }
 
+  // Windows 的系统工具直接从系统目录取，和 unixCommand 一样不经 PATH（避免被同名程序顶替）。系统目录里没有
+  // 才查 PATH，而且要显式传入：Windows 的环境变量通常叫 "Path"，Subprocess.pathSearch 只认 environment.PATH。
   async resolveSystemCommand(name) {
     if (this._systemCommands.has(name)) {
       return this._systemCommands.get(name);
@@ -308,7 +310,23 @@ export class EnvironmentProcesses {
     if (!Subprocess || typeof Subprocess.pathSearch !== "function") {
       throw new Error(`cannot resolve system command: ${name}`);
     }
-    const path = await Subprocess.pathSearch(name);
+    let path = null;
+    if (safe(() => Services.appinfo.OS, "") === "WINNT") {
+      const systemDir = safe(() => Services.dirsvc.get("SysD", Ci.nsIFile).path, "");
+      const candidates = systemDir ? [PathUtils.join(systemDir, name), PathUtils.join(systemDir, "WindowsPowerShell", "v1.0", name)] : [];
+      for (const candidate of candidates) {
+        if (await IOUtils.exists(candidate).catch(() => false)) {
+          path = candidate;
+          break;
+        }
+      }
+      path ||= await Subprocess.pathSearch(name, {
+        PATH: safe(() => Services.env.get("PATH"), ""),
+        PATHEXT: safe(() => Services.env.get("PATHEXT"), ""),
+      });
+    } else {
+      path = await Subprocess.pathSearch(name);
+    }
     this._systemCommands.set(name, path);
     return path;
   }
@@ -501,19 +519,19 @@ export class EnvironmentProcesses {
     return String(image).toLowerCase() === String(bin).split(/[\\/]/).pop().toLowerCase();
   }
 
+  // 调用方已核对过身份。温和信号发不出去时直接强制结束：Windows 上没有窗口的进程（headless、正在退出）
+  // 不接受不带 /F 的 taskkill；进程恰好已经退出时，下面的存活检查会认出来。
   async terminatePid(pid, env = null) {
     if (!pid) {
       return { ok: false, forced: false };
     }
-    const signalled = await this.killPid(pid, { force: false });
-    if (!signalled) {
-      return { ok: false, forced: false };
-    }
-    for (let i = 0; i < 60; i++) {
-      if ((await this.pidState(pid, null, env)) === PROCESS_DEAD) {
-        return { ok: true, forced: false };
+    if (await this.killPid(pid, { force: false })) {
+      for (let i = 0; i < 60; i++) {
+        if ((await this.pidState(pid, null, env)) === PROCESS_DEAD) {
+          return { ok: true, forced: false };
+        }
+        await delay(250);
       }
-      await delay(250);
     }
     const forced = await this.killPid(pid, { force: true });
     for (let i = 0; i < 20; i++) {

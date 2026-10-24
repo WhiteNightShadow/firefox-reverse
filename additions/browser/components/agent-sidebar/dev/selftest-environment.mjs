@@ -459,6 +459,65 @@ try {
   assert.equal(unverifiable.environment.runtime.status, "running");
   assert.equal(commandCalls.filter(spec => spec.command.endsWith("taskkill.exe")).length, killsBefore, "no taskkill without a verified identity");
 
+  // 真 Windows 的环境变量名是 "Path"，上游 Subprocess.pathSearch 只认 environment.PATH，按名字什么都找不到：
+  // 系统工具要直接从系统目录取；系统目录里没有时，回退查找必须显式带上 PATH。
+  const systemDir = path.join(root, "windows-system32");
+  await fs.mkdir(path.join(systemDir, "WindowsPowerShell", "v1.0"), { recursive: true });
+  for (const tool of ["tasklist.exe", "taskkill.exe", path.join("WindowsPowerShell", "v1.0", "powershell.exe")]) {
+    await fs.writeFile(path.join(systemDir, tool), "");
+  }
+  const realSearches = [];
+  const realCalls = [];
+  let realAlive = true;
+  const realWindows = new EnvironmentBackend({
+    root: windowsRoot,
+    subprocess: {
+      async pathSearch(command, environment) {
+        realSearches.push({ command, PATH: environment?.PATH });
+        throw new Error(`Executable not found: ${command}`);
+      },
+      async call(spec) {
+        realCalls.push(spec);
+        if (spec.command.endsWith("powershell.exe")) {
+          return outputProcess(`"C:\\Program Files\\Firefox Reverse\\firefox.exe" -marionette -profile C:\\envs\\${winA.id}\\profile\r\n`, 0);
+        }
+        if (spec.command.endsWith("taskkill.exe")) {
+          // 没有窗口的进程（headless、正在退出）不接受不带 /F 的 taskkill
+          if (!spec.arguments.includes("/F")) {
+            return outputProcess("ERROR: The process with PID 4242 could not be terminated.\r\n", 1);
+          }
+          realAlive = false;
+          return outputProcess("SUCCESS", 0);
+        }
+        return outputProcess(realAlive ? '"firefox.exe","4242","Console","1","100,000 K"\r\n' : "INFO: No tasks are running which match the specified criteria.\r\n", 0);
+      },
+    },
+  });
+  const dirsvcGet = Services.dirsvc.get;
+  const envGet = Services.env.get;
+  globalThis.Ci = { nsIFile: {} };
+  Services.dirsvc.get = key => {
+    assert.equal(key, "SysD");
+    return { path: systemDir };
+  };
+  try {
+    assert.equal(await realWindows._pidState(4242, winA.id, await realWindows._loadEnv(winA.id), { strict: true }), "alive", "identity is verified with the system tools");
+    assert.deepEqual(realCalls.map(spec => spec.command), [path.join(systemDir, "tasklist.exe"), path.join(systemDir, "WindowsPowerShell", "v1.0", "powershell.exe")]);
+    const terminated = await realWindows._processes.terminatePid(4242, await realWindows._loadEnv(winA.id));
+    assert.deepEqual(terminated, { ok: true, forced: true }, "a refused gentle taskkill escalates to /F");
+    const taskkills = realCalls.filter(spec => spec.command.endsWith("taskkill.exe"));
+    assert.deepEqual(taskkills.map(spec => spec.arguments.includes("/F")), [false, true]);
+    assert.equal(taskkills.at(-1).command, path.join(systemDir, "taskkill.exe"));
+    assert.equal(realSearches.length, 0, "system tools never go through a PATH search");
+    Services.env.get = name => (name === "PATH" ? "C:\\Tools" : "");
+    await assert.rejects(realWindows._processes.resolveSystemCommand("where.exe"), /Executable not found/);
+    assert.deepEqual(realSearches, [{ command: "where.exe", PATH: "C:\\Tools" }], "the fallback search passes PATH explicitly");
+  } finally {
+    Services.dirsvc.get = dirsvcGet;
+    Services.env.get = envGet;
+    delete globalThis.Ci;
+  }
+
   const launchRoot = path.join(root, "windows-launch");
   const launchCalls = [];
   let launchStarted = false;
