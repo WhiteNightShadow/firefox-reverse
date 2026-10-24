@@ -16,6 +16,7 @@ EXTRA_JS_MODULES.agentsidebar += [
     "modules/ConversationStore.sys.mjs",
     "modules/EnvironmentBackend.sys.mjs",
     "modules/EnvironmentCommon.sys.mjs",
+    "modules/EnvironmentControl.sys.mjs",
     "modules/EnvironmentCurrentProcess.sys.mjs",
     "modules/EnvironmentFingerprint.sys.mjs",
     "modules/EnvironmentPrefs.sys.mjs",
@@ -41,6 +42,11 @@ EXTRA_JS_MODULES.agentsidebar += [
     "modules/Usage.sys.mjs",
     "modules/WebApiBackend.sys.mjs",
     "modules/WorkspaceBackend.sys.mjs",
+]
+
+# 启动分类：环境浏览器里的退出通道（EnvironmentControl）
+EXTRA_COMPONENTS += [
+    "agent-sidebar.manifest",
 ]
 
 DIRS += ["preferences"]

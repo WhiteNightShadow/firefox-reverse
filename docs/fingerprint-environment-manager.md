@@ -146,8 +146,17 @@ EnvironmentProcess.sys.mjs         启动参数、Marionette 端口与退出请�
 EnvironmentFingerprint.sys.mjs     指纹生成、校验、采集与导入（纯函数）
 EnvironmentPrefs.sys.mjs           指纹/代理 → user.js，以及主浏览器 user.js 的托管块（纯函数）
 EnvironmentCurrentProcess.sys.mjs  主浏览器自己的指纹和代理配置
+EnvironmentControl.sys.mjs         环境浏览器里的退出通道
 EnvironmentCommon.sys.mjs          共用常量和小工具
 ```
+
+`env_close` 依次尝试：
+
+1. 退出通道。环境浏览器的第一个窗口就绪后，在 `<env>/control/quit-channel.json` 写下自己的 pid；这一步由 `agent-sidebar.manifest` 里的 `browser-first-window-ready` 分类触发。后端写入 `quit-request.json`，环境浏览器取走请求后，像 `Marionette:Quit` 一样正常退出。这条路不经过 Marionette，外部 MCP/WebDriver 占着环境的 Marionette 会话时也能用。
+2. Marionette。通道没就绪，或 3 秒内没人取走请求时，经环境自己的 Marionette 端口请求退出，退出前核对 `moz:profile`。取走请求和撤回请求删的是同一个文件，只有一方能删成功，所以不会出现环境已在退出、后端又去发信号的情况。
+3. 终止信号。前两步都不行才发。macOS 上的 Firefox 不处理 SIGTERM，Windows 会直接结束进程，这一步可能丢掉最近写入的数据，所以放在最后。
+
+关闭结果里的 `runtime.closedBy` 记录实际走了哪一步：`quit-channel`、`marionette` 或 `signal`；等待期间进程自己退出的记为 `exited`。重新打开环境时清空。
 
 ### 4.2 C++ 配置服务
 

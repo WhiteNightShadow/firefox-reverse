@@ -46,6 +46,7 @@ SELFTESTS=(
   selftest-scripts.mjs
   selftest-jsvmp-backend.mjs
   selftest-environment.mjs
+  selftest-environment-control.mjs
   selftest-native-fingerprint.mjs
   selftest-e2e.mjs
 )

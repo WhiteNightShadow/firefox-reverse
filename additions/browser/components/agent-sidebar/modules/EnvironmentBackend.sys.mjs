@@ -13,6 +13,7 @@
  *   EnvironmentFingerprint     指纹生成、校验与采集
  *   EnvironmentPrefs           指纹/代理 → user.js
  *   EnvironmentCurrentProcess  主浏览器自己的指纹配置
+ *   EnvironmentControl         环境浏览器里的退出通道（关闭环境时优先走它）
  */
 
 import { NATIVE_CONSISTENCY_MODE, isNativeFingerprint } from "./NativeFingerprintPolicy.sys.mjs";
@@ -47,6 +48,7 @@ import { defaultProxy, engineFingerprintFor, fingerprintUserPrefs, profileUserJs
 import { EnvironmentStore } from "./EnvironmentStore.sys.mjs";
 import { EnvironmentProcesses } from "./EnvironmentProcess.sys.mjs";
 import { CurrentProcessConfig } from "./EnvironmentCurrentProcess.sys.mjs";
+import { quitChannelReady, quitRequestPending, requestQuit, withdrawQuitRequest } from "./EnvironmentControl.sys.mjs";
 
 const FIREFOX_ONLY_POLICY = "firefox-only-v1";
 
@@ -57,6 +59,7 @@ export class EnvironmentBackend {
     this._processes = new EnvironmentProcesses(opts);
     this._currentProcess = new CurrentProcessConfig(this._store);
     this._closeWaitMs = Math.max(1, Number(opts.closeWaitMs) || 15000);
+    this._controlAckMs = Math.max(1, Number(opts.controlAckMs) || 3000);
     this._reservedPorts = new Set();
   }
 
@@ -486,6 +489,7 @@ export class EnvironmentBackend {
       processArgv0: launch.argv0,
       startError: null,
       startWarning: null,
+      closedBy: null,
     };
     await this._store.saveRuntime(env);
     const Subprocess = this._processes.getSubprocess();
@@ -619,13 +623,14 @@ export class EnvironmentBackend {
     const proc = this._processes.procs.get(env.id);
     const local = !!proc && proc.exitCode == null;
     const pid = (local && proc.pid) || rt.pid || null;
-    const stopped = stopReason => {
+    const stopped = (stopReason, closedBy = null) => {
       env.runtime = {
         ...(env.runtime || {}),
         status: "stopped",
         pid: null,
         lastStoppedAt: nowISO(),
         stopReason,
+        closedBy,
         marionetteReady: false,
         marionetteStatus: "stopped",
       };
@@ -649,9 +654,15 @@ export class EnvironmentBackend {
       }
       return gone();
     };
-    // ① 先请浏览器自己退出：正常落盘 cookie/localStorage/会话，刚登录就关也不会丢登录态。
+    // ① 先请浏览器自己退出：正常落盘 cookie/localStorage/会话，刚登录就关也不会丢登录态。优先走环境内的
+    //    退出通道，它不经过 Marionette，外部自动化占着 Marionette 会话时也走得通；通道没在听再请 Marionette。
     let reason = "closed";
-    let exited = !!rt.marionettePort && (await this._processes.quitViaMarionette(rt.marionettePort, env)) && (await waitGone(this._closeWaitMs));
+    let closedBy = await this._quitViaControl(env, rt, pid, { gone, waitGone });
+    let exited = !!closedBy;
+    if (!exited) {
+      closedBy = "marionette";
+      exited = !!rt.marionettePort && (await this._processes.quitViaMarionette(rt.marionettePort, env)) && (await waitGone(this._closeWaitMs));
+    }
     // ② 退不掉再发终止信号，等不到才强杀。认不出这个 pid 是不是本环境时（查不了进程命令行）一个信号都不发。
     if (!exited && identity === PROCESS_UNKNOWN) {
       env.runtime = { ...(env.runtime || {}), status: "running", stopReason: "close-failed", lastCloseFailedAt: nowISO() };
@@ -660,16 +671,22 @@ export class EnvironmentBackend {
     }
     if (!exited) {
       reason = "terminated";
+      closedBy = "signal";
       if (local && proc.kill) {
         try {
-          proc.kill();
+          // Linux 上 Firefox 收到 SIGTERM 会正常退出：Subprocess 默认 300 毫秒后就补发 SIGKILL，这里让它
+          // 晚于下面的等待，超时由下面统一强杀。macOS 不处理 SIGTERM、Windows 直接结束进程，不受影响。
+          proc.kill(this._closeWaitMs + 5000);
         } catch {
           /* process may already be gone */
         }
         exited = await waitGone(this._closeWaitMs);
-        if (!exited && pid && (await this._processes.killPid(pid, { force: true }))) {
-          reason = "forced-kill-after-timeout";
-          exited = await waitGone(5000);
+        if (!exited && pid) {
+          if (await this._processes.killPid(pid, { force: true })) {
+            reason = "forced-kill-after-timeout";
+          }
+          // 强杀失败也再确认一次：进程可能刚好在上一次检查之后退出，pid 已不存在。
+          exited = await waitGone(Math.min(5000, this._closeWaitMs));
         }
       } else {
         const res = await this._processes.terminatePid(pid, env);
@@ -686,9 +703,42 @@ export class EnvironmentBackend {
       return { ok: false, error: "环境进程没有退出，已保持运行状态；请稍后重试或手动结束该进程。", environment: shortEnv(env) };
     }
     this._processes.forget(env.id);
-    stopped(reason);
+    stopped(reason, closedBy);
     await this._store.saveRuntime(env);
     return { ok: true, environment: shortEnv(env) };
+  }
+
+  // 经环境内的退出通道请浏览器自己退出（见 EnvironmentControl）。环境每 0.5 秒看一次请求，几秒内没被取走
+  // 说明它没在听（还在启动、卡住或是不带通道的旧版本）：撤回请求，交给 Marionette 和信号。
+  // 返回 "quit-channel"（环境取走请求后退出了）、"exited"（等待期间进程自己退出了）或 null（没走通）。
+  async _quitViaControl(env, rt, pid, { gone, waitGone }) {
+    // 和启动时传给环境的 MOZ_FRX_CONTROL_DIR 是同一个目录。
+    const controlDir = env.controlDir;
+    // 就绪标记必须写在这次启动之后：上次运行留下的标记碰上被复用的 pid 时不能当真。
+    const launchedAt = Date.parse(rt.lastStartedAt || "") || 0;
+    if (!pid || !controlDir || !(await quitChannelReady(controlDir, env.id, pid, launchedAt))) {
+      return null;
+    }
+    try {
+      await requestQuit(controlDir, env.id, pid);
+      for (const until = Date.now() + this._controlAckMs; Date.now() < until; await delay(100)) {
+        if (!(await quitRequestPending(controlDir))) {
+          return (await waitGone(this._closeWaitMs)) ? "quit-channel" : null;
+        }
+        if (await gone()) {
+          await withdrawQuitRequest(controlDir);
+          return "exited";
+        }
+      }
+      // 撤回不掉说明环境恰好在最后一刻取走了请求（同一个文件只有一方能删掉），按已接收处理。
+      if (!(await withdrawQuitRequest(controlDir))) {
+        return (await waitGone(this._closeWaitMs)) ? "quit-channel" : null;
+      }
+    } catch {
+      // 写请求失败（磁盘满、没有权限等）：不影响后面的 Marionette 和信号
+      await withdrawQuitRequest(controlDir);
+    }
+    return null;
   }
 
   async delete({ id, confirm = false } = {}) {

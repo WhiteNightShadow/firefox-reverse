@@ -1,0 +1,4 @@
+# 环境浏览器里的退出通道：第一个窗口就绪后开始监听关闭请求，浏览器退出时停止。主浏览器里调用后直接返回。
+# 见 modules/EnvironmentControl.sys.mjs。
+category browser-first-window-ready resource:///modules/agentsidebar/EnvironmentControl.sys.mjs EnvironmentControl.firstWindowReady
+category browser-quit-application-granted resource:///modules/agentsidebar/EnvironmentControl.sys.mjs EnvironmentControl.quitGranted

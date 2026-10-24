@@ -679,10 +679,15 @@ try {
       pid,
       exitCode: null,
       stdout: { async readString() { return ""; } },
-      kill() {
+      kill(timeout) {
         proc.killed = true;
-        if (exitOnKill) {
+        proc.killTimeout = timeout;
+        if (exitOnKill === true) {
           proc.exitCode = 0;
+        } else if (typeof exitOnKill === "number") {
+          setTimeout(() => {
+            proc.exitCode = 0;
+          }, exitOnKill); // 收到终止信号后过一会儿才退出
         }
       },
     };
@@ -717,6 +722,7 @@ try {
     startupTimeoutMs: 200,
     startupPollMs: 1,
     closeWaitMs: 50,
+    controlAckMs: 200,
   });
   const envA = (await lifecycle.create({ name: "Lifecycle A" })).environment;
   const envB = (await lifecycle.create({ name: "Lifecycle B" })).environment;
@@ -745,6 +751,140 @@ try {
   assert.equal(stubborn.environment.runtime.status, "running", "a process that did not exit must not be recorded as stopped");
   assert.equal(stubborn.environment.runtime.pid, reopenedB.environment.runtime.pid);
   exitOnKill = true;
+
+  // ── 环境内退出通道（EnvironmentControl）：先于 Marionette；没在听、标记过期或 pid 对不上时退回 Marionette ──
+  const controlOf = envId => path.join(root, "lifecycle", envId, "control");
+  const requestOf = envId => path.join(controlOf(envId), "quit-request.json");
+  const markReady = (envId, pid, startedAt = Date.now()) =>
+    fs.writeFile(path.join(controlOf(envId), "quit-channel.json"), JSON.stringify({ version: 1, envId, pid, startedAt }));
+  // 模拟环境浏览器：看到发给自己的请求就取走，过 exitDelay 毫秒后退出
+  const listen = (envId, pid, proc, exitDelay = 0) => {
+    const timer = setInterval(async () => {
+      let req = null;
+      try {
+        req = JSON.parse(await fs.readFile(requestOf(envId), "utf8"));
+      } catch {
+        return;
+      }
+      if (req.envId !== envId || req.pid !== pid) {
+        return;
+      }
+      clearInterval(timer);
+      await fs.rm(requestOf(envId), { force: true });
+      setTimeout(() => {
+        proc.exitCode = 0;
+      }, exitDelay);
+    }, 5);
+    return () => clearInterval(timer);
+  };
+  const procOf = opened => spawned.find(s => s.proc.pid === opened.environment.runtime.pid).proc;
+  const envC = (await lifecycle.create({ name: "Lifecycle C" })).environment;
+  quitWorks = true;
+  let openC = await lifecycle.open({ id: envC.id });
+  await markReady(envC.id, openC.environment.runtime.pid);
+  let stopListening = listen(envC.id, openC.environment.runtime.pid, procOf(openC), 30);
+  const quitsBeforeChannel = quitCalls.length;
+  const viaChannel = await lifecycle.close({ id: envC.id });
+  stopListening();
+  assert.equal(viaChannel.environment.runtime.stopReason, "closed");
+  assert.equal(viaChannel.environment.runtime.closedBy, "quit-channel", "the in-environment quit channel comes before Marionette");
+  assert.equal(quitCalls.length, quitsBeforeChannel, "Marionette is not touched when the channel answers");
+  assert.equal(procOf(openC).killed, undefined);
+
+  openC = await lifecycle.open({ id: envC.id });
+  assert.equal(openC.environment.runtime.closedBy, null, "a reopened environment does not carry the previous close method");
+  await markReady(envC.id, openC.environment.runtime.pid);
+  const deaf = await lifecycle.close({ id: envC.id });
+  assert.equal(deaf.environment.runtime.closedBy, "marionette", "an unanswered request falls back to Marionette");
+  assert.equal(quitCalls.length, quitsBeforeChannel + 1);
+  await assert.rejects(fs.access(requestOf(envC.id)), "an unanswered request is withdrawn");
+
+  for (const marker of [{ pidDelta: 0, age: 60000 }, { pidDelta: 0, beforeLaunch: 1000 }, { pidDelta: 1, age: 0 }]) {
+    openC = await lifecycle.open({ id: envC.id });
+    const startedAt = marker.beforeLaunch ? Date.parse(openC.environment.runtime.lastStartedAt) - marker.beforeLaunch : Date.now() - marker.age;
+    await markReady(envC.id, openC.environment.runtime.pid + marker.pidDelta, startedAt);
+    stopListening = listen(envC.id, openC.environment.runtime.pid, procOf(openC));
+    const skipped = await lifecycle.close({ id: envC.id });
+    stopListening();
+    assert.equal(skipped.environment.runtime.closedBy, "marionette", "no request for a stale or foreign marker: " + JSON.stringify(marker));
+    await assert.rejects(fs.access(requestOf(envC.id)));
+  }
+
+  // 写退出请求失败（磁盘满、没有权限）：不报错、不卡在"关闭中"，照常退回 Marionette
+  openC = await lifecycle.open({ id: envC.id });
+  await markReady(envC.id, openC.environment.runtime.pid);
+  const writeJSON = IOUtils.writeJSON;
+  IOUtils.writeJSON = async (p, data) => {
+    if (p.endsWith("quit-request.json")) {
+      throw new Error("NotAllowedError: cannot write");
+    }
+    return writeJSON(p, data);
+  };
+  const unwritable = await lifecycle.close({ id: envC.id });
+  IOUtils.writeJSON = writeJSON;
+  assert.equal(unwritable.ok, true);
+  assert.equal(unwritable.environment.runtime.closedBy, "marionette", "a failed request write falls back to Marionette");
+
+  // 等环境取走请求的这段时间里，进程自己退出了：如实记为 exited，未被取走的请求撤回
+  openC = await lifecycle.open({ id: envC.id });
+  await markReady(envC.id, openC.environment.runtime.pid);
+  setTimeout(() => {
+    procOf(openC).exitCode = 0;
+  }, 50);
+  const selfExit = await lifecycle.close({ id: envC.id });
+  assert.equal(selfExit.environment.runtime.closedBy, "exited");
+  await assert.rejects(fs.access(requestOf(envC.id)), "the unanswered request is withdrawn");
+
+  // 终止信号之后进程退得慢，刚好在等待截止之后才退出、强杀命令因 pid 已不在而失败：仍要认出它已经退出。
+  // Subprocess 自己补发 SIGKILL 的时间要晚于后端的等待。
+  const envD = (await lifecycle.create({ name: "Lifecycle D" })).environment;
+  const openD = await lifecycle.open({ id: envD.id });
+  quitWorks = false;
+  exitOnKill = 350;
+  const late = await lifecycle.close({ id: envD.id });
+  exitOnKill = true;
+  quitWorks = true;
+  assert.equal(late.ok, true, "a process that exits right after the deadline is recognised as gone");
+  assert.equal(late.environment.runtime.stopReason, "terminated");
+  assert.equal(late.environment.runtime.closedBy, "signal");
+  assert.equal(procOf(openD).killTimeout, 50 + 5000, "Subprocess's own SIGKILL comes after the backend's wait");
+
+  // 上一个浏览器会话打开的环境（没有进程句柄，靠命令行核对身份）：同样先走通道，一个信号都不发
+  openC = await lifecycle.open({ id: envC.id });
+  const pidC = openC.environment.runtime.pid;
+  await markReady(envC.id, pidC);
+  let aliveC = true;
+  const detachedSignals = [];
+  const detached = new EnvironmentBackend({
+    root: path.join(root, "lifecycle"),
+    subprocess: {
+      async pathSearch(name) {
+        return `/usr/bin/${name}`;
+      },
+      async call(spec) {
+        if (spec.command.endsWith("/kill")) {
+          detachedSignals.push(spec.arguments);
+        }
+        const isPs = spec.command.endsWith("/ps");
+        const output = isPs && aliveC ? `firefox -marionette -profile ${openC.environment.profilePath}\n` : "";
+        let read = false;
+        return {
+          stdout: { async readString() { if (read) return ""; read = true; return output; } },
+          async wait() { return { exitCode: isPs && !aliveC ? 1 : 0 }; },
+        };
+      },
+    },
+    marionetteQuit: async () => false,
+    closeWaitMs: 2000,
+    controlAckMs: 500,
+  });
+  stopListening = listen(envC.id, pidC, { set exitCode(_value) { aliveC = false; } });
+  const detachedClose = await detached.close({ id: envC.id });
+  stopListening();
+  assert.equal(detachedClose.ok, true);
+  assert.equal(detachedClose.environment.runtime.closedBy, "quit-channel");
+  assert.equal(detachedSignals.length, 0, "no signal is sent when the channel answers");
+  procOf(openC).exitCode = 0;
 
   // 上一个浏览器会话留下的记录（没有进程句柄）：pid 已被别的程序复用时不发任何信号
   const commands = [];
