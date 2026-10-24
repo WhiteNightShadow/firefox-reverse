@@ -80,7 +80,7 @@
 ### 坑 2: content sandbox 拦写 /tmp 和 $HOME
 - **症状**：trace 文件只有父进程的（meta 行），content process 全部 0 字节
 - **原因**：mac/Linux firefox content process sandbox 默认禁止写 `/tmp`、`$HOME`（防恶意 JS 落盘）
-- **解法**：启动时加 `MOZ_DISABLE_CONTENT_SANDBOX=1`（debug 用，生产版要 patch sandbox profile）
+- **解法**：正式版默认关掉内容沙箱。mac/Linux 靠 `patches/agent-ui/0001` 的 `security.sandbox.content.level=0`（mac 只有 Nightly 构建认 0）；Windows 会把它抬到 6，改由 `scripts/apply-phase-b.py` 在 `main()` 最早期注入 `MOZ_DISABLE_CONTENT_SANDBOX=1`。临时调试别的构建时，启动前手动设这个变量也行
 - **教训**：firefox sandbox 是 reverse 工作流的隐形拦路虎，文档必须显眼标注
 
 ### 坑 3: JIT 让 hook 大量 miss

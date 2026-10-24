@@ -184,16 +184,16 @@ patch_file(cgpath, [
 ])
 
 # ---------------------------------------------------------------------------
-# 6. Explicit diagnostic builds only: Windows early-startup sandbox override.
-#    MOZ_DISABLE_CONTENT_SANDBOX=1。内容进程沙箱挡住引擎层 trace 往 %TEMP% 写 NDJSON
-#    (fopen 静默失败)；security.sandbox.content.level=0 在 release 构建被钳制、不足以禁用。
-#    内容进程继承父进程 env，故在 main() 最早注入（早于沙箱 TargetServices 初始化）。
-#    逆向工具、用户已授权放开内容进程文件写入。mac/Linux 无 XP_WIN → 不编译此段。
+# 6. browser/app/nsBrowserApp.cpp: Windows 下父进程启动最早期注入
+#    MOZ_DISABLE_CONTENT_SANDBOX=1。关闭内容沙箱是本浏览器的核心配置：沙箱会挡住引擎层 trace
+#    往 %TEMP% 写 NDJSON (fopen 静默失败)。mac/Linux 靠 0001 的 security.sandbox.content.level=0
+#    即可；Windows 会把这个 pref 一律抬到 6（Nightly 也一样），只能用环境变量：父进程据此算出
+#    级别 0，启动内容进程时就不套沙箱。所以要在 main() 最早注入，早于任何子进程启动。
+#    mac/Linux 无 XP_WIN → 不编译此段。注入的文本别改：已打过的树靠原文判断跳过。
 # ---------------------------------------------------------------------------
 nbapath = os.path.join(ROOT, "browser/app/nsBrowserApp.cpp")
 print(f"==> {nbapath}")
-if os.environ.get("FRX_ALLOW_UNSANDBOXED_TRACE") == "1":
-    patch_file(nbapath, [
+patch_file(nbapath, [
     (
         "inject MOZ_DISABLE_CONTENT_SANDBOX into nsBrowserApp main (Windows)",
         "int main(int argc, char* argv[], char* envp[]) {\n",
@@ -206,16 +206,6 @@ if os.environ.get("FRX_ALLOW_UNSANDBOXED_TRACE") == "1":
         '  _putenv("MOZ_DISABLE_CONTENT_SANDBOX=1");\n'
         "#endif\n",
     ),
-    ])
-else:
-    content = open(nbapath, encoding="utf-8").read()
-    start = content.find("#if defined(XP_WIN)\n  // firefox-reverse: content sandbox on Windows blocks engine-layer trace")
-    if start >= 0:
-        end = content.index("#endif\n", start) + len("#endif\n")
-        block = content[start:end]
-        if '_putenv("MOZ_DISABLE_CONTENT_SANDBOX=1");' not in block:
-            raise RuntimeError("unexpected legacy trace sandbox block")
-        open(nbapath, "w", encoding="utf-8").write(content[:start] + content[end:])
-    print("  [skip] preserve content sandbox (unsandboxed trace requires explicit build opt-in)")
+])
 
 print("\nAll Phase B patches applied successfully.")
