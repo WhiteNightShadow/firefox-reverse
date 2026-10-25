@@ -22,35 +22,36 @@ v0.26.2（2026-10-24编译验收，10-25发布）是按这套流程走通的，�
 
 ## 2. 编译机出包
 
-编译机上有锁定基线源码树（上游`cebc55aab4`）和五个目标各自的objdir。源码树里的`.frx-release-applied`记着上一次打补丁用的提交。每个目标有一把锁，打包段另有一把全局锁。
+编译机怎么准备见[build-host.md](build-host.md)。出包用`scripts/release-build.sh`：它在锁定基线源码树上打补丁，按`configs/`编译，做zh-CN重打包，再按发布文件名放进候选目录。任何一步失败都会停下。
 
-1. 本机打bundle，传到编译机：
+1. 把版本号提交放到编译机上：新克隆一份本仓库，detach到版本号提交。github不通时，在本机打bundle传过去：
    ```sh
    git bundle create frx-<版本>-source.bundle <分支>
    git bundle verify frx-<版本>-source.bundle
    ```
-2. 激活源码，每次发布做一次。任何一步失败都停下：
-   - 拿到五个目标的锁，确认没有构建在跑；
-   - 核对源码树HEAD是`cebc55aab4d2661d1f6c2d1526362947ec4016c1`，`.frx-release-applied`是上一次的提交；
-   - 从bundle克隆到新的`release-src-<版本>`，detach到版本号提交；
-   - `npm --prefix additions/browser/components/agent-sidebar ci --no-audit --no-fund`，打侧栏bundle要用esbuild；
-   - `bash scripts/selftest-agent-tools.sh`；
-   - `git diff --quiet && git diff --cached --quiet`；
-   - `UPSTREAM_DIR=<源码树> bash scripts/apply-patches.sh`，之后再`git diff --quiet`一次，打补丁不能改动仓库副本；
-   - `node scripts/check-branding-assets.mjs <源码树>`；
-   - 把版本号提交写进`<源码树>/.frx-release-applied`。
+2. 在这份检出里激活源码，每次发布做一次：
+   ```sh
+   UPSTREAM_DIR=<源码树> scripts/release-build.sh activate
+   ```
+   它先确认没有目标在编译、源码树HEAD是锁定基线`cebc55aab4d2661d1f6c2d1526362947ec4016c1`、检出是干净的，然后：
+   - `npm ci`，打侧栏bundle要用esbuild；
+   - 跑`scripts/selftest-agent-tools.sh`；
+   - 用`scripts/apply-patches.sh`打补丁，前后都确认检出没被改动；
+   - 跑`scripts/check-branding-assets.mjs`；
+   - 把版本号提交写进`<源码树>/.frx-release-applied`。激活一开始就会删掉旧标记，中途失败时`build`不会用只打了一半补丁的源码树。
 3. BuildID取开编时的`date -u +%Y%m%d%H%M%S`，五个目标共用一个。
-4. 逐个目标编译，目标是`mac-arm64`、`mac-x64`、`linux-x64`、`linux-arm64`、`win-x64`：
-   - 拿该目标的锁，核对源码树HEAD、仓库副本HEAD和`.frx-release-applied`；
-   - mozconfig取该objdir的`.mozconfig`，替换`MOZ_OBJDIR`，并确保有`ac_add_options --with-branding=browser/branding/unofficial`；
-   - 设置环境变量：`MOZCONFIG`、`MOZ_SOURCE_REPO=https://github.com/WhiteNightShadow/firefox-reverse`、`MOZ_SOURCE_CHANGESET=<版本号提交>`、`MOZ_BUILD_DATE=<BuildID>`、`UPLOAD_DIR=<候选目录>`；
-   - 依次执行`./mach configure`、`python3 scripts/verify-branding.py --objdir <objdir>`、`bash scripts/force-build-id-relink.sh <objdir>`、`./mach build`；
-   - 确认`<objdir>/dist/bin/application.ini`里的`SourceStamp`和`BuildID`；
-   - 在全局锁下执行`UPSTREAM_DIR=<源码树> bash scripts/repack-zh-cn.sh`，再按下表复制成发布文件名，记下sha256。
-5. 控制并行数。v0.26.2五个目标同时编时，mac-x64和linux-x64的rustc（gkrust的lto）被oom杀掉，这两个单独重编就过了。建议最多同时编三个。
-6. 在编译机上检查包：
-   - linux：`bash scripts/verify-linux-package.sh amd64|arm64 <tar.xz>`；
-   - windows安装程序：`python3 scripts/verify-windows-installer.py --installer <exe> --zip <zip> --output <报告>`。它用7-Zip取出安装程序的整个`core/`，和zip里的`firefox/`逐文件比sha256，不运行安装向导。7-Zip先从PATH找，找不到再用`~/.mozbuild/7zz/7zz`。v0.26.2是50个文件全部一致。
+4. 逐个目标编译，目标是`macos-arm64`、`macos-x86_64`、`linux-x86_64`、`linux-arm64`、`windows-x86_64`：
+   ```sh
+   UPSTREAM_DIR=<源码树> FRX_L10N_BASE=<l10n目录> MOZ_BUILD_DATE=<BuildID> scripts/release-build.sh build <目标>
+   ```
+   它会：
+   - 核对源码树、l10n检出和`.frx-release-applied`，同一个目标不能同时编两份；
+   - 生成这次用的mozconfig，存成候选目录里的`mozconfig.<目标>`；
+   - 设好`MOZ_SOURCE_REPO`、`MOZ_SOURCE_CHANGESET`和`MOZ_BUILD_DATE`，依次跑`./mach configure`、`scripts/verify-branding.py`、`scripts/force-build-id-relink.sh`、`./mach build`，再确认`application.ini`里的`SourceStamp`和`BuildID`；
+   - 排队跑`scripts/repack-zh-cn.sh`，只取这次新打出的包，按下表改名放进候选目录。候选目录默认是`dist/v<版本>-candidate`，可以用`FRX_DIST_DIR`改；
+   - 检查包：linux跑`scripts/verify-linux-package.sh`；windows跑`scripts/verify-windows-installer.py`，用7-Zip取出安装程序的整个`core/`，和zip里的`firefox/`逐文件比sha256，不运行安装向导，报告写进`windows-installer-check.json`。v0.26.2是50个文件全部一致；
+   - 把sha256写进`<目标>.sha256`。
+5. 控制并行数，最多同时编三个。v0.26.2五个目标同时编时，mac x86_64和linux x86_64的rustc（gkrust的lto）被oom杀掉，这两个单独重编就过了。
 
 ci按`firefox-reverse-<tag>-<平台>.<扩展名>`从release下载候选包，文件名必须严格照下表：
 
@@ -64,13 +65,13 @@ ci按`firefox-reverse-<tag>-<平台>.<扩展名>`从release下载候选包，文
 
 ## 3. 拉回本机，重签mac包
 
-1. 把六个包下载到一个新建的空目录，逐个核对sha256和编译机一致。
+1. 把六个包下载到一个新建的空目录，逐个核对sha256和编译机上的`<目标>.sha256`一致。
 2. 两个dmg分别重打并做ad-hoc签名，输出就是最终包。重签后sha256会变，之后一律用重签后的值：
    ```sh
    bash scripts/macos-repack-adhoc-dmg.sh <原dmg> <输出dmg> arm64
    bash scripts/macos-repack-adhoc-dmg.sh <原dmg> <输出dmg> x86_64
    ```
-3. 除安装程序外的五个包，在本机各跑一次`scripts/prepare-native-candidate.py`，命令见第5步第2条，换掉`PACKAGE_TARGET`和包名。要用python 3.11以上，mac包还要用`hdiutil`和`codesign`；编译机上是python 3.10，跑不了。它核对：
+3. 除安装程序外的五个包，在本机各跑一次`scripts/prepare-native-candidate.py`，命令见第5步第2条，换掉`PACKAGE_TARGET`和包名。要用python 3.11以上，mac包还要用`hdiutil`和`codesign`，所以放在本机跑。它核对：
    - sha256、二进制架构和品牌资源；
    - `application.ini`的`SourceStamp`、`BuildID`，以及`frx-locale.js`里的版本号；
    - 内容沙箱：`security.sandbox.content.level`为0，windows的`firefox.exe`里有`MOZ_DISABLE_CONTENT_SANDBOX=1`注入；
@@ -178,7 +179,7 @@ ci矩阵里没有apple silicon，这一项在本机跑。macos没有`timeout`，
    open -a "/Applications/Firefox Reverse.app" --env 'MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS={"marionette.port":2899}' --args -marionette -remote-allow-system-access
    ```
    先跑一次`node scripts/verify-installed-upgrade.mjs --port 2899 --mcp-root <frx-director-mcp检出> --counts-only --quit`作基线，记下profile目录名，以及书签、模型配置、指纹环境的数量。`--counts-only`不建临时环境，旧版没有退出通道也能用。
-2. 把旧应用打包备份，例如`~/Downloads/Firefox-Reverse-v<旧版本>-backup-<日期>.zip`，再用最终dmg里的应用替换`/Applications`里的。
+2. 把旧应用打包备份，例如`Firefox-Reverse-v<旧版本>-backup-<日期>.zip`，再用最终dmg里的应用替换`/Applications`里的。
 3. 用同样的命令启动新版，跑完整检查：
    ```sh
    node scripts/verify-installed-upgrade.mjs --port 2899 --mcp-root <frx-director-mcp检出> \
@@ -238,4 +239,4 @@ ci矩阵里没有apple silicon，这一项在本机跑。macos没有`timeout`，
 
 ## 已知缺口
 
-编译机上的mozconfig还没入库。`.github/workflows/release.yml`的一致性检查会因为`--with-branding`那一行停下，所以正式包目前走第2步的编译机流程，不走`release.yml`。
+`.github/workflows/release.yml`的mac任务打的是en-US包，不做zh-CN重打包，和正式包不等价，所以正式包走第2步的`release-build.sh`。要用这个工作流，先在自托管runner上准备锁定基线源码树，并在仓库变量里设置`FRX_UPSTREAM_DIR`。

@@ -1,9 +1,9 @@
 # Firefox-Reverse · 自动编译 + 发布到 Releases
 #
-# 触发：仅手动 workflow_dispatch。正式多端包先在 SSH 编译机验证，再决定是否运行本工作流；
-# 普通打 tag 不再自动创建一个与手工 Release 重复的草稿。
+# 触发：仅手动 workflow_dispatch。正式包由编译机上的 scripts/release-build.sh 出（见 docs/release-process.md），
+# 本工作流打的是 en-US 包，不做 zh-CN 重打包；普通打 tag 不再自动创建一个与手工 Release 重复的草稿。
 #
-# 主路径 = 自托管 runner（标签 self-hosted）：复用编译机上已有的 Firefox 源码树，
+# 主路径 = 自托管 runner（标签 self-hosted）：复用 runner 上已有的 Firefox 源码树（路径取仓库变量 FRX_UPSTREAM_DIR），
 #   分别使用独立对象目录增量构建 macOS arm64 / x86_64 DMG，再上传 Release。
 #   增量构建几十秒级，远比 GitHub 托管从零编译靠谱。
 #
@@ -74,25 +74,19 @@ jobs:
             objdir: obj-x86_64-apple-darwin
             file_marker: x86_64
     env:
-      UPSTREAM: /home/ubuntu/firefox-reverse/upstream
+      UPSTREAM: ${{ vars.FRX_UPSTREAM_DIR }}
     steps:
       - name: Checkout 补丁集
         uses: actions/checkout@v4
 
-      - name: 校验锁定 Firefox 基线与 mozconfig
+      - name: 校验锁定 Firefox 基线
         run: |
           set -e
-          test "$(git -C "$UPSTREAM" rev-parse HEAD)" = "$FIREFOX_REV"
-          # mozconfig 以仓库为准。编译机源码树里以前未入库的 mozconfig.mac 若还在，必须与仓库版本一致，
-          # 否则停下，免得换成仓库配置后悄悄改了编译选项。核对后可删掉编译机上的旧文件。
-          legacy="$UPSTREAM/mozconfig.mac"
-          if [[ "${{ matrix.arch }}" == arm64 && -f "$legacy" ]]; then
-            normalize() { sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$' || true; }
-            if ! diff <(normalize "$legacy") <(normalize "${{ matrix.mozconfig }}"); then
-              echo "::error::编译机上的 mozconfig.mac 与仓库 ${{ matrix.mozconfig }} 不一致，先把差异同步进仓库"
-              exit 1
-            fi
+          if [[ -z "$UPSTREAM" ]]; then
+            echo "::error::先在仓库变量里设置 FRX_UPSTREAM_DIR，指向自托管 runner 上的锁定基线源码树"
+            exit 1
           fi
+          test "$(git -C "$UPSTREAM" rev-parse HEAD)" = "$FIREFOX_REV"
 
       - name: 应用补丁集（可重复执行：已打的补丁跳过，侧栏 bundle 现编，additions 增量同步并清理已删除的文件）
         run: |
