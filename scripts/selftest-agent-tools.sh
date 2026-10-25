@@ -21,6 +21,8 @@ run npm --prefix "$SIDEBAR_DIR" run build
 
 SELFTESTS=(
   selftest-markdown.mjs
+  selftest-markdown-streaming.mjs
+  selftest-panel-live.mjs
   selftest-addons.mjs
   selftest-config.mjs
   selftest-global-system-prompt.mjs
@@ -39,12 +41,14 @@ SELFTESTS=(
   selftest-retry.mjs
   selftest-anthropic.mjs
   selftest-toolrouter.mjs
+  selftest-tool-metadata.mjs
   selftest-page-interaction.mjs
   selftest-thread-reservation.mjs
   selftest-workspace.mjs
   selftest-scripts.mjs
   selftest-jsvmp-backend.mjs
   selftest-environment.mjs
+  selftest-environment-control.mjs
   selftest-native-fingerprint.mjs
   selftest-e2e.mjs
 )

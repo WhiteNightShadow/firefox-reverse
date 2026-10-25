@@ -90,7 +90,7 @@ runAgentTurn({ client, router, messages, systemPrompt?, maxRounds=6, signal, onE
   return { content: "(达到 maxRounds)", rounds:maxRounds, messages: msgs }
 ```
 - `onEvent` 把每步（round / tool_call / tool_result / confirm_request / confirm_result / final）推给 UI，便于侧栏展示「Agent 正在调用 X / 请批准」。
-- **用户确认（A3 要求）**：改动型工具（`page_eval`/`page_navigate`/`net_capture`/`net_intercept`/`scripts_save`/`jsvmp_trace`）标 `needsConfirm`；执行前经 `confirm(call)→bool` 征求批准。**默认安全**：需确认但既无 `confirm` 回调也未 `autoApprove` → 拒绝（denied 信封）。只读工具（`*_list`/`*_get`/`code_search`/`jsvmp_query`）免确认。
+- **用户确认（A3 要求）**：每个工具在 `Tools.sys.mjs` 声明时必须写明特性（`confirm` / `repeatExempt` / `progress`，或纯查询 `READ_ONLY`），漏写会在加载时报错。改动型工具（`page_eval`/`page_navigate`/`net_capture`/`scripts_save`/`jsvmp_trace`，以及在宿主 Node 里执行代码的 `run_node`/`js_trace`/`wasm_probe`）标 `confirm`，执行前经 `confirm(call)→bool` 征求批准。**默认安全**：需确认但既无 `confirm` 回调也未 `autoApprove` → 拒绝（denied 信封）。只读工具（`*_list`/`*_get`/`code_search`/`jsvmp_query`）免确认。`dev/selftest-tool-metadata.mjs` 检查名字像改动型的工具都标了确认，并检查 README 工具表、系统提示词和 skill 文档里的工具名与声明一致。
 
 ## 5. 后端适配器（Phase-1 机制要点）
 

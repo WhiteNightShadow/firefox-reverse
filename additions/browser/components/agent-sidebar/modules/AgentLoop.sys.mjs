@@ -56,26 +56,10 @@ const MAX_TRUNC_RETRIES = 6;
 // 既满足"必须带 reasoning_content 字段"的中转，又不让它吃上下文。(Anthropic/Opus 不回灌这段，故无此问题。)
 const REASONING_FEEDBACK_CAP = 1200;
 
-// A2 重复熔断**豁免名单**：这些工具"同参重复"是正当的——每次都有真实副作用或推进世界状态，
-// 不是空转。page_scroll 滚动加载新内容、page_navigate 重载、trace start/stop/clear 开关、
-// page_eval 触发请求/取不同时刻的值、page_click 交互。误把它们当空转拦掉，会逼模型绕路（实测踩到）。
-// 真正该熔断的是**纯只读查询**（jsvmp_query/net_list/fs_list/code_search…）反复拿同一结果。
-const REPEAT_EXEMPT = new Set([
-  "addons_manage",
-  "page_scroll",
-  "page_navigate",
-  "page_click",
-  "page_type",
-  "page_eval",
-  "page_screenshot",
-  "jsvmp_trace",
-  "webapi_trace",
-  "net_capture",
-  "run_node",
-  "run_python",
-  "fs_write",
-  "npm_install",
-]);
+// A2 重复熔断豁免由工具声明里的 repeatExempt 特性决定（Tools.sys.mjs）：这些工具"同参重复"是正当的——
+// 每次都有真实副作用或推进世界状态，不是空转。page_scroll 滚动加载新内容、page_navigate 重载、
+// trace start/stop/clear 开关、page_eval 触发请求/取不同时刻的值、page_click 交互。误把它们当空转拦掉，
+// 会逼模型绕路（实测踩到）。真正该熔断的是**纯只读查询**（jsvmp_query/net_list/fs_list/code_search…）反复拿同一结果。
 
 /** 机械构建进展存档（零额外 LLM 调用、确定性、有界）：工具账本 + 最近的文字叙述 + 最近一步结果摘要。
  *  fromIdx 后扫描——把模型自己的"做了什么/下一步"叙述 + 工具调用清单折成一段，老的原始 trace/输出
@@ -295,12 +279,12 @@ function _resultFp(env) {
 // A1 无进展预算用：判定一次工具调用是否构成"真实前进"（机械、不靠模型自述）。
 // 真前进 = 产生了新的、有价值的状态变化：成功落盘脚本/文件、抓到带调用栈的请求、wasm_probe 出 calls、
 // trace 有非空记录、写了产物文件等。纯查询(失败/count=0/列表没变)不算前进。
-function _isProgress(name, env) {
+function _isProgress(name, env, progressOnSuccess = false) {
   if (!env || env.ok === false) {
     return false;
   }
-  // 写盘/落盘类工具成功 = 前进
-  if (/^(addons_manage|scripts_save|fs_write|fs_copy|fs_mkdir|wasm_disasm|jsvmp_split_dispatcher|jsvmp_disassemble|js_trace|notes_add)$/.test(name)) {
+  // 写盘/落盘类工具成功 = 前进（工具声明里标了 progress）
+  if (progressOnSuccess) {
     return true;
   }
   // run_node/run_python：**只有脚本真的跑成功**才算前进。"进程跑起来了"(env.ok)≠"脚本逻辑成功"——
@@ -889,7 +873,7 @@ export async function runAgentTurn(p) {
       // 拿到**相同结果指纹**（无新信息）→ 引擎直接拒绝执行，逼它换动作/换工具。掐死
       // jsvmp_query(count=0) 反复、fs_list 连发、net_capture→scroll→net_list 空转这类死循环。
       // 豁免有副作用的工具（滚动/导航/trace 开关/触发请求等）——它们同参重复是正当的，不算空转。
-      const callSig = parseErr || REPEAT_EXEMPT.has(name) ? null : _callSig(name, args);
+      const callSig = parseErr || router.isRepeatExempt?.(name) ? null : _callSig(name, args);
       const rep = callSig ? repeatTracker.get(callSig) : null;
       const repeatBlocked = !!(rep && rep.n >= REPEAT_BREAK_AT);
 
@@ -936,7 +920,7 @@ export async function runAgentTurn(p) {
       }
 
       // A1：真实前进则清零预算 + 清空强制决策态；否则累加。被熔断/被拒的不算前进。
-      if (!repeatBlocked && _isProgress(name, env)) {
+      if (!repeatBlocked && _isProgress(name, env, !!router.countsAsProgress?.(name))) {
         noProgress = 0;
         forcedDecisionPending = false;
       } else {

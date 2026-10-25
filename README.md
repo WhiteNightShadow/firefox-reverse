@@ -312,6 +312,14 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
+### v0.26.2（正式版，2026-10-24）
+- **macos数据目录（issue #18）**：默认的`~/Library/Application Support/Firefox`被系统拒绝访问时（如macos 27），改用独立目录`FirefoxReverse`：已有profile就原地接续，没有就新建配置并在侧栏提示一次；旧目录不读、不复制、不删除。磁盘满、i/o错误、只读卷、路径被文件占用、注册表损坏，以及显式`MOZ_APP_DATA`不可读时仍停止并给出诊断。感谢[@leihualiang](https://github.com/leihualiang)报告问题、[@odtu945](https://github.com/odtu945)定位根因并在真实macos 27拦截环境中实测预览版（[社区记录](docs/community/)，[启动说明](docs/macos-startup-diagnostics.md)）。
+- **环境关闭**：先走环境内退出通道，外部mcp/webdriver占着环境的marionette时也能让环境浏览器正常退出，cookie、localstorage照常落盘，`runtime.closedBy`记录走了哪条路。环境进程只认命令行里本环境的profile，pid被复用时一个信号都不发。windows上修复了找不到系统工具导致主浏览器重启后环境状态卡住、无法重开的问题。
+- **侧栏与工具**：流式回复按块增量渲染，长回复时主线程最大卡顿从56–71ms降到17–18ms。多窗口下查看外部agent会话改为只读并可接管。需确认的工具补齐`run_node`、`run_python`、`npm_install`、`fs_write`、`fs_copy`和改环境配置的`env_*`，会在宿主node里执行页面代码的`js_trace`、`wasm_probe`也需要确认；`scripts_save`只抓http(s)、data、blob。
+- **指纹与构建**：指纹配置保存前按引擎约束校验，关闭指纹覆盖时仍隐藏webdriver，native环境的tls/quic恢复出厂值。windows默认关闭内容沙箱，与macos、linux一致；`apply-patches.sh`可重复执行，ci在锁定基线上把补丁流水线跑两遍。
+- **最终包验收**：五目标六包统一SourceStamp `adeb5100a6d43382bd0e26e9ab8461dcadbdbd79`、BuildID `20261024082441`。mac arm64/intel、windows x86_64、linux x86_64/arm64指纹回归分别通过213/197/212/182/182项，各通过33项页面/agent检查和8类提示词场景/11条合成请求（[原生ci](https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/40084257624)）。mac arm64另通过15个数据目录场景（含#18两类情况）、环境退出通道和从v0.26.1原位升级检查；windows另在真机上通过退出通道、进程身份核对和重启后状态恢复。[验证摘要](docs/verification/release-v0.26.2/summary.json)。
+- **安装包**：[v0.26.2 Release](https://github.com/WhiteNightShadow/firefox-reverse/releases/tag/v0.26.2)提供五目标六个安装/便携包；升级前完整退出旧应用，替换原位置的应用，保留现有profile与指纹环境目录。macos包为ad-hoc签名，未做apple developer id公证。
+
 ### v0.26.2-preview.1（macOS 启动候选修复）
 - **Issue #18**：为 macOS 默认数据目录增加受限恢复，访问拒绝时可原地接续已有 `FirefoxReverse` 独立 profile，并记住选择与独立缓存；可用旧目录和显式覆盖保持兼容，不搬迁、清空或解锁用户数据。
 - **边界与诊断**：权限错误不再当成目录缺失；磁盘故障、路径冲突、备用注册表损坏不自动换目录。只读诊断补充 `MOZ_APP_DATA/MOZ_LOCAL_APP_DATA` 和独立目录状态。

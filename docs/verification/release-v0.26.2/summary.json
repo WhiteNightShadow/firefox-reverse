@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "release": "v0.26.2",
+  "releaseKind": "release",
+  "sourceCommit": "adeb5100a6d43382bd0e26e9ab8461dcadbdbd79",
+  "buildID": "20261024082441",
+  "packages": {
+    "firefox-reverse-v0.26.2-linux-arm64.tar.xz": "bf5fe55e7fdcce3f46144ca0122116bce5c075b097a8c9efb17e00e97b7c3815",
+    "firefox-reverse-v0.26.2-linux-x86_64.tar.xz": "a5f967062506f5a399c8840df3e416f6022eacb947dc1933ba73fdb6aeb4f4c6",
+    "firefox-reverse-v0.26.2-macos-arm64.dmg": "09eec27c076db95d3adad9d3e659e4b72c705d62110932647dec5266366363f8",
+    "firefox-reverse-v0.26.2-macos-x86_64.dmg": "1fba6009790fa3478a4ed58fd5d81efee414a9b6a206ead653be598335be3350",
+    "firefox-reverse-v0.26.2-windows-x86_64-installer.exe": "3088e752fd80727857846f25141b70d6b51c2c8573a9d8b7880e04bdd1e3e89b",
+    "firefox-reverse-v0.26.2-windows-x86_64.zip": "11204583d51bb6c4cd0f6f91fd1a9f01505acf151e501b160975d8f9bb6432e2"
+  },
+  "nativeCI": {
+    "run": "https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/40084257624",
+    "results": {
+      "macos-x86_64": {
+        "runner": "macos-15-intel",
+        "packageIdentity": "passed",
+        "nativeFingerprintAssertions": 197,
+        "pageAndAgentAssertions": 33,
+        "globalSystemPromptScenarios": 8,
+        "syntheticModelRequests": 11,
+        "browserExitCodes": [
+          0,
+          0
+        ]
+      },
+      "windows-x86_64": {
+        "runner": "windows-latest",
+        "packageIdentity": "passed",
+        "nativeFingerprintAssertions": 212,
+        "pageAndAgentAssertions": 33,
+        "globalSystemPromptScenarios": 8,
+        "syntheticModelRequests": 11,
+        "browserExitCodes": [
+          0,
+          0
+        ],
+        "screenshotRuns": 6,
+        "ledgerChecks": 5
+      },
+      "linux-x86_64": {
+        "runner": "ubuntu-24.04",
+        "packageIdentity": "passed",
+        "nativeFingerprintAssertions": 182,
+        "pageAndAgentAssertions": 33,
+        "globalSystemPromptScenarios": 8,
+        "syntheticModelRequests": 11,
+        "browserExitCodes": [
+          0,
+          0
+        ]
+      },
+      "linux-arm64": {
+        "runner": "ubuntu-24.04-arm",
+        "packageIdentity": "passed",
+        "nativeFingerprintAssertions": 182,
+        "pageAndAgentAssertions": 33,
+        "globalSystemPromptScenarios": 8,
+        "syntheticModelRequests": 11,
+        "browserExitCodes": [
+          0,
+          0
+        ]
+      }
+    }
+  },
+  "local": {
+    "macos-arm64": {
+      "host": {
+        "system": "macOS",
+        "version": "26.7.1",
+        "architecture": "arm64"
+      },
+      "signature": "ad-hoc verified, not Developer ID notarized",
+      "checks": {
+        "packageIdentity": "passed",
+        "nativeFingerprintAssertions": 213,
+        "pageAndAgentAssertions": 33,
+        "globalSystemPromptScenarios": 8,
+        "syntheticModelRequests": 11,
+        "macOSAppDataNativeScenarios": 15,
+        "environmentQuitChannel": "passed"
+      },
+      "resourcesUnchangedAfterTests": true,
+      "inPlaceUpgradeFromV0261": {
+        "sameProfile": true,
+        "bookmarksPresent": true,
+        "modelProfilesPresent": true,
+        "environmentsPresent": true,
+        "environmentQuitChannel": "passed"
+      }
+    },
+    "windows-x86_64": {
+      "host": "Windows Server 2022 (no GPU)",
+      "checks": {
+        "nativeFingerprintAssertions": 196,
+        "environmentQuitChannel": "passed",
+        "processIdentityChecks": "passed",
+        "statusAfterMainBrowserRestart": "passed"
+      }
+    },
+    "windows-installer": "static payload comparison passed: application.ini, firefox.exe, xul.dll, omni.ja, browser/omni.ja",
+    "linux": "verify-linux-package.sh passed for amd64 and arm64"
+  },
+  "limitations": [
+    "macOS app-data scenarios use a temporary FSFindFolder redirect and sandbox faults, not a macOS 27 TCC reproduction.",
+    "Headless Intel Mac and Linux runners do not exercise GPU/MSAA; the Windows Server 2022 host has no GPU.",
+    "On networks that cannot reach Mozilla services, environment browsers on Windows may take 15-60 s or more to exit; the backend force-closes them after 15 s. v0.26.1 behaves the same.",
+    "Windows trace output was not exercised on real hardware."
+  ]
+}
