@@ -1,14 +1,14 @@
 # Cross-compile desktop Firefox from Linux x86_64 to Linux ARM64.
+# Release builds go through scripts/release-build.sh, which adds --with-l10n-base.
 
 ac_add_options --target=aarch64-linux-gnu
-ac_add_options --enable-bootstrap
+ac_add_options --enable-bootstrap=no-update
 ac_add_options --enable-application=browser
 ac_add_options --with-branding=browser/branding/unofficial
 ac_add_options --enable-release
 ac_add_options --disable-crashreporter
 ac_add_options --disable-backgroundtasks
 ac_add_options --disable-tests
-ac_add_options --disable-debug
 ac_add_options --disable-updater
 
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-aarch64-linux
