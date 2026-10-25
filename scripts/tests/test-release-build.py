@@ -1,6 +1,7 @@
 """release-build.sh: the mozconfig a release build uses, the checks that run before any build work, and the
 activate/build flow against a stub mach and stub helper scripts."""
 from pathlib import Path
+import fcntl
 import hashlib
 import os
 import shutil
@@ -254,6 +255,29 @@ class ReleaseBuildFlowTest(unittest.TestCase):
         self.assertEqual(names, ["firefox-reverse-v9.8.7-windows-x86_64.zip",
                                  "firefox-reverse-v9.8.7-windows-x86_64-installer.exe"])
         self.assertEqual(list(self.upstream.glob("obj-*/.frx-package-start.*")), [])
+
+    @unittest.skipUnless(shutil.which("flock"), "needs util-linux flock")
+    def test_locks_keep_activation_and_builds_apart(self):
+        self.assertEqual(self.run_script("activate").returncode, 0)
+        locks = self.upstream / ".frx-release-locks"
+        for lock, mode, args, message in (
+            ("tree.lock", fcntl.LOCK_SH, ("activate",), "有目标正在编译"),
+            ("tree.lock", fcntl.LOCK_EX, ("build", "linux-x86_64"), "源码树正在激活"),
+            ("linux-x86_64.lock", fcntl.LOCK_EX, ("build", "linux-x86_64"), "linux-x86_64 已经在编译"),
+        ):
+            with self.subTest(lock=lock, args=args), open(locks / lock, "w") as held:
+                fcntl.flock(held, mode)
+                result = self.run_script(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+        self.assertEqual(self.calls(), ["npm", "selftest-agent-tools.sh", "apply-patches.sh", "check-branding-assets.mjs"])
+
+        # Another target building at the same time holds the shared tree lock and its own target lock.
+        with open(locks / "tree.lock", "w") as tree, open(locks / "windows-x86_64.lock", "w") as other:
+            fcntl.flock(tree, fcntl.LOCK_SH)
+            fcntl.flock(other, fcntl.LOCK_EX)
+            result = self.run_script("build", "linux-x86_64")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_build_fails_when_the_repack_produces_no_package(self):
         self.assertEqual(self.run_script("activate").returncode, 0)
