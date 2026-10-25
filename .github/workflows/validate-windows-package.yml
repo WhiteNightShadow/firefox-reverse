@@ -112,6 +112,9 @@ jobs:
       - name: Global system prompt in unmodified final package
         shell: bash
         run: python scripts/verify-global-system-prompt.py --app "$FRX_TEST_BINARY" --source-commit "$SOURCE_COMMIT" --build-id "$EXPECTED_BUILD_ID" --bundle-sha256 "$FRX_TEST_BUNDLE_SHA" --output native-report/global-system-prompt
+      - name: Environment quit channel, process identity and restart recovery
+        shell: bash
+        run: node scripts/verify-environment-lifecycle.mjs --firefox "$FRX_TEST_BINARY" --xul-sha256 "$FRX_TEST_XUL_SHA" --mcp-root "$GITHUB_WORKSPACE/mcp-fixture" --output native-report/ENVIRONMENT-LIFECYCLE.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
