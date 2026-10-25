@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import struct
 import subprocess
@@ -82,6 +83,13 @@ ini = configparser.ConfigParser(interpolation=None)
 ini.read(resource_root / "application.ini", encoding="utf-8")
 assert ini["App"]["BuildID"] == build_id, "BuildID mismatch"
 assert ini["App"]["SourceStamp"] == commit, "SourceStamp mismatch"
+# The content sandbox stays off: engine-level traces cannot write their logs otherwise. Patch 0001
+# sets the pref to 0, but Windows clamps the pref to at least 6, so there only the startup override
+# that phase-b injects into firefox.exe turns the sandbox off.
+with zipfile.ZipFile(resource_root / "browser/omni.ja") as archive:
+    assert 'pref("security.sandbox.content.level", 0);' in archive.read("defaults/preferences/firefox.js").decode("utf-8"), "content sandbox pref is not 0"
+if target.startswith("windows"):
+    assert b"MOZ_DISABLE_CONTENT_SANDBOX=1" in binary.read_bytes(), "firefox.exe lacks the content sandbox override"
 expected = subprocess.check_output(["git", "show", f"{commit}:additions/browser/components/agent-sidebar/preferences/frx-locale.js"])
 preference_file = resource_root / "defaults/pref/frx-locale.js"
 if preference_file.is_file():
@@ -96,8 +104,15 @@ with zipfile.ZipFile(resource_root / "omni.ja") as archive:
     assert b"#promiseXULFrameLoaderCreated" in extension_parent
     extension_parent_sha = hashlib.sha256(extension_parent).hexdigest()
 assert tag[1:] in expected.decode()
-modules = ["EnvironmentBackend", "EnvironmentCommon", "EnvironmentControl", "EnvironmentCurrentProcess", "EnvironmentFingerprint", "EnvironmentPrefs", "EnvironmentProcess", "EnvironmentStore", "NativeFingerprintPolicy", "ConfigStore", "AgentSession", "SidebarTypography", "LlmClient", "PageBackend", "PageInteractionBackend", "PageInteractionCore", "AgentInteractionChild", "Tools"]
+# Every module moz.build registers must ship: tracked ones byte for byte, generated ones (built by
+# npm run build, not in git) at least present.
+sidebar = "additions/browser/components/agent-sidebar"
+modules = re.findall(r'"modules/([^"/]+)\.sys\.mjs"', subprocess.check_output(["git", "show", f"{commit}:{sidebar}/moz.build"], encoding="utf-8"))
+assert modules, "moz.build registers no sidebar modules"
+tracked = set(subprocess.check_output(["git", "ls-tree", "--name-only", f"{commit}:{sidebar}/modules"], encoding="utf-8").split())
+generated = [module for module in modules if f"{module}.sys.mjs" not in tracked]
 with zipfile.ZipFile(resource_root / "browser/omni.ja") as archive:
+    packaged = set(archive.namelist())
     ui_prefix = "chrome/browser/content/browser/agent-sidebar/"
     bundle_sha = hashlib.sha256(archive.read(ui_prefix + "agent-sidebar.bundle.js")).hexdigest()
     if os.environ.get("EXPECTED_SIDEBAR_BUNDLE"):
@@ -105,13 +120,15 @@ with zipfile.ZipFile(resource_root / "browser/omni.ja") as archive:
     expected_css = subprocess.check_output(["git", "show", f"{commit}:additions/browser/components/agent-sidebar/content/agent-panel.css"])
     assert archive.read(ui_prefix + "agent-panel.css") == expected_css, "stale sidebar styles"
     for module in modules:
-        expected = subprocess.check_output(["git", "show", f"{commit}:additions/browser/components/agent-sidebar/modules/{module}.sys.mjs"])
-        assert archive.read(f"modules/agentsidebar/{module}.sys.mjs") == expected, f"stale module: {module}"
+        assert f"modules/agentsidebar/{module}.sys.mjs" in packaged, f"missing module: {module}"
+        if module not in generated:
+            source = subprocess.check_output(["git", "show", f"{commit}:{sidebar}/modules/{module}.sys.mjs"])
+            assert archive.read(f"modules/agentsidebar/{module}.sys.mjs") == source, f"stale module: {module}"
     assert b"MIT License" in archive.read("modules/agentsidebar/PageAccessibility.sys.mjs"), "missing accessibility bundle/license"
     registered = "\n".join(archive.read(n).decode("utf-8", "replace") for n in archive.namelist() if n.endswith(".manifest"))
     assert "EnvironmentControl.sys.mjs EnvironmentControl.firstWindowReady" in registered, "environment quit channel is not registered"
     assert "右击或下拉显示历史" in archive.read("localization/zh-CN/browser/browserContext.ftl").decode()
-report = {"package": name, "packageSHA256": sha(package), "xulSHA256": sha(xul), "binaryArchitecture": architecture, "sidebarBundleSHA256": bundle_sha, "extensionParentSHA256": extension_parent_sha, "sourceCommit": commit, "buildID": build_id, "modules": modules, "status": "passed"}
+report = {"package": name, "packageSHA256": sha(package), "xulSHA256": sha(xul), "binaryArchitecture": architecture, "sidebarBundleSHA256": bundle_sha, "extensionParentSHA256": extension_parent_sha, "sourceCommit": commit, "buildID": build_id, "modules": modules, "generatedModules": generated, "status": "passed"}
 report["branding"] = branding_report
 (output / "PACKAGE-IDENTITY.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
