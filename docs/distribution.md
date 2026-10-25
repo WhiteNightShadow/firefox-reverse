@@ -1,5 +1,7 @@
 # 发布与可见性策略
 
+> 这是早期规划，很多内容已经过时；实际发布流程见[release-process.md](release-process.md)。
+
 ## 阶段
 
 | 阶段 | 仓库可见性 | Release 可见性 | 触发条件 |
