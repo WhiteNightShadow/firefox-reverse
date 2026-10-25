@@ -247,7 +247,7 @@ cd upstream && ./mach build && ./mach package
 - 指纹配置层：`additions/dom/base/FrxFingerprintConfig.*`、`NavigatorUAData.*` 及 `scripts/apply-fingerprint-config.py` 写入的 Gecko / Necko 接入点。
 - 引擎观测层：`additions/js/...` 的 SpiderMonkey trace 与 `additions/dom/bindings/...` 的 WebAPI trace。
 - 环境数据不写进仓库或构建目录，运行时默认落在 `~/.firefox-reverse/environments`。
-- 自动化构建脚本见 `.github/workflows/release.yml`，编译选项在 `configs/mozconfig.*`；push / PR 时 `.github/workflows/ci.yml` 跑自测，并在锁定基线上把补丁流程跑两遍。
+- 正式包由编译机上的 `scripts/release-build.sh` 出，编译机准备见 [docs/build-host.md](docs/build-host.md)，发布流程见 [docs/release-process.md](docs/release-process.md)；五个目标的编译选项在 `configs/mozconfig.*`。push / PR 时 `.github/workflows/ci.yml` 跑自测，并在锁定基线上把补丁流程跑两遍。
 
 ---
 
