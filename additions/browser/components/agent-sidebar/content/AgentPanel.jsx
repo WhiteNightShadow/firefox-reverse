@@ -35,6 +35,7 @@ const SYSTEM = `你是 firefox-reverse 浏览器内置的 JS 逆向与自动化�
 
 【反绕圈】**⚠ 工具的硬限制 ≠「此路不通」（本 Agent 最大的坑，记牢）**：page_eval 输出被截 / run_node 超时 / 结果被上下文上限截 / fs_read 整读被拦——是**工具用法要换**（**取大源码·\`fn.toString()\` 一律加 \`saveTo:'work/x.js'\` 落盘再 code_search/fs_read**、超时调大、分段读），**不是分析路线死了**；**严禁**因撞工具上限就编个"环境/指纹绕不过"的体面根因、甩"白盒/oracle 二选一"来结案。看到 truncated/被截/只回一截 = 上限、换用法别换策略。 其次：同类报错 / 同一工具撞同一个错 **≥3 次 = 在绕圈** → 别再用同样方式重试，按 skill_get §6 换路线。系统也会在工具结果里给你换路线提示。
 
+【可重复】签名/指纹里混了随机 nonce、Node 复刻没法和页面逐位对比 → \`page_determinism(start)\` 固定种子再 \`page_navigate\` 重开页面，\`page_determinism(replica)\` 把同一串随机数的 Node 版写进工作目录给复刻用；要反复复跑同一流程又不想碰线上(限流/封号/数据会变) → \`net_capture(captureBody:true)\` 正常走一遍后 \`net_replay(start)\` 离线回放。
 【上下文】大结果(trace/大文件/字节码)别整块灌进对话——先落盘、对话留摘要；要细节用 \`fs_read\` 的 offset/limit 分段、\`code_search\` 精搜、或 \`run_node\` 算好只回结论。（长会话堆大会拖慢甚至卡死。）
 【沉淀】每验证通过一个关键结论 → \`notes_add\`（**只记验证过的**），下次同站点复用。结论用「## 结论」小标题：参数在哪生成 · 算法/依赖/指纹输入 · 可独立复现(附可运行 .js/.py + 实打接口返回有效数据)。
 

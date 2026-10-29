@@ -6,10 +6,12 @@
  *   code    搜索                (CodeBackend, IOUtils 语料搜索)
  *   jsvmp   JSVMP trace 读取    (JsvmpBackend, 读 C++ NDJSON，自动镜像到工作目录)
  *   workspace 工作目录          (WorkspaceBackend, 文件读写 + node/python 执行)
+ *   determinism 固定随机数      (PageDeterminism, 引擎层设种子 + AgentDeterminism actor)
  *   find    定位加密入口        (组合 net + code)
  */
 import { AddonBackend } from "./AddonBackend.sys.mjs";
 import { PageBackend } from "./PageBackend.sys.mjs";
+import { PageDeterminism } from "./PageDeterminism.sys.mjs";
 import { NetworkBackend } from "./NetworkBackend.sys.mjs";
 import { ScriptsBackend } from "./ScriptsBackend.sys.mjs";
 import { CodeBackend } from "./CodeBackend.sys.mjs";
@@ -35,6 +37,10 @@ export function getBackends() {
   page._net = net;
   // 工作目录后端：文件读写 + 本地 node/python 执行（config 提供 exe 路径覆盖）。
   const workspace = new WorkspaceBackend({ config: configStore });
+  // net_replay 的 HAR 读写走工作目录（路径限定在工作目录内）。
+  net._workspace = workspace;
+  // page_determinism：按当前标签页设种子；replica 把同算法的 Node 版写进工作目录。
+  const determinism = new PageDeterminism({ page, workspace });
   // code_search 传 workspace：除语料外，**同时搜工作目录**(scripts/work/wasm)，省去退化成 run_node grep。
   const code = new CodeBackend({ workspace });
   // scripts 传 workspace：scripts_save(toWorkspace) 可把 signer 源码直接落到工作目录，立即 run_node。
@@ -198,6 +204,6 @@ export function getBackends() {
     },
   };
 
-  _singleton = { page, net, scripts, code, jsvmp, webapi, workspace, notes, ledger, skill, env, addons, find, cookies };
+  _singleton = { page, net, determinism, scripts, code, jsvmp, webapi, workspace, notes, ledger, skill, env, addons, find, cookies };
   return _singleton;
 }
