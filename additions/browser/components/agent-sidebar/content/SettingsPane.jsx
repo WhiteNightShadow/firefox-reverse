@@ -57,6 +57,8 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
   const isCustom = provider === "custom";
   const providerRef = useRef(provider);
   providerRef.current = provider;
+  const protocolRef = useRef(customProtocol);
+  protocolRef.current = customProtocol;
   const fetchSeqRef = useRef(0);
 
   function refreshProfiles(preferId) {
@@ -191,10 +193,14 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
     if (!fetchModels) return;
     const seq = ++fetchSeqRef.current;
     const forProvider = provider;
-    const stale = () => seq !== fetchSeqRef.current || providerRef.current !== forProvider;
+    const forProtocol = isCustom ? customProtocol : "openai";
+    const stale = () =>
+      seq !== fetchSeqRef.current ||
+      providerRef.current !== forProvider ||
+      (isCustom && protocolRef.current !== forProtocol);
     setFetchMsg("获取中…");
     try {
-      const list = await fetchModels(isCustom ? customUrl : current.baseUrl, apiKey);
+      const list = await fetchModels(isCustom ? customUrl : current.baseUrl, apiKey, forProtocol);
       if (stale()) return;
       setFetchedModels(list);
       setManual(false);
@@ -265,7 +271,9 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
             协议
             <select value={customProtocol} onChange={e => { setCustomProtocol(e.target.value); setFetchedModels([]); setManual(false); setStatus(""); }}>
               <option value="openai">OpenAI 兼容（/v1/chat/completions）</option>
+              <option value="openai-responses">OpenAI Responses API（/v1/responses）</option>
               <option value="anthropic">Anthropic 兼容（/v1/messages）</option>
+              <option value="gemini">Google Gemini 原生（GenerateContent）</option>
             </select>
           </label>
           <label className="settings-pane__field">
@@ -280,7 +288,7 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         <input type="password" value={apiKey} placeholder="sk-..." onChange={e => { setApiKey(e.target.value); setStatus(""); }} />
       </label>
 
-      {isCustom && customProtocol === "openai" && (
+      {isCustom && (customProtocol === "openai" || customProtocol === "openai-responses") && (
         <label className="settings-pane__field">
           思考等级
           <select value={customReasoningEffort} onChange={e => { setCustomReasoningEffort(e.target.value); setStatus(""); }}>

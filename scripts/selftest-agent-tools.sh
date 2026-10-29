@@ -40,6 +40,8 @@ SELFTESTS=(
   selftest-stream.mjs
   selftest-retry.mjs
   selftest-anthropic.mjs
+  selftest-openai-responses.mjs
+  selftest-gemini.mjs
   selftest-toolrouter.mjs
   selftest-tool-metadata.mjs
   selftest-page-interaction.mjs
