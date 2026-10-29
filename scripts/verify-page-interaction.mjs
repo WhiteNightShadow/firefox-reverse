@@ -8,6 +8,7 @@ import http from "node:http";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
 const options = process.argv.slice(2);
@@ -26,7 +27,18 @@ const portServer = net.createServer();
 await listen(portServer);
 const port = portServer.address().port;
 await new Promise(resolve => portServer.close(resolve));
+// /replay/* answers gzip-compressed text that changes with `live`, so replay must serve the recording (decoded)
+// instead of the network, and the hit counter shows whether the server was asked at all.
+const replayServer = { live: "live-1", hits: 0 };
 const server = http.createServer((request, response) => {
+  if (request.url.startsWith("/replay/")) {
+    replayServer.hits++;
+    response.setHeader("Content-Type", "text/plain; charset=utf-8");
+    response.setHeader("Content-Encoding", "gzip");
+    response.setHeader("Access-Control-Allow-Origin", "*");
+    response.end(gzipSync(`${replayServer.live} ${request.url} 签名`));
+    return;
+  }
   response.setHeader("Content-Type", "text/html; charset=utf-8");
   const origin = `http://127.0.0.1:${server.address().port}`;
   const cross = origin.replace("127.0.0.1", "localhost");
@@ -128,7 +140,7 @@ try {
   // just a separately constructed PageBackend. Fail before metadata fallback.
   await wire.execute('return !!ChromeUtils.importESModule("resource:///modules/agentsidebar/Backends.sys.mjs").getBackends().page;');
   const catalog = await wire.execute(JS_TOOLS);
-  check("71 live browser tools", catalog.count === 71 && catalog.missingDeclared.length === 0);
+  check("72 live browser tools", catalog.count === 72 && catalog.missingDeclared.length === 0);
   const routed = await wire.executeAsync(JS_CALLTOOL, ["page_find", { role: "button", name: "Continue" }, null]);
   check("MCP dispatch semantic query", routed.ok && routed.data?.count === 1);
   const clicked = await wire.executeAsync(JS_CALLTOOL, ["page_click", { ref: routed.data.elements[0].ref }, null]);
@@ -155,6 +167,39 @@ try {
   } finally {
     check("Agent network capture stops", (await tool("net_capture", { action: "stop" })).ok);
   }
+  // Offline replay: record with bodies once, then answer from the recording while the server has moved on.
+  const fetchText = async url => (await call("eval", { expression: `fetch(${JSON.stringify(url)}).then(r=>r.text(),e=>"blocked:"+e.name)` })).value;
+  check("Agent capture with bodies starts", (await tool("net_capture", { action: "start", urlPattern: origin + "/replay/*", captureBody: true })).ok);
+  check("live response before recording", await fetchText(origin + "/replay/data") === "live-1 /replay/data 签名");
+  let recorded;
+  let lastSeen;
+  for (let i = 0; i < 30 && !recorded; i++) {
+    const listed = (await tool("net_list", { urlPattern: origin + "/replay/data", limit: 5 })).data?.requests || [];
+    for (const entry of listed) {
+      lastSeen = await tool("net_get", { requestId: String(entry.id), includeBody: true });
+      const detail = lastSeen.data?.request;
+      if (detail?.responseBody?.text === "live-1 /replay/data 签名" && detail.responseBody.complete) recorded = detail;
+    }
+    if (!recorded) await delay(100);
+  }
+  assert(recorded, `Agent captured the decoded response body: ${JSON.stringify(lastSeen?.data?.request?.responseBody)}`);
+  checks.push("Agent captured the decoded response body");
+  await tool("net_capture", { action: "stop" });
+  replayServer.live = "live-2";
+  replayServer.hits = 0;
+  const replaying = await tool("net_replay", { action: "start", urlPattern: origin + "/replay/*" });
+  check("replay starts from the capture", replaying.ok && replaying.data?.entries >= 1);
+  check("replay answers from the recording without the network", await fetchText(origin + "/replay/data") === "live-1 /replay/data 签名" && replayServer.hits === 0);
+  check("replay blocks an unrecorded request", (await fetchText(origin + "/replay/other")).startsWith("blocked:") && replayServer.hits === 0);
+  const decisions = (await tool("net_replay", { action: "log" })).data?.decisions?.map(d => d.decision) || [];
+  check("replay log records each decision", decisions.includes("replayed") && decisions.includes("blocked"));
+  check("replay saves a HAR in the workspace", (await tool("net_replay", { action: "save", path: "work/replay.har", urlPattern: origin + "/replay/*" })).ok
+    && JSON.parse(await fs.readFile(path.join(workspace, "work/replay.har"), "utf8")).log.entries.length >= 1);
+  await tool("net_replay", { action: "stop" });
+  check("replay from the HAR", (await tool("net_replay", { action: "start", source: "har", harPath: "work/replay.har" })).ok
+    && await fetchText(origin + "/replay/data") === "live-1 /replay/data 签名" && replayServer.hits === 0);
+  check("replay stops", (await tool("net_replay", { action: "stop" })).ok);
+  check("network is live again after replay", await fetchText(origin + "/replay/data") === "live-2 /replay/data 签名" && replayServer.hits === 1);
   const image = await call("screenshot");
   check("screenshot dimensions", image.width > 100 && image.height > 100 && image.coordinateSpace === "top-viewport-css");
   if (options.includes("--screenshot")) await fs.writeFile(option("--screenshot"), Buffer.from(image._media[0].dataUrl.split(",")[1], "base64"));

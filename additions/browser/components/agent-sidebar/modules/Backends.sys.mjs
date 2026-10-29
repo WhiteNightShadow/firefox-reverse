@@ -35,6 +35,8 @@ export function getBackends() {
   page._net = net;
   // 工作目录后端：文件读写 + 本地 node/python 执行（config 提供 exe 路径覆盖）。
   const workspace = new WorkspaceBackend({ config: configStore });
+  // net_replay 的 HAR 读写走工作目录（路径限定在工作目录内）。
+  net._workspace = workspace;
   // code_search 传 workspace：除语料外，**同时搜工作目录**(scripts/work/wasm)，省去退化成 run_node grep。
   const code = new CodeBackend({ workspace });
   // scripts 传 workspace：scripts_save(toWorkspace) 可把 signer 源码直接落到工作目录，立即 run_node。

@@ -250,7 +250,7 @@ function toolTable() {
         properties: {
           action: { type: "string", enum: ["start", "stop", "status"] },
           urlPattern: { type: "string", description: "fnmatch 过滤，省略捕获全部" },
-          captureBody: { type: "boolean" },
+          captureBody: { type: "boolean", description: "同时录请求体和响应体（解码后的内容，单条 8MB、总量 64MB 封顶）。net_get(includeBody) 查看；net_replay 离线回放要靠它" },
         },
         required: ["action"],
       },
@@ -281,12 +281,41 @@ function toolTable() {
         properties: {
           requestId: { type: "string", description: "= net_list 返回的 id（把那个数字原样传进来）" },
           id: { type: "integer", description: "requestId 的别名（直接传 net_list 的 id 字段也行）" },
-          includeBody: { type: "boolean" },
+          includeBody: { type: "boolean", description: "带上请求体和响应体（文本按 utf8、二进制按 base64，各显示前 2 万字符）；需要 net_capture(captureBody:true) 之后的请求" },
         },
       },
       b => b.net && b.net.get,
       (b, a, ctx) => b.net.get(a, ctx),
       READ_ONLY
+    ),
+    T(
+      "net_replay",
+      "**离线回放**：用录好的响应回答当前标签页之后的请求，**不走网络**（Firefox 原生 setResponseOverride，与 WebDriver BiDi provideResponse 同一机制，页面看到的就是正常响应）。" +
+        "用途：反复复跑同一个页面/签名流程而不碰线上（不怕封号、限流、数据变化）；对比改动前后的 trace；断网分析。" +
+        "流程：net_capture(start, captureBody:true) → 把页面正常走一遍 → net_replay(start) → page_navigate 刷新或重新触发 → net_replay(log) 看每条是 replayed / blocked / passed → net_replay(stop)。" +
+        "匹配键 = 方法 + URL（+ 请求体）；同一键的多条按录制顺序作答，reuse=true 时用完后一直回最后一条。没录到的请求默认拦截（unmatched:pass 则照常联网）。" +
+        "save 把录制存成工作目录里的 HAR，下次用 source:har + harPath 回放（浏览器重开也能用）。",
+      {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["start", "stop", "status", "log", "save"] },
+          source: { type: "string", enum: ["capture", "har"], description: "[start] 录制来源，默认 capture（本次 net_capture 录到的）" },
+          harPath: { type: "string", description: "[start, source:har] 工作目录内的 HAR 文件" },
+          path: { type: "string", description: "[save] 存到工作目录的路径，默认 work/capture.har" },
+          urlPattern: { type: "string", description: "[start/save] 只用 URL 匹配这个 fnmatch 的录制" },
+          ids: { type: "array", items: { type: "integer" }, description: "[start/save] 只用这些 net_list id 的录制" },
+          query: { type: "string", enum: ["exact", "ignore-order", "ignore"], description: "[start] 查询参数怎么比：原样 / 忽略顺序 / 整个忽略（时间戳、随机参数会变时用），默认 exact" },
+          matchBody: { type: "boolean", description: "[start] 请求体也参与匹配，默认 true" },
+          unmatched: { type: "string", enum: ["block", "pass"], description: "[start] 没录到的请求：拦截（默认）或照常联网" },
+          reuse: { type: "boolean", description: "[start] 同一键的录制用完后是否一直回最后一条，默认 true；false 则每条只用一次" },
+          scope: { type: "string", enum: ["tab", "all"], description: "[start] 只回放当前标签页（默认）或整个浏览器" },
+          limit: { type: "integer", description: "[log] 最近几条决定，默认 50" },
+        },
+        required: ["action"],
+      },
+      b => b.net && b.net.replay,
+      (b, a, ctx) => b.net.replay(a, ctx),
+      { confirm: true, repeatExempt: true }
     ),
 
     // ───────── ② 保存 JS 文件（backend: scripts） ─────────

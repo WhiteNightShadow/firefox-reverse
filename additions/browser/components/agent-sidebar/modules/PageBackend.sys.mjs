@@ -305,6 +305,9 @@ export class PageBackend {
     return this._interaction ||= new PageInteractionBackend(this._q.bind(this), activeBrowser);
   }
 
+  /** 当前标签页的 <browser>（net_replay 按它的 browserId 限定回放范围）。 */
+  browser(ctx) { return activeBrowser(ctx); }
+
   frames(args, ctx) { return this.interaction.frames(args, ctx); }
   snapshot(args, ctx) { return this.interaction.scan("snapshot", args, ctx); }
   find(args, ctx) { return this.interaction.scan("find", args, ctx); }

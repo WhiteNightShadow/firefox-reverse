@@ -43,6 +43,7 @@ SELFTESTS=(
   selftest-toolrouter.mjs
   selftest-tool-metadata.mjs
   selftest-page-interaction.mjs
+  selftest-network-replay.mjs
   selftest-thread-reservation.mjs
   selftest-workspace.mjs
   selftest-scripts.mjs
