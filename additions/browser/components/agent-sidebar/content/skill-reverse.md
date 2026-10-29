@@ -73,7 +73,8 @@ signer_trace/webapi_trace 必须 **arm → clear → 只触发一次新请求 �
 **3. P2 先验证再逆向（关键，别跳）**：在浏览器内 `page_eval` 调到候选 signer，给已知输入取输出，和 P0 真实样本**逐字节 diff**。
 - **wire 参数常 ≠ 最显眼 signer 的输出**（常见 `wire = wrapper(signer输出, 其它字段)`）。格式/长度/前缀对不上＝没找对，顺调用栈往上层找真正拼装 wire 值的函数。**没 diff 对上之前，别进字节码反汇编。**
 - **字节长度先速判**：写复刻代码前，先比「你假设的算法输出字节数」和「真实 wire 值解码后的字节数」——对不上（如假设 HMAC-SHA256＝32 字节、但 wire 解码后是 75 字节）就**立刻否决该假设、换方向**，别写一堆代码白验证。长度/前缀这种廉价信号能在 30 秒内排除大半错误假设。
-- **签名内含随机字节/nonce（有的签名末段带 random、很多 sig 拼了 nonce）→ 同输入每次输出不同、不可能逐字节复现历史样本**：这时 P2 的"对上真实 wire 值"标准要换成 **① 长度/结构对（解码后字节数、头部布局一致）+ ② 浏览器内 replay 验证**（page_eval 调 signer 生成一个**新**签名 → 立刻 fetch 真实接口 → 服务器返回有效数据＝入口确认）。**别在随机签名上死磕 byte-match**（会误判成"没找对"无限回退）。判断有没有随机：同一输入在浏览器里连调 signer 两次，输出变=有随机。
+- **签名内含随机字节/nonce（有的签名末段带 random、很多 sig 拼了 nonce）→ 同输入每次输出不同**：随机数来自 Math.random/crypto 时，**先 `page_determinism(start, seed)` 固定种子 → `page_navigate` 重开页面**，同输入就得到同一个签名、可以逐字节比；Node 复刻 `require` `page_determinism(replica)` 写出的同种子随机数（按页面的调用顺序替换 Math.random / crypto.getRandomValues / randomUUID），结果应逐字节相同。page_eval 的沙箱有自己的 `Math`，要看页面那条序列写 `window.Math.random()`；Date.now/performance.now 和 Worker 里的随机数不受影响。随机来自时间或服务端 nonce、固定不住时，P2 的"对上真实 wire 值"标准换成 **① 长度/结构对（解码后字节数、头部布局一致）+ ② 浏览器内 replay 验证**（page_eval 调 signer 生成一个**新**签名 → 立刻 fetch 真实接口 → 服务器返回有效数据＝入口确认）。**别在随机签名上死磕 byte-match**（会误判成"没找对"无限回退）。判断有没有随机：同一输入在浏览器里连调 signer 两次，输出变=有随机。
+- **要反复复跑同一流程又不想碰线上（限流/封号/数据会变）、或要断网分析** → `net_capture(start, captureBody:true)` 正常走一遍 → `net_replay(start)`：之后的请求按录制作答、不走网络（没录到的默认拦截），`net_replay(log)` 看每条是 replayed/blocked/passed，`save` 存 HAR 下次接着用。配合 page_determinism，整页每次跑出同样的结果，适合对比改动前后的 trace。
 - **没用真实 wire 值复现对上前，禁止往账本写「已确认/已破译」**：账本（remember）只记**验证过**的事实。把"看着像/猜的算法"当确认写进去，会污染账本、误导后续每一轮（确认过的不再重验、直接拿去用）——比没记还糟。没验证就写「待验证假设」，别写「已确认」。
 - **不确定 signer 真实入参就别猜、更别暴力试**——生产代码混淆/单行，**别猜函数名**：`signer_trace(action:start, scriptUrl:signer脚本子串, argMatch:'/api')`——**`argMatch` 只抓实参匹配此正则的调用、跳过 init 那堆传配置对象的噪声，一枪命中 `sign('/api/...', ts)`**（不给 argMatch 时 init 调用会先占满、真 sign 在其后被永久漏掉＝实战"参数入口拦不到、兜几十轮"的根因；现已改环形缓冲留最后 N 条，但加 argMatch 最干净）→ 触发一次真实请求（**导航也能抓**，跨导航存活）→ `signer_trace(action:query)` 拿到**喂给 signer 的真实实参**（不注入页面）。**经验（通用）：url 实参常是 path/相对路径、且常不含 query string（`?a=b` 在 params 里单传）**——别拿完整 URL 去试。也能看到拦截器拿到的 `e`（含 `e.url`/`e.params`）。**这一步省掉"猜输入→暴力试→兜圈"的大坑。** `query count=0` = 没新请求触发，换种交互/page_navigate 重载再试。
 
@@ -133,7 +134,8 @@ signer_trace/webapi_trace 必须 **arm → clear → 只触发一次新请求 �
 | 组 | 工具 |
 |---|---|
 | 页面 | page_info / page_elements / **page_eval(全权:读/调/装hook/改全局/注入；**取大源码/fn.toString() 一律加 `saveTo` 落盘**)** / page_navigate / page_click / page_scroll / page_type / page_screenshot |
-| 网络 | net_capture / net_list / net_get(带 initiatorStack 调用栈) |
+| 网络 | net_capture(captureBody 录响应体) / net_list / net_get(带 initiatorStack 调用栈) |
+| 可重复 | **page_determinism**(固定 Math.random/crypto 种子,页面脚本运行前生效;replica 写出同一串随机数的 Node 版) / **net_replay**(按录制作答、不走网络;可存取 HAR) |
 | 脚本 | scripts_capture_all / scripts_list / scripts_save(toWorkspace) / code_search / find_param_entry |
 | JSVMP/WASM | jsvmp_trace / jsvmp_query / jsvmp_split_dispatcher / jsvmp_disassemble / wasm_probe / wasm_disasm / js_trace |
 | 判型/常量 | **crypto_scan**(一段数据/源码→识别 RC4/XXTEA/MD5/SHA/AES/SM4/自定义base64，免暴力扫常量) / **closure_read**(读闭包变量真值：解码后字节码·S-box·常量池，page_eval 够不到的) |

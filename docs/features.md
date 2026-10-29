@@ -87,6 +87,14 @@
 
 **实现位置**：与 camoufox-reverse 同思路，在 Web IDL binding 自动生成代码处插桩。
 
+## 7. 离线回放与固定随机数（replay / determinism）
+
+**目的**：同一个页面流程反复跑出同样的结果。离线回放用录好的响应回答请求、不碰线上；固定随机数让页面的随机数每次相同，同输入得到同一个签名，node复刻可以逐字节对比。
+
+**覆盖**：http(s)请求的回放（按录制顺序作答，可存取har）；`Math.random`、`crypto.getRandomValues`、`crypto.randomUUID`，含iframe和跨进程导航后的文档。
+
+**实现位置**：回放用`nsIHttpChannelInternal.setResponseOverride`；随机数在引擎层设realm的生成器状态（`js/friend/MathRandom.h`）和`Crypto`对象的序列（`dom/base/FrxDeterministicRandom.cpp`）。详见[离线回放与固定随机数](replay-and-determinism.md)。
+
 ## 配置开关
 
 所有模块的开关与采样率统一在 `settings/*.json` 中控制，运行时无需重编。

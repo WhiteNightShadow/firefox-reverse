@@ -194,7 +194,7 @@ Agent 的推进遵循一条务实路线——**先拿到能用的，再追求吃
 
 | 类别 | 工具 | 说明 |
 |---|---|---|
-| **页面自动化（13）** | `page_navigate` `page_click` `page_scroll` `page_type` `page_eval` `page_screenshot` `page_elements` `page_info` `page_automation_scan` `page_frames` `page_snapshot` `page_find` `page_determinism` | 导航、交互、执行 JS、截图、元素与自动化特征自检；语义定位、短引用、跨域嵌套 iframe；固定页面随机数，node复刻能拿到同一串值 |
+| **页面自动化（13）** | `page_navigate` `page_click` `page_scroll` `page_type` `page_eval` `page_screenshot` `page_elements` `page_info` `page_automation_scan` `page_frames` `page_snapshot` `page_find` `page_determinism` | 导航、交互、执行 JS、截图、元素与自动化特征自检；语义定位、短引用、跨域嵌套 iframe；固定页面随机数，node复刻能拿到同一串值（[说明](docs/replay-and-determinism.md)） |
 | **网络 / 入口定位（6）** | `net_capture` `net_list` `net_get` `net_replay` `hook_inject` `find_param_entry` | 抓包、读取请求详情与发起者调用栈、用录好的响应离线回放（可存取har）、document-start 注入 hook、定位动态参数入口 |
 | **代码 / 脚本（4）** | `code_search` `scripts_list` `scripts_save` `scripts_capture_all` | 搜索页面语料和工作目录、枚举与落盘脚本 |
 | **签名器 / 闭包追踪（2）** | `signer_trace` `closure_read` | 从引擎调试通道读取签名函数真实入参与闭包变量真值 |
