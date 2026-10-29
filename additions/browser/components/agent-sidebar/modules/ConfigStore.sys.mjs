@@ -17,6 +17,12 @@ const MODEL_PROFILES_KEY = PREF_PREFIX + "modelProfiles.v1";
 const ACTIVE_MODEL_PROFILE_KEY = PREF_PREFIX + "activeModelProfileId";
 const MAX_MODEL_PROFILES = 50;
 const LEGACY_PROVIDER_IDS = ["deepseek", "zhipu", "kimi", "minimax", "qwen", "custom"];
+const CUSTOM_PROTOCOLS = new Set(["openai", "openai-responses", "anthropic", "gemini"]);
+
+function normalizeCustomProtocol(value) {
+  const protocol = String(value || "").trim();
+  return CUSTOM_PROTOCOLS.has(protocol) ? protocol : "openai";
+}
 
 const PROVIDER_NAMES = {
   deepseek: "DeepSeek",
@@ -44,7 +50,7 @@ function normalizeProfile(raw = {}) {
     apiKey: String(raw.apiKey || ""),
     model: String(raw.model || "").trim(),
     baseUrl: String(raw.baseUrl || "").trim(),
-    protocol: raw.protocol === "anthropic" ? "anthropic" : "openai",
+    protocol: normalizeCustomProtocol(raw.protocol),
     reasoningEffort: normalizeReasoningEffort(raw.reasoningEffort || "auto"),
     createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now(),
     updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
@@ -336,17 +342,18 @@ export class ConfigStore {
     }
   }
 
-  /** 自定义端点协议："openai"（/v1/chat/completions）或 "anthropic"（/v1/messages）。 */
+  /** 自定义端点协议：OpenAI Chat/Responses、Anthropic Messages 或 Gemini GenerateContent。 */
   getCustomProtocol(def = "openai") {
     const p = this.getActiveModelProfile();
-    if (p && p.provider === "custom") return p.protocol || def;
-    return this.b.getString(PREF_PREFIX + "custom.protocol", def);
+    if (p && p.provider === "custom") return normalizeCustomProtocol(p.protocol || def);
+    return normalizeCustomProtocol(this.b.getString(PREF_PREFIX + "custom.protocol", def));
   }
-  setCustomProtocol(p) {
-    this.b.setString(PREF_PREFIX + "custom.protocol", p || "openai");
+  setCustomProtocol(value) {
+    const protocol = normalizeCustomProtocol(value);
+    this.b.setString(PREF_PREFIX + "custom.protocol", protocol);
     const active = this.getActiveModelProfile();
-    if (active && active.provider === "custom" && active.protocol !== (p || "openai")) {
-      this.updateModelProfile(active.id, { protocol: p || "openai" });
+    if (active && active.provider === "custom" && active.protocol !== protocol) {
+      this.updateModelProfile(active.id, { protocol });
     }
   }
 

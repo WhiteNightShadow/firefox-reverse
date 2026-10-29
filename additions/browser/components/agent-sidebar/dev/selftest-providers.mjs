@@ -25,12 +25,18 @@ function check(name, got, want) {
 check("normalize 去尾斜杠", normalizeBaseUrl("https://a.com/v1///"), "https://a.com/v1");
 check("normalize 剥 chat/completions", normalizeBaseUrl("https://a.com/compatible-mode/v1/chat/completions"), "https://a.com/compatible-mode/v1");
 check("normalize 剥 messages", normalizeBaseUrl("https://a.com/v1/messages"), "https://a.com/v1");
+check("normalize 剥 responses", normalizeBaseUrl("https://a.com/v1/responses"), "https://a.com/v1");
+check("normalize 剥 Gemini 完整生成端点", normalizeBaseUrl("https://a.com/v1beta/models/gemini-2.5-flash:generateContent"), "https://a.com/v1beta");
 check("normalize 剥 models", normalizeBaseUrl("https://a.com/v1/models"), "https://a.com/v1");
 check("chatPath 无版本段", resolveChatPath("openai", "https://api.deepseek.com"), "/v1/chat/completions");
 check("chatPath 带 /v1", resolveChatPath("openai", "https://dashscope.aliyuncs.com/compatible-mode/v1"), "/chat/completions");
 check("chatPath 带 /v4", resolveChatPath("openai", "https://open.bigmodel.cn/api/paas/v4"), "/chat/completions");
 check("chatPath anthropic 带 /v1", resolveChatPath("anthropic", "https://gw.example.com/v1"), "/messages");
 check("chatPath anthropic 无版本段", resolveChatPath("anthropic", "https://gw.example.com"), "/v1/messages");
+check("responsesPath 无版本段", resolveChatPath("openai-responses", "https://api.openai.com"), "/v1/responses");
+check("responsesPath 带 /v1", resolveChatPath("openai-responses", "https://gw.example.com/v1"), "/responses");
+check("Gemini 无版本段默认 /v1beta", resolveChatPath("gemini", "https://generativelanguage.googleapis.com"), "/v1beta/models");
+check("Gemini 带版本段只追加 /models", resolveChatPath("gemini", "https://generativelanguage.googleapis.com/v1beta"), "/models");
 check("chatPath gemini 兼容根 /v1beta/openai", resolveChatPath("openai", "https://generativelanguage.googleapis.com/v1beta/openai"), "/chat/completions");
 check("chatPath /v1beta 结尾", resolveChatPath("openai", "https://gw.example.com/v1beta"), "/chat/completions");
 check("chatPath host 含 v1 不误判", resolveChatPath("openai", "https://v1.example.com"), "/v1/chat/completions");
@@ -61,6 +67,22 @@ cs.setCustomProtocol("anthropic");
 const anthropicClient = buildClientFromStore(cs);
 requestBody = JSON.parse(anthropicClient.buildRequest([{ role: "user", content: "hi" }]).init.body);
 check("Anthropic 不误发 OpenAI reasoning_effort", requestBody.reasoning_effort, undefined);
+cs.setCustomProtocol("openai-responses");
+const responsesClient = buildClientFromStore(cs);
+check("Responses URL 不重复版本段", responsesClient.endpoint, "https://dashscope.aliyuncs.com/compatible-mode/v1/responses");
+requestBody = JSON.parse(responsesClient.buildRequest([{ role: "user", content: "hi" }]).init.body);
+check("Responses 端点保留 max output 与隐私设置", [requestBody.max_output_tokens > 0, requestBody.store], [true, false]);
+check("Responses 自定义 reasoning 使用 effort", requestBody.reasoning?.effort, "high");
+cs.setCustomBaseUrl("https://generativelanguage.googleapis.com/v1beta");
+cs.setCustomProtocol("gemini");
+cs.setModel("custom", "gemini-2.5-flash");
+const geminiClient = buildClientFromStore(cs);
+check("Gemini 自定义配置使用原生模型路径", geminiClient.endpoint, "https://generativelanguage.googleapis.com/v1beta/models");
+requestBody = JSON.parse(geminiClient.buildRequest([{ role: "user", content: "hi" }]).init.body);
+check("Gemini 自定义配置保留模型默认 thinking", requestBody.thinkingConfig, undefined);
+check("Gemini 不继承 OpenAI 默认 token 上限和 temperature", [requestBody.generationConfig.maxOutputTokens, requestBody.generationConfig.temperature], [undefined, undefined]);
+check("协议值通过新 ConfigStore 实例持久化", new ConfigStore(cs.b).getCustomProtocol(), "gemini");
+cs.setCustomBaseUrl("https://dashscope.aliyuncs.com/compatible-mode/v1/");
 cs.setCustomProtocol("openai");
 
 // ---- 命名模型配置：同渠道多账号切换后 buildClient 必须读取各自 Key/URL/模型 ----
@@ -120,6 +142,18 @@ const server = http.createServer((req, res) => {
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify(MODELS));
   }
+  // 站点 G：Gemini 原生模型列表只认 x-goog-api-key，且需过滤 embedding 模型。
+  if (req.url === "/g/v1beta/models") {
+    if (req.headers["x-goog-api-key"] !== "good-key" || auth) {
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ error: "x-goog-api-key required" }));
+    }
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ models: [
+      { name: "models/gemini-2.5-flash", supportedGenerationMethods: ["generateContent", "countTokens"] },
+      { name: "models/text-embedding-004", supportedGenerationMethods: ["embedContent"] },
+    ] }));
+  }
   // 其余：模拟文档站，404 + HTML
   res.statusCode = 404;
   res.setHeader("content-type", "text/html");
@@ -135,6 +169,7 @@ check("误贴完整 chat 端点也能拉", await fetchModels(`${origin}/b/compat
 check("带 key 通过鉴权", await fetchModels(`${origin}/c`, "good-key"), ["m-alpha", "m-beta"]);
 check("gemini 兼容根 → 首选 {base}/models", await fetchModels(`${origin}/d/v1beta/openai`), ["m-alpha", "m-beta"]);
 check("Anthropic 风格 x-api-key 鉴权", await fetchModels(`${origin}/e`, "good-key"), ["m-alpha", "m-beta"]);
+check("Gemini 原生模型发现使用 API key header 并过滤非生成模型", await fetchModels(`${origin}/g`, "good-key", "gemini"), ["gemini-2.5-flash"]);
 
 async function errOf(p) {
   try {

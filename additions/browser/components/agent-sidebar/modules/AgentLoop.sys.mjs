@@ -361,6 +361,12 @@ function _msgSize(m) {
   if (m.tool_calls) {
     n += JSON.stringify(m.tool_calls).length;
   }
+  if (m.responses_output) {
+    n += JSON.stringify(m.responses_output).length;
+  }
+  if (m.gemini_content) {
+    n += JSON.stringify(m.gemini_content).length;
+  }
   if (m.tool_call_id) {
     n += 64;
   }
@@ -580,6 +586,12 @@ export async function runAgentTurn(p) {
     }
     if (m.reasoning_content) {
       o.reasoning_content = m.reasoning_content; // 思考型模型多轮需保留
+    }
+    if (Array.isArray(m.responses_output)) {
+      o.responses_output = m.responses_output;
+    }
+    if (m.gemini_content && typeof m.gemini_content === "object") {
+      o.gemini_content = m.gemini_content;
     }
     return o;
   };
@@ -831,6 +843,12 @@ export async function runAgentTurn(p) {
     // 但整段 reasoning 每轮可达数千字，全回灌会撑爆 80K 上下文、把真工具结果挤掉 → 模型丢状态、反复重读重跑(兜圈子)。
     // 故只回灌尾部 REASONING_FEEDBACK_CAP 字（结论/"所以我现在要调用 X"通常落在尾部）：既满足"字段在"、又不吃上下文。
     const asstMsg = { role: "assistant", content: res.content ?? "", tool_calls: toolCalls };
+    if (Array.isArray(res.responseOutput)) {
+      asstMsg.responses_output = res.responseOutput;
+    }
+    if (res.geminiContent && typeof res.geminiContent === "object") {
+      asstMsg.gemini_content = res.geminiContent;
+    }
     if (res.reasoningContent) {
       asstMsg.reasoning_content =
         res.reasoningContent.length > REASONING_FEEDBACK_CAP

@@ -6,8 +6,7 @@
  *    Timer.sys.mjs 取（见下方 _setTimeout 解析器）。Node 路径完全不碰 ChromeUtils，
  *    dev/selftest-llm.mjs 仍可直接 import 验证。
  * 2. API Key 由调用方传入，本类不持久化。持久化是 ConfigStore.sys.mjs 的职责。
- * 3. A1 只实现 protocol="openai"（覆盖 deepseek / openai / 自定义兼容端点）。
- *    anthropic / gemini 协议分支显式抛错，留到 A2，不假装支持。
+ * 3. 支持 OpenAI Chat Completions/Responses、Anthropic Messages 和 Gemini GenerateContent；未实现的协议显式抛错。
  *
  * 注：Firefox system ESM 的全局 fetch 可用性需在 upstream bootstrap 后验证；
  * 若系统全局无 fetch，集成时由宿主注入。详见 patches/agent-ui/README.md 风险表。
@@ -18,6 +17,7 @@ import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
 /** 协议族标识（与 settings/agent.example.json 的 provider.protocol 对应）。 */
 export const PROTOCOLS = Object.freeze({
   OPENAI: "openai",
+  OPENAI_RESPONSES: "openai-responses",
   ANTHROPIC: "anthropic",
   GEMINI: "gemini",
 });
@@ -27,6 +27,7 @@ export const PROTOCOLS = Object.freeze({
 // only once per browser run, not once per user turn.
 const _cacheFieldRejectedEndpoints = new Set();
 const _streamUsageRejectedEndpoints = new Set();
+let _geminiCallSequence = 0;
 
 /* setTimeout/clearTimeout 解析：
  * - Node / chrome document：globalThis 上就有，直接用。
@@ -102,7 +103,7 @@ export function openCodeRequestHeaders(endpoint, { sessionId = "", requireSessio
 export class LlmClient {
   /**
    * @param {object} cfg
-   * @param {string} cfg.protocol  "openai" | "anthropic" | "gemini"
+   * @param {string} cfg.protocol  "openai" | "openai-responses" | "anthropic" | "gemini"
    * @param {string} cfg.baseUrl   e.g. "https://api.deepseek.com"
    * @param {string} cfg.chatPath  e.g. "/v1/chat/completions"
    * @param {string} cfg.apiKey
@@ -119,7 +120,13 @@ export class LlmClient {
     }
     this.protocol = cfg.protocol || PROTOCOLS.OPENAI;
     this.baseUrl = (cfg.baseUrl || "").replace(/\/+$/, "");
-    this.chatPath = cfg.chatPath || "/v1/chat/completions";
+    this.chatPath =
+      cfg.chatPath ||
+      (this.protocol === PROTOCOLS.OPENAI_RESPONSES
+        ? "/v1/responses"
+        : this.protocol === PROTOCOLS.GEMINI
+          ? "/v1beta/models"
+          : "/v1/chat/completions");
     this.apiKey = cfg.apiKey || "";
     this.model = cfg.model || "";
     this.providerId = cfg.providerId || "custom";
@@ -132,6 +139,8 @@ export class LlmClient {
     this._compatKey = `${this.protocol}|${this.baseUrl}|${this.chatPath}`;
     this._cacheFieldsRejected = _cacheFieldRejectedEndpoints.has(this._compatKey);
     this._streamUsageRejected = _streamUsageRejectedEndpoints.has(this._compatKey);
+    this._configuredMaxTokens = Number.isFinite(cfg.request?.max_tokens) ? cfg.request.max_tokens : null;
+    this._configuredTemperature = Number.isFinite(cfg.request?.temperature) ? cfg.request.temperature : null;
     this.request = Object.assign(
       // max_tokens 默认 32768：思考型模型(DeepSeek reasoning_content) 做多步逆向时，reasoning 常吃满
       // 8192 → 还没产出工具调用就 finish_reason=length 截断（用户见过"最后只回一个 <"然后停）→ 过早结束。
@@ -221,6 +230,112 @@ export class LlmClient {
       };
     }
 
+    if (this.protocol === PROTOCOLS.OPENAI_RESPONSES) {
+      const { instructions, input } = toResponsesInput(messages);
+      const body = {
+        model,
+        input,
+        stream: opts.stream ?? this.request.stream ?? false,
+        max_output_tokens: opts.maxTokens ?? this.request.max_tokens,
+        store: false,
+        include: ["reasoning.encrypted_content"],
+      };
+      if (instructions) {
+        body.instructions = instructions;
+      }
+      const reasoningEffort = normalizeReasoningEffort(
+        opts.reasoningEffort ?? this.request.reasoning_effort
+      );
+      if (reasoningEffort !== "auto") {
+        body.reasoning = { effort: reasoningEffort };
+      }
+      if (opts.tools) {
+        body.tools = opts.tools.map(t => {
+          const f = t.function || t;
+          return {
+            type: "function",
+            name: f.name,
+            description: f.description || "",
+            parameters: f.parameters || { type: "object", properties: {} },
+            ...(f.strict === undefined ? {} : { strict: f.strict }),
+          };
+        });
+      }
+      const cacheApplied = cacheEnabled && this.providerId === "custom";
+      if (cacheApplied) {
+        body.prompt_cache_key = cacheKey;
+      }
+      return {
+        url: this.endpoint,
+        cacheApplied,
+        streamUsageApplied: false,
+        init: {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+            ...openCodeRequestHeaders(this.endpoint, {
+              sessionId: opts.sessionId ?? this.sessionId,
+              requireSession: true,
+            }),
+          },
+          body: JSON.stringify(body),
+        },
+      };
+    }
+
+    if (this.protocol === PROTOCOLS.GEMINI) {
+      const streaming = opts.stream ?? this.request.stream ?? false;
+      const modelId = model.replace(/^models\//, "");
+      const method = streaming ? "streamGenerateContent" : "generateContent";
+      const path = this.chatPath.includes("{model}")
+        ? this.chatPath
+            .replace("{model}", encodeURIComponent(modelId))
+            .replace(/:(?:streamGenerateContent|generateContent)\/?$/i, ":" + method)
+        : /\/models\/[^/]+:(?:streamGenerateContent|generateContent)\/?$/i.test(this.chatPath)
+          ? this.chatPath.replace(/:(?:streamGenerateContent|generateContent)\/?$/i, ":" + method)
+          : `${this.chatPath.replace(/\/+$/, "")}/${encodeURIComponent(modelId)}:${method}`;
+      const { systemInstruction, contents } = toGeminiRequest(messages);
+      const generationConfig = {};
+      const maxOutputTokens = opts.maxTokens ?? this._configuredMaxTokens;
+      if (Number.isFinite(maxOutputTokens)) generationConfig.maxOutputTokens = maxOutputTokens;
+      if (Number.isFinite(this._configuredTemperature)) {
+        generationConfig.temperature = this._configuredTemperature;
+      }
+      const body = {
+        contents,
+        generationConfig,
+      };
+      if (systemInstruction) body.systemInstruction = systemInstruction;
+      if (opts.tools?.length) {
+        body.tools = [
+          {
+            functionDeclarations: opts.tools.map(tool => {
+              const fn = tool.function || tool;
+              return {
+                name: fn.name,
+                description: fn.description || "",
+                parameters: toGeminiSchema(fn.parameters),
+              };
+            }),
+          },
+        ];
+      }
+      return {
+        url: this.baseUrl + path + (streaming ? "?alt=sse" : ""),
+        cacheApplied: false,
+        streamUsageApplied: false,
+        init: {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": this.apiKey,
+          },
+          body: JSON.stringify(body),
+        },
+      };
+    }
+
     if (this.protocol === PROTOCOLS.ANTHROPIC) {
       // 把 OpenAI 形态消息翻成 Anthropic /v1/messages（LlmClient 作协议适配器，AgentLoop 不感知）。
       const { system, messages: amsgs } = toAnthropicMessages(messages);
@@ -272,9 +387,8 @@ export class LlmClient {
       };
     }
 
-    // gemini 留待后续（contents 数组协议不同）。
     throw new LlmError(
-      `protocol "${this.protocol}" not implemented (only "openai" / "anthropic")`
+      `protocol "${this.protocol}" not implemented (supported: "openai", "openai-responses", "anthropic", "gemini")`
     );
   }
 
@@ -284,6 +398,12 @@ export class LlmClient {
    * @returns {ChatResult}
    */
   parseResponse(json) {
+    if (this.protocol === PROTOCOLS.OPENAI_RESPONSES) {
+      return parseResponsesResponse(json);
+    }
+    if (this.protocol === PROTOCOLS.GEMINI) {
+      return parseGeminiResponse(json);
+    }
     if (this.protocol === PROTOCOLS.ANTHROPIC) {
       const blocks = Array.isArray(json?.content) ? json.content : [];
       let content = "";
@@ -456,9 +576,16 @@ export class LlmClient {
       if (streaming) {
         // 流式读取期间，每段数据都 bump() 重置看门狗（见 _readStream 的 onActivity）。
         try {
-          return await (this.protocol === PROTOCOLS.ANTHROPIC
-            ? this._readStreamAnthropic(resp, opts.onDelta, bump)
-            : this._readStream(resp, opts.onDelta, opts.onReasoning, bump));
+          if (this.protocol === PROTOCOLS.ANTHROPIC) {
+            return await this._readStreamAnthropic(resp, opts.onDelta, bump);
+          }
+          if (this.protocol === PROTOCOLS.OPENAI_RESPONSES) {
+            return await this._readStreamResponses(resp, opts.onDelta, opts.onReasoning, bump);
+          }
+          if (this.protocol === PROTOCOLS.GEMINI) {
+            return await this._readStreamGemini(resp, opts.onDelta, opts.onReasoning, bump);
+          }
+          return await this._readStream(resp, opts.onDelta, opts.onReasoning, bump);
         } catch (e) {
           if (opts.signal && opts.signal.aborted) {
             throw new LlmError("request aborted", { cause: e }); // 用户「停止」
@@ -476,11 +603,13 @@ export class LlmClient {
       }
       const text = await resp.text();
       stopWatch();
+      let json;
       try {
-        return this.parseResponse(JSON.parse(text));
+        json = JSON.parse(text);
       } catch (e) {
         throw new LlmError(`invalid JSON from ${built.url}`, { body: text.slice(0, 500), cause: e });
       }
+      return this.parseResponse(json);
     }
     throw lastErr;
   }
@@ -599,6 +728,197 @@ export class LlmClient {
       }
     }
     return { content: outContent, reasoningContent, toolCalls: outToolCalls, finishReason, usage, raw: null };
+  }
+
+  /** 读取 OpenAI Responses SSE，保留完整 output items 供无状态工具循环回灌。 */
+  async _readStreamResponses(resp, onDelta, onReasoning, onActivity) {
+    if (!resp.body || typeof resp.body.getReader !== "function") {
+      return this.parseResponse(JSON.parse(await resp.text()));
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let content = "";
+    let reasoningContent = "";
+    let usage = null;
+    let finalResponse = null;
+    let failure = null;
+    const outputItems = new Map();
+
+    const consumeEvent = data => {
+      if (!data || data === "[DONE]") return;
+      let event;
+      try {
+        event = JSON.parse(data);
+      } catch {
+        return;
+      }
+      const index = Number.isInteger(event.output_index) ? event.output_index : null;
+      if (event.type === "response.output_item.added" || event.type === "response.output_item.done") {
+        if (index !== null && event.item) outputItems.set(index, event.item);
+      } else if (event.type === "response.function_call_arguments.delta" && index !== null) {
+        const item = outputItems.get(index) || {
+          id: event.item_id || "",
+          type: "function_call",
+          call_id: event.call_id || "",
+          name: "",
+          arguments: "",
+        };
+        item.arguments = String(item.arguments || "") + String(event.delta || "");
+        if (event.call_id) item.call_id = event.call_id;
+        outputItems.set(index, item);
+      } else if (event.type === "response.output_text.delta" && event.delta) {
+        content += event.delta;
+        try {
+          onDelta && onDelta(event.delta);
+        } catch {}
+      } else if (event.type === "response.reasoning_summary_text.delta" && event.delta) {
+        reasoningContent += event.delta;
+        try {
+          onReasoning && onReasoning(event.delta);
+        } catch {}
+      } else if (event.type === "response.completed" || event.type === "response.incomplete") {
+        finalResponse = event.response || null;
+        usage = finalResponse?.usage || usage;
+      } else if (event.type === "response.failed" || event.type === "error") {
+        const error = event.response?.error || event.error || {};
+        failure = error.message || event.message || "OpenAI Responses stream failed";
+      }
+    };
+
+    const consumeLine = line => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("data:")) consumeEvent(trimmed.slice(5).trim());
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (onActivity) onActivity();
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        consumeLine(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) consumeLine(buffer);
+    if (failure) throw new LlmError(failure);
+    if (finalResponse) return this.parseResponse(finalResponse);
+
+    const output = [...outputItems.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, item]) => item);
+    if (content && !output.some(item => item.type === "message")) {
+      output.push({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: content }],
+      });
+    }
+    const result = parseResponsesResponse({ output, status: "completed", usage });
+    if (!result.content && content) result.content = content;
+    if (!result.reasoningContent && reasoningContent) result.reasoningContent = reasoningContent;
+    return result;
+  }
+
+  /** 读取 Gemini SSE，同时保留原始 model parts（包括 functionCall thoughtSignature）。 */
+  async _readStreamGemini(resp, onDelta, onReasoning, onActivity) {
+    if (!resp.body || typeof resp.body.getReader !== "function") {
+      return this.parseResponse(JSON.parse(await resp.text()));
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finishReason = "";
+    let usageMetadata = null;
+    let promptFeedback = null;
+    let failure = null;
+    const rawParts = new Map();
+    let partOrder = 0;
+
+    const consumeEvent = data => {
+      if (!data || data === "[DONE]") return;
+      let event;
+      try {
+        event = JSON.parse(data);
+      } catch {
+        return;
+      }
+      if (event.error) {
+        failure = event.error.message || "Gemini stream failed";
+        return;
+      }
+      usageMetadata = event.usageMetadata || usageMetadata;
+      promptFeedback = event.promptFeedback || promptFeedback;
+      const candidate = event.candidates?.[0];
+      if (!candidate) return;
+      if (candidate.finishReason) finishReason = candidate.finishReason;
+      const occurrences = new Map();
+      for (const part of candidate.content?.parts || []) {
+        const baseKey = part?.functionCall?.name
+          ? `function:${part.functionCall.name}`
+          : typeof part?.text === "string"
+            ? `text:${!!part.thought}`
+            : `other:${part?.type || "part"}`;
+        const occurrence = occurrences.get(baseKey) || 0;
+        occurrences.set(baseKey, occurrence + 1);
+        const key = `${baseKey}:${occurrence}`;
+        const entry = rawParts.get(key) || { order: partOrder++, part: {} };
+        const previous = entry.part;
+        const merged = { ...previous, ...part };
+        if (typeof previous.text === "string" && typeof part.text === "string") {
+          merged.text = previous.text + part.text;
+        }
+        if (previous.functionCall && part.functionCall) {
+          merged.functionCall = {
+            ...previous.functionCall,
+            ...part.functionCall,
+            args: { ...(previous.functionCall.args || {}), ...(part.functionCall.args || {}) },
+          };
+        }
+        rawParts.set(key, { ...entry, part: merged });
+        if (typeof part.text === "string") {
+          try {
+            if (part.thought) onReasoning && onReasoning(part.text);
+            else onDelta && onDelta(part.text);
+          } catch {}
+        }
+      }
+    };
+
+    const consumeLine = line => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("data:")) consumeEvent(trimmed.slice(5).trim());
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (onActivity) onActivity();
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        consumeLine(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) consumeLine(buffer);
+    if (failure) throw new LlmError(failure);
+    return parseGeminiResponse({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [...rawParts.values()].sort((a, b) => a.order - b.order).map(x => x.part),
+          },
+          finishReason,
+        },
+      ],
+      usageMetadata,
+      promptFeedback,
+    });
   }
 
   /** 读取 Anthropic /v1/messages SSE：text_delta→content(+onDelta)，tool_use+input_json_delta→toolCalls。 */
@@ -749,6 +1069,344 @@ export function recoverInlineToolCalls(content) {
     }
   }
   return { toolCalls: calls, content: content.slice(0, cut).trim() };
+}
+
+function parseResponsesResponse(json) {
+  if (json?.status === "failed" || json?.error) {
+    const error = json.error || {};
+    throw new LlmError(error.message || "OpenAI Responses API failed", {
+      body: JSON.stringify(error).slice(0, 2000),
+    });
+  }
+  const output = Array.isArray(json?.output) ? json.output : [];
+  const content = [];
+  const reasoning = [];
+  const toolCalls = [];
+  for (const item of output) {
+    if (item?.type === "message") {
+      for (const part of item.content || []) {
+        if (part?.type === "output_text" && part.text) content.push(part.text);
+        else if (part?.type === "refusal" && part.refusal) content.push(part.refusal);
+      }
+    } else if (item?.type === "reasoning") {
+      for (const part of item.summary || []) {
+        if (part?.type === "summary_text" && part.text) reasoning.push(part.text);
+      }
+    } else if (item?.type === "function_call") {
+      toolCalls.push({
+        id: item.call_id || item.id || "",
+        type: "function",
+        function: {
+          name: item.name || "",
+          arguments:
+            typeof item.arguments === "string"
+              ? item.arguments
+              : JSON.stringify(item.arguments ?? {}),
+        },
+      });
+    }
+  }
+  const status = json?.status || "";
+  const finishReason =
+    status === "incomplete" && json?.incomplete_details?.reason === "max_output_tokens"
+      ? "length"
+      : toolCalls.length
+        ? "tool_calls"
+        : status === "completed"
+          ? "stop"
+          : status;
+  return {
+    content: content.join(""),
+    reasoningContent: reasoning.join("\n"),
+    toolCalls,
+    finishReason,
+    usage: json?.usage || null,
+    raw: json,
+    responseOutput: output,
+  };
+}
+
+function nextGeminiCallId() {
+  _geminiCallSequence = (_geminiCallSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `gemini_${Date.now().toString(36)}_${_geminiCallSequence.toString(36)}`;
+}
+
+function normalizeGeminiUsage(metadata) {
+  if (!metadata || typeof metadata !== "object") return null;
+  return {
+    prompt_tokens: metadata.promptTokenCount,
+    completion_tokens: metadata.candidatesTokenCount,
+    reasoning_tokens: metadata.thoughtsTokenCount,
+    prompt_cache_hit_tokens: metadata.cachedContentTokenCount,
+  };
+}
+
+function geminiFinishReason(reason, hasToolCalls) {
+  if (reason === "MAX_TOKENS") return "length";
+  if (hasToolCalls) return "tool_calls";
+  if (reason === "SAFETY" || reason === "RECITATION" || reason === "PROHIBITED_CONTENT") {
+    return "content_filter";
+  }
+  if (reason === "STOP") return "stop";
+  return reason || "";
+}
+
+function parseGeminiResponse(json) {
+  if (json?.error) {
+    const error = json.error;
+    throw new LlmError(error.message || "Gemini GenerateContent failed", {
+      status: error.code || null,
+      body: JSON.stringify(error).slice(0, 2000),
+    });
+  }
+  const blockReason = json?.promptFeedback?.blockReason;
+  if (blockReason) {
+    throw new LlmError(`Gemini request blocked: ${blockReason}`, {
+      body: JSON.stringify(json.promptFeedback).slice(0, 2000),
+    });
+  }
+  const candidate = json?.candidates?.[0] || {};
+  const parts = Array.isArray(candidate.content?.parts) ? candidate.content.parts : [];
+  const content = [];
+  const reasoning = [];
+  const toolCalls = [];
+  for (const part of parts) {
+    if (typeof part?.text === "string") {
+      (part.thought ? reasoning : content).push(part.text);
+    }
+    if (part?.functionCall?.name) {
+      toolCalls.push({
+        id: part.functionCall.id || nextGeminiCallId(),
+        type: "function",
+        function: {
+          name: part.functionCall.name,
+          arguments: JSON.stringify(part.functionCall.args ?? {}),
+        },
+      });
+    }
+  }
+  const finishReason = geminiFinishReason(candidate.finishReason, toolCalls.length > 0);
+  return {
+    content: content.join(""),
+    reasoningContent: reasoning.join(""),
+    // A call returned at the output limit may contain only partial arguments.
+    toolCalls: finishReason === "length" ? [] : toolCalls,
+    finishReason,
+    usage: normalizeGeminiUsage(json?.usageMetadata),
+    raw: json,
+    geminiContent: candidate.content || null,
+  };
+}
+
+/** Translate the AgentLoop's OpenAI-shaped history into Gemini contents. */
+export function toGeminiRequest(messages) {
+  const systemParts = [];
+  const contents = [];
+  const callNames = new Map();
+  for (const message of messages || []) {
+    if (!message) continue;
+    if (message.role === "system" || message.role === "developer") {
+      const text = textOf(message.content);
+      if (text) systemParts.push(text);
+      continue;
+    }
+    if (message.role === "tool") {
+      const call = callNames.get(String(message.tool_call_id || ""));
+      const name = call?.name || message.name;
+      if (!name) {
+        const parts = toGeminiParts(message.content);
+        if (parts.length) contents.push({ role: "user", parts });
+        continue;
+      }
+      const part = {
+        functionResponse: {
+          ...(call?.id ? { id: call.id } : {}),
+          name,
+          response: geminiFunctionResult(message.content),
+        },
+      };
+      const last = contents[contents.length - 1];
+      if (last?.role === "user" && last.parts.every(p => p.functionResponse)) {
+        last.parts.push(part);
+      } else {
+        contents.push({ role: "user", parts: [part] });
+      }
+      continue;
+    }
+
+    if (message.role === "assistant" && message.gemini_content?.parts) {
+      const raw = { ...message.gemini_content, role: "model" };
+      contents.push(raw);
+      const rawCalls = raw.parts.filter(part => part?.functionCall);
+      for (const [i, call] of (message.tool_calls || []).entries()) {
+        const rawCall = rawCalls[i]?.functionCall;
+        const name = rawCall?.name || call?.function?.name;
+        if (call?.id && name) {
+          callNames.set(String(call.id), { name, id: rawCall?.id || null });
+        }
+      }
+      continue;
+    }
+
+    const role = message.role === "assistant" ? "model" : "user";
+    const parts = toGeminiParts(message.content);
+    for (const call of message.tool_calls || []) {
+      const fn = call?.function || {};
+      const name = String(fn.name || "");
+      if (!name) continue;
+      if (call?.id) callNames.set(String(call.id), { name, id: null });
+      parts.push({ functionCall: { name, args: geminiFunctionArgs(fn.arguments) } });
+    }
+    if (parts.length) contents.push({ role, parts });
+  }
+  return {
+    systemInstruction: systemParts.length ? { parts: [{ text: systemParts.join("\n\n") }] } : null,
+    contents,
+  };
+}
+
+function geminiFunctionArgs(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return {};
+}
+
+function geminiFunctionResult(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {}
+    return { result: value };
+  }
+  return { result: value ?? "" };
+}
+
+function toGeminiParts(content) {
+  if (typeof content === "string") return content ? [{ text: content }] : [];
+  if (!Array.isArray(content)) {
+    return content == null ? [] : [{ text: String(content) }];
+  }
+  return content.flatMap(part => {
+    if (typeof part === "string") return part ? [{ text: part }] : [];
+    if (!part || typeof part !== "object") return [];
+    if (["text", "input_text", "output_text"].includes(part.type)) {
+      return [{ text: String(part.text || "") }];
+    }
+    if (part.type === "image_url" || part.type === "input_image") {
+      const image = part.image_url;
+      const url = typeof image === "string" ? image : image?.url;
+      const match = typeof url === "string" && /^data:([^;,]+);base64,([\s\S]*)$/.exec(url);
+      if (!match) {
+        throw new LlmError("Gemini 图片输入需要 data:image/...;base64,... 格式");
+      }
+      return [{ inlineData: { mimeType: match[1], data: match[2] } }];
+    }
+    return [{ text: JSON.stringify(part) }];
+  });
+}
+
+const GEMINI_SCHEMA_FIELDS = new Set([
+  "description", "format", "nullable", "enum", "required", "minimum", "maximum",
+  "minItems", "maxItems", "minLength", "maxLength", "pattern",
+]);
+
+function toGeminiSchema(schema = {}) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return { type: "OBJECT", properties: {} };
+  }
+  const out = {};
+  if (schema.type) out.type = String(schema.type).toUpperCase();
+  for (const key of GEMINI_SCHEMA_FIELDS) {
+    if (schema[key] !== undefined) out[key] = schema[key];
+  }
+  if (schema.properties && typeof schema.properties === "object") {
+    out.properties = Object.fromEntries(
+      Object.entries(schema.properties).map(([key, value]) => [key, toGeminiSchema(value)])
+    );
+  }
+  if (schema.items) out.items = toGeminiSchema(schema.items);
+  if (!out.type) out.type = out.properties ? "OBJECT" : "STRING";
+  return out;
+}
+
+/** 将 AgentLoop 的 OpenAI 形态上下文转成无状态 Responses API input。 */
+export function toResponsesInput(messages) {
+  const instructionParts = [];
+  const input = [];
+  for (const message of messages || []) {
+    if (!message) continue;
+    if (message.role === "system" || message.role === "developer") {
+      const text = textOf(message.content);
+      if (text) instructionParts.push(text);
+      continue;
+    }
+    if (message.role === "assistant" && Array.isArray(message.responses_output)) {
+      input.push(...message.responses_output);
+      continue;
+    }
+    if (message.role === "tool") {
+      input.push({
+        type: "function_call_output",
+        call_id: String(message.tool_call_id || ""),
+        output:
+          typeof message.content === "string"
+            ? message.content
+            : JSON.stringify(message.content ?? ""),
+      });
+      continue;
+    }
+
+    const role = message.role === "assistant" ? "assistant" : "user";
+    const content = responsesMessageContent(message.content);
+    if (content !== "" || !message.tool_calls?.length) {
+      input.push({ role, content });
+    }
+    for (const call of message.tool_calls || []) {
+      const fn = call?.function || {};
+      input.push({
+        type: "function_call",
+        call_id: String(call?.id || ""),
+        name: String(fn.name || ""),
+        arguments:
+          typeof fn.arguments === "string"
+            ? fn.arguments
+            : JSON.stringify(fn.arguments ?? {}),
+      });
+    }
+  }
+  return { instructions: instructionParts.join("\n\n"), input };
+}
+
+function responsesMessageContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) {
+    return content == null ? "" : String(content);
+  }
+  return content.flatMap(part => {
+    if (typeof part === "string") {
+      return [{ type: "input_text", text: part }];
+    }
+    if (!part || typeof part !== "object") return [];
+    if (part.type === "text" || part.type === "input_text" || part.type === "output_text") {
+      return [{ type: "input_text", text: String(part.text || "") }];
+    }
+    if (part.type === "image_url" || part.type === "input_image") {
+      const image = part.image_url;
+      const imageUrl = typeof image === "string" ? image : image?.url;
+      if (!imageUrl) return [];
+      const detail = typeof image === "object" ? image.detail : part.detail;
+      return [{ type: "input_image", image_url: imageUrl, detail: detail || "auto" }];
+    }
+    if (part.type === "input_file") return [part];
+    return [{ type: "input_text", text: JSON.stringify(part) }];
+  });
 }
 
 /* ── OpenAI 形态消息 → Anthropic /v1/messages 翻译（纯函数，便于自测） ── */
