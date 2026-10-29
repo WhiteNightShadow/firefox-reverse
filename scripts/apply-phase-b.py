@@ -208,4 +208,188 @@ patch_file(nbapath, [
     ),
 ])
 
+# ---------------------------------------------------------------------------
+# 7. page_determinism：同一个种子让文档的 Math.random、crypto.getRandomValues、
+#    crypto.randomUUID 每次都给出同一串值。Math.random 直接设 realm 自己的 xorshift128+
+#    状态（JIT 内联的 Math.random 读的也是它，页面看不出被改过）；crypto 在 Crypto 对象上
+#    挂一条按文档的序列。种子推导和取数规则在 additions/dom/base/FrxDeterministicRandom.h，
+#    工具在 Node 里按同样规则复现，两边要一起改。声明放新的 js/friend/MathRandom.h，
+#    不碰 jsapi.h 引入的 js/Realm.h，免得全量重编。
+# ---------------------------------------------------------------------------
+jsmoz = os.path.join(ROOT, "js/src/moz.build")
+print(f"==> {jsmoz}")
+patch_file(jsmoz, [
+    (
+        "export js/friend/MathRandom.h",
+        '    "../public/friend/JSMEnvironment.h",\n',
+        '    "../public/friend/JSMEnvironment.h",\n'
+        '    "../public/friend/MathRandom.h",\n',
+    ),
+])
+
+realmpath = os.path.join(ROOT, "js/src/vm/Realm.cpp")
+print(f"==> {realmpath}")
+patch_file(realmpath, [
+    (
+        "include js/friend/MathRandom.h in Realm.cpp",
+        '#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*\n',
+        '#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*\n'
+        '#include "js/friend/MathRandom.h"     // js::SetRealmMathRandomState\n',
+    ),
+    (
+        "add js::SetRealmMathRandomState",
+        "  GenerateXorShift128PlusSeed(seed);\n"
+        "  rng.setState(seed[0], seed[1]);\n"
+        "}\n",
+        "  GenerateXorShift128PlusSeed(seed);\n"
+        "  rng.setState(seed[0], seed[1]);\n"
+        "}\n"
+        "\n"
+        "JS_PUBLIC_API void js::SetRealmMathRandomState(JSContext* cx,\n"
+        "                                               uint64_t state0,\n"
+        "                                               uint64_t state1) {\n"
+        "  MOZ_ASSERT(cx->realm());\n"
+        "  cx->realm()->getOrCreateRandomNumberGenerator().setState(state0, state1);\n"
+        "}\n",
+    ),
+])
+
+cryptoh = os.path.join(ROOT, "dom/base/Crypto.h")
+print(f"==> {cryptoh}")
+patch_file(cryptoh, [
+    (
+        "include Maybe and XorShift128PlusRNG in Crypto.h",
+        '#include "mozilla/dom/SubtleCrypto.h"\n',
+        '#include "mozilla/Maybe.h"\n'
+        '#include "mozilla/XorShift128PlusRNG.h"\n'
+        '#include "mozilla/dom/SubtleCrypto.h"\n',
+    ),
+    (
+        "add Crypto::SetDeterministicStream",
+        "  nsIGlobalObject* GetParentObject() const { return mParent; }\n",
+        "  nsIGlobalObject* GetParentObject() const { return mParent; }\n"
+        "\n"
+        "  // firefox-reverse page_determinism: getRandomValues and randomUUID draw\n"
+        "  // from this stream instead of the system RNG until it is reset.\n"
+        "  void SetDeterministicStream(\n"
+        "      const Maybe<non_crypto::XorShift128PlusRNG>& aStream) {\n"
+        "    mDeterministicStream = aStream;\n"
+        "  }\n",
+    ),
+    (
+        "add Crypto::mDeterministicStream",
+        "  RefPtr<SubtleCrypto> mSubtle;\n",
+        "  RefPtr<SubtleCrypto> mSubtle;\n"
+        "  Maybe<non_crypto::XorShift128PlusRNG> mDeterministicStream;\n",
+    ),
+])
+
+cryptocpp = os.path.join(ROOT, "dom/base/Crypto.cpp")
+print(f"==> {cryptocpp}")
+patch_file(cryptocpp, [
+    (
+        "include FrxDeterministicRandom.h in Crypto.cpp",
+        '#include "mozilla/dom/CryptoBinding.h"\n',
+        '#include "mozilla/dom/CryptoBinding.h"\n'
+        '#include "mozilla/dom/FrxDeterministicRandom.h"\n',
+    ),
+    (
+        "getRandomValues draws from the deterministic stream",
+        "    nsresult rv = randomGenerator->GenerateRandomBytesInto(aData.Elements(),\n",
+        "    if (mDeterministicStream) {\n"
+        "      frx::FillDeterministic(*mDeterministicStream, aData);\n"
+        "      aRetval.set(aArray.Obj());\n"
+        "      return;\n"
+        "    }\n"
+        "\n"
+        "    nsresult rv = randomGenerator->GenerateRandomBytesInto(aData.Elements(),\n",
+    ),
+    (
+        "randomUUID draws from the deterministic stream",
+        "  nsIDToCString uuidString(nsID::GenerateUUID());\n",
+        "  nsIDToCString uuidString(mDeterministicStream\n"
+        "                               ? frx::DeterministicUUID(*mDeterministicStream)\n"
+        "                               : nsID::GenerateUUID());\n",
+    ),
+])
+
+cuwebidl = os.path.join(ROOT, "dom/chrome-webidl/ChromeUtils.webidl")
+print(f"==> {cuwebidl}")
+patch_file(cuwebidl, [
+    (
+        "declare ChromeUtils.setDeterministicRandom",
+        "\n[Exposed=Window]\npartial namespace ChromeUtils {\n",
+        "\n[Exposed=Window]\npartial namespace ChromeUtils {\n"
+        "  /**\n"
+        "   * firefox-reverse page_determinism: makes Math.random,\n"
+        "   * crypto.getRandomValues and crypto.randomUUID of |window|'s current\n"
+        "   * document repeatable from |seed|. An empty seed restores real randomness.\n"
+        "   */\n"
+        "  [Throws]\n"
+        "  undefined setDeterministicRandom(Window window, UTF8String seed);\n"
+        "\n",
+    ),
+])
+
+cuh = os.path.join(ROOT, "dom/base/ChromeUtils.h")
+print(f"==> {cuh}")
+patch_file(cuh, [
+    (
+        "forward-declare nsGlobalWindowInner in ChromeUtils.h",
+        "class nsIRFPTargetSetIDL;\n",
+        "class nsGlobalWindowInner;\nclass nsIRFPTargetSetIDL;\n",
+    ),
+    (
+        "declare ChromeUtils::SetDeterministicRandom",
+        "  static void IdleDispatch(const GlobalObject& global,\n",
+        "  static void SetDeterministicRandom(const GlobalObject& aGlobal,\n"
+        "                                     nsGlobalWindowInner& aWindow,\n"
+        "                                     const nsACString& aSeed,\n"
+        "                                     ErrorResult& aRv);\n"
+        "\n"
+        "  static void IdleDispatch(const GlobalObject& global,\n",
+    ),
+])
+
+cucpp = os.path.join(ROOT, "dom/base/ChromeUtils.cpp")
+print(f"==> {cucpp}")
+patch_file(cucpp, [
+    (
+        "include FrxDeterministicRandom.h in ChromeUtils.cpp",
+        '#include "mozilla/dom/ContentParent.h"\n',
+        '#include "mozilla/dom/ContentParent.h"\n'
+        '#include "mozilla/dom/FrxDeterministicRandom.h"\n',
+    ),
+    (
+        "define ChromeUtils::SetDeterministicRandom",
+        "/* static */\nvoid ChromeUtils::IdleDispatch(const GlobalObject& aGlobal,\n",
+        "/* static */\n"
+        "void ChromeUtils::SetDeterministicRandom(const GlobalObject& aGlobal,\n"
+        "                                         nsGlobalWindowInner& aWindow,\n"
+        "                                         const nsACString& aSeed,\n"
+        "                                         ErrorResult& aRv) {\n"
+        "  frx::SetDeterministicRandom(aWindow, aSeed, aRv);\n"
+        "}\n"
+        "\n"
+        "/* static */\nvoid ChromeUtils::IdleDispatch(const GlobalObject& aGlobal,\n",
+    ),
+])
+
+dombasemoz = os.path.join(ROOT, "dom/base/moz.build")
+print(f"==> {dombasemoz}")
+patch_file(dombasemoz, [
+    (
+        "export FrxDeterministicRandom.h",
+        '    "FromParser.h",\n',
+        '    "FromParser.h",\n    "FrxDeterministicRandom.h",\n',
+    ),
+    (
+        # 别用 apply-fingerprint-config.py 已经用过的锚点：两边插在同一处会互相破坏"已应用"判断。
+        "add FrxDeterministicRandom.cpp",
+        "# Are we targeting x86-32 or x86-64?  If so, we want to include SSE2 code for\n",
+        'SOURCES += [\n    "FrxDeterministicRandom.cpp",\n]\n\n'
+        "# Are we targeting x86-32 or x86-64?  If so, we want to include SSE2 code for\n",
+    ),
+])
+
 print("\nAll Phase B patches applied successfully.")

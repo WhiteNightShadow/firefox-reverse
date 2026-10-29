@@ -9,6 +9,7 @@ import net from "node:net";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 const options = process.argv.slice(2);
@@ -37,6 +38,15 @@ const server = http.createServer((request, response) => {
     response.setHeader("Content-Encoding", "gzip");
     response.setHeader("Access-Control-Allow-Origin", "*");
     response.end(gzipSync(`${replayServer.live} ${request.url} 签名`));
+    return;
+  }
+  // /determinism records the first random values before any other script runs, in the page and in a same-origin frame.
+  if (request.url.startsWith("/determinism")) {
+    response.setHeader("Content-Type", "text/html; charset=utf-8");
+    response.end(`<!doctype html><title>FRX Determinism</title><script>
+      window.__determinism={random:[Math.random(),Math.random(),Math.random()],bytes:Array.from(crypto.getRandomValues(new Uint8Array(12))),uuid:crypto.randomUUID()};
+      window.__burn=n=>{let s=0;for(let i=0;i<n;i++)s+=Math.random();return s;};
+    </script>${request.url === "/determinism" ? '<iframe src="/determinism-frame"></iframe>' : ""}`);
     return;
   }
   response.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -140,7 +150,7 @@ try {
   // just a separately constructed PageBackend. Fail before metadata fallback.
   await wire.execute('return !!ChromeUtils.importESModule("resource:///modules/agentsidebar/Backends.sys.mjs").getBackends().page;');
   const catalog = await wire.execute(JS_TOOLS);
-  check("72 live browser tools", catalog.count === 72 && catalog.missingDeclared.length === 0);
+  check("73 live browser tools", catalog.count === 73 && catalog.missingDeclared.length === 0);
   const routed = await wire.executeAsync(JS_CALLTOOL, ["page_find", { role: "button", name: "Continue" }, null]);
   check("MCP dispatch semantic query", routed.ok && routed.data?.count === 1);
   const clicked = await wire.executeAsync(JS_CALLTOOL, ["page_click", { ref: routed.data.elements[0].ref }, null]);
@@ -207,6 +217,55 @@ try {
   await wire.command("WebDriver:Navigate", { url: "about:blank" });
   await wire.command("Marionette:SetContext", { value: "chrome" });
   check("navigation invalidates ref", /stale_ref/.test((await call("click", { ref: topButton.ref })).error));
+  // page_determinism: with one seed every new document starts the same Math.random and crypto sequences, exactly as
+  // the Node replica computes them, through the JIT, in frames and after a cross-site (cross-process) navigation.
+  const visit = async url => {
+    await wire.command("Marionette:SetContext", { value: "content" });
+    await wire.command("WebDriver:Navigate", { url });
+    await wire.command("Marionette:SetContext", { value: "chrome" });
+  };
+  const BURN = 50000;
+  const pageValues = async () => JSON.parse((await call("eval", { expression: `JSON.stringify({...window.__determinism,burn:window.__burn(${BURN})})` })).value);
+  const frameValues = async () => {
+    for (let i = 0; i < 50; i++) {
+      const value = (await call("eval", { expression: "JSON.stringify(document.querySelector('iframe')?.contentWindow?.__determinism ?? null)" })).value;
+      if (value !== "null") return JSON.parse(value);
+      await delay(100);
+    }
+    return null;
+  };
+  check("determinism starts", (await tool("page_determinism", { action: "start", seed: "frx-verify" })).data?.active === true);
+  check("determinism writes the Node replica", (await tool("page_determinism", { action: "replica" })).data?.saved === "work/determinism-replica.cjs");
+  const { seeded } = createRequire(import.meta.url)(path.join(workspace, "work/determinism-replica.cjs"));
+  const expected = (() => {
+    const r = seeded("frx-verify");
+    const first = { random: [r.random(), r.random(), r.random()], bytes: Array.from(r.getRandomValues(new Uint8Array(12))), uuid: r.randomUUID() };
+    let burn = 0;
+    for (let i = 0; i < BURN; i++) burn += r.random();
+    return { ...first, burn };
+  })();
+  await visit(`${origin}/determinism`);
+  const seededPage = await pageValues();
+  check("seeded document matches the Node replica", JSON.stringify(seededPage) === JSON.stringify(expected));
+  check("seeded frame starts the same sequence", JSON.stringify(await frameValues()) === JSON.stringify({ random: expected.random, bytes: expected.bytes, uuid: expected.uuid }));
+  check("Math.random stays native", /\[native code\]/.test((await call("eval", { expression: "window.Math.random.toString()" })).value));
+  check("page_eval has its own Math", (await call("eval", { expression: "Math.random === window.Math.random" })).value === false);
+  await visit(`${origin}/determinism`);
+  check("reload repeats the sequence", JSON.stringify(await pageValues()) === JSON.stringify(expected));
+  await visit(`${origin.replace("127.0.0.1", "localhost")}/determinism`);
+  check("cross-site navigation stays seeded", JSON.stringify(await pageValues()) === JSON.stringify(expected));
+  check("determinism status", (await tool("page_determinism", { action: "status" })).data?.seed === "frx-verify");
+  // The seed is hashed as UTF-8 on both sides.
+  check("determinism restarts with a new seed", (await tool("page_determinism", { action: "start", seed: "签名-seed" })).data?.seed === "签名-seed");
+  await visit(`${origin}/determinism`);
+  const utf8 = seeded("签名-seed");
+  const utf8Page = await pageValues();
+  check("UTF-8 seed matches the Node replica", JSON.stringify({ random: utf8Page.random, bytes: utf8Page.bytes, uuid: utf8Page.uuid })
+    === JSON.stringify({ random: [utf8.random(), utf8.random(), utf8.random()], bytes: Array.from(utf8.getRandomValues(new Uint8Array(12))), uuid: utf8.randomUUID() }));
+  check("determinism stops", (await tool("page_determinism", { action: "stop" })).data?.active === false);
+  await visit(`${origin}/determinism`);
+  const unseeded = await pageValues();
+  check("real randomness after stop", unseeded.uuid !== expected.uuid && unseeded.random[0] !== expected.random[0]);
   const result = { buildID: identity.buildID, xulSHA256: hash, checks, limitations: ["Synthetic fixtures, not third-party website acceptance", "Closed shadow roots unsupported"] };
   if (options.includes("--output")) await fs.writeFile(option("--output"), JSON.stringify(result, null, 2) + "\n");
   console.log(JSON.stringify(result, null, 2));

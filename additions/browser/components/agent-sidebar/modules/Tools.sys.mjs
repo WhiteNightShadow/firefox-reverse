@@ -294,7 +294,7 @@ function toolTable() {
         "用途：反复复跑同一个页面/签名流程而不碰线上（不怕封号、限流、数据变化）；对比改动前后的 trace；断网分析。" +
         "流程：net_capture(start, captureBody:true) → 把页面正常走一遍 → net_replay(start) → page_navigate 刷新或重新触发 → net_replay(log) 看每条是 replayed / blocked / passed → net_replay(stop)。" +
         "匹配键 = 方法 + URL（+ 请求体）；同一键的多条按录制顺序作答，reuse=true 时用完后一直回最后一条。没录到的请求默认拦截（unmatched:pass 则照常联网）。" +
-        "save 把录制存成工作目录里的 HAR，下次用 source:har + harPath 回放（浏览器重开也能用）。",
+        "save 把录制存成工作目录里的 HAR，下次用 source:har + harPath 回放（浏览器重开也能用）。要让页面每次算出同样的签名，配合 page_determinism 固定随机数。",
       {
         type: "object",
         properties: {
@@ -517,6 +517,30 @@ function toolTable() {
       b => b.page && b.page.hookInject,
       (b, a, ctx) => b.page.hookInject(a, ctx),
       { confirm: true }
+    ),
+    T(
+      "page_determinism",
+      "**固定随机数**：给一个种子，之后当前标签页打开的每个文档（含 iframe、跨进程导航后的文档）在页面脚本运行前设种子，" +
+        "Math.random、crypto.getRandomValues、crypto.randomUUID 每次都给出同一串值。引擎层实现：Math.random 仍是原生函数（toString、属性描述符都没变，JIT 路径同样生效），页面检测不到被改过。" +
+        "用途：签名/指纹里混了随机 nonce，每次结果都不同、没法和 Node 复刻逐位对比；或者想让两次 trace 走同样的分支。" +
+        "流程：page_determinism(start, seed) → page_navigate 重新打开页面（从第一行脚本起可重复）→ 正常取签名 → page_determinism(replica) 把同算法的 Node 版写进工作目录，" +
+        "复刻脚本 `require` 它、按页面的调用顺序取数，就能拿到和页面一样的随机数 → page_determinism(stop) 恢复真随机。" +
+        "每个文档都从种子开头算起；Math.random 一条序列，getRandomValues 和 randomUUID 共用另一条。Date.now、performance.now 和 Worker 里的随机数不受影响。" +
+        "page_eval 的沙箱有自己的 Math：要看页面那条序列写 window.Math.random()。" +
+        "配合 net_replay 离线回放，整页可以反复跑出同样的结果。",
+      {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["start", "stop", "status", "replica"] },
+          seed: { type: "string", description: "[start] 种子，任意非空字符串，默认 frx；同一个种子总是给出同一串值" },
+          scope: { type: "string", enum: ["tab", "all"], description: "[start] 只管当前标签页（默认）或所有标签页（弹窗、新标签页里的流程用 all）" },
+          path: { type: "string", description: "[replica] 写到工作目录的路径，默认 work/determinism-replica.cjs" },
+        },
+        required: ["action"],
+      },
+      b => b.determinism && b.determinism.run,
+      (b, a, ctx) => b.determinism.run(a, ctx),
+      { confirm: true, repeatExempt: true }
     ),
     T(
       "whitebox_diff",

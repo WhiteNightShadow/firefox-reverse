@@ -21,7 +21,7 @@
 
 <br>
 
-[**📥 下载安装（Releases）**](../../releases)　·　[快速开始](#-快速开始5-步)　·　[指纹环境](#-使用指纹环境可选)　·　[工具大全](#-工具大全72)　·　[从源码构建](#-从源码构建)
+[**📥 下载安装（Releases）**](../../releases)　·　[快速开始](#-快速开始5-步)　·　[指纹环境](#-使用指纹环境可选)　·　[工具大全](#-工具大全73)　·　[从源码构建](#-从源码构建)
 
 </div>
 
@@ -45,7 +45,7 @@
 
 <img src="docs/agent-sidebar-guide-20260715.png" width="100%" alt="Firefox-Reverse 内置 AI Agent 侧边栏、星光入口和环境管理入口指引">
 
-- Agent 常驻浏览器侧边栏，当前精确注册 **72 个工具**，覆盖页面操作、网络抓包与离线回放、代码搜索、Cookie、WebAPI trace、JSVMP、WASM、文件读写、Skills、扩展与环境管理及 Node/Python 实打验证。
+- Agent 常驻浏览器侧边栏，当前精确注册 **73 个工具**，覆盖页面操作、网络抓包与离线回放、固定随机数、代码搜索、Cookie、WebAPI trace、JSVMP、WASM、文件读写、Skills、扩展与环境管理及 Node/Python 实打验证。
 - 支持**全自动**与**AI辅助**两种工作方式：既可以让 worker 独立推进，也可以由人或外部 MCP director 分阶段领航。
 - 工作目录、会话、阶段结论与生成脚本均落在本地；切换标签页或收起侧边栏不会中断正在运行的父进程 Agent。
 - 历史抽屉支持单会话 `.frx-chat.json` 导入/导出；导入会创建静止的新会话，不会自动执行历史任务，也不会携带 API Key、工作目录和环境绑定。
@@ -142,7 +142,7 @@
 
 ## ✨ 核心亮点
 
-- **🧠 内置自主 Agent** —— 不是聊天框，是能连续调用 72 个工具、自己跑完「抓包→定位→验证→补环境→实打」全流程的逆向智能体。
+- **🧠 内置自主 Agent** —— 不是聊天框，是能连续调用 73 个工具、自己跑完「抓包→定位→验证→补环境→实打」全流程的逆向智能体。
 - **🪪 指纹环境隔离** —— 一个环境一个 profile + 独立进程，支持环境 CRUD、指纹生成/导入、主进程指纹与 MCP 指定环境启动。
 - **🔬 引擎层观测工具** —— 签名器入参、JSVMP 逐指令、WASM import 边界、浏览器真值 vs Node 复刻的分支差分深入 C++ 引擎，减少页面内 hook 和反调试对分析过程的干扰。
 - **🎛 两种工作模式** —— 全自动一条龙 / AI辅助逐阶段（你领航），按会话持久化、随时切换。
@@ -188,13 +188,13 @@ Agent 的推进遵循一条务实路线——**先拿到能用的，再追求吃
 
 ---
 
-## 🧰 工具大全（72）
+## 🧰 工具大全（73）
 
-当前版本由 `Tools.sys.mjs` 精确注册 **72 个工具**，下表与代码声明一一对应：
+当前版本由 `Tools.sys.mjs` 精确注册 **73 个工具**，下表与代码声明一一对应：
 
 | 类别 | 工具 | 说明 |
 |---|---|---|
-| **页面自动化（12）** | `page_navigate` `page_click` `page_scroll` `page_type` `page_eval` `page_screenshot` `page_elements` `page_info` `page_automation_scan` `page_frames` `page_snapshot` `page_find` | 导航、交互、执行 JS、截图、元素与自动化特征自检；语义定位、短引用、跨域嵌套 iframe |
+| **页面自动化（13）** | `page_navigate` `page_click` `page_scroll` `page_type` `page_eval` `page_screenshot` `page_elements` `page_info` `page_automation_scan` `page_frames` `page_snapshot` `page_find` `page_determinism` | 导航、交互、执行 JS、截图、元素与自动化特征自检；语义定位、短引用、跨域嵌套 iframe；固定页面随机数，node复刻能拿到同一串值 |
 | **网络 / 入口定位（6）** | `net_capture` `net_list` `net_get` `net_replay` `hook_inject` `find_param_entry` | 抓包、读取请求详情与发起者调用栈、用录好的响应离线回放（可存取har）、document-start 注入 hook、定位动态参数入口 |
 | **代码 / 脚本（4）** | `code_search` `scripts_list` `scripts_save` `scripts_capture_all` | 搜索页面语料和工作目录、枚举与落盘脚本 |
 | **签名器 / 闭包追踪（2）** | `signer_trace` `closure_read` | 从引擎调试通道读取签名函数真实入参与闭包变量真值 |
@@ -243,7 +243,7 @@ bash scripts/apply-patches.sh
 cd upstream && ./mach build && ./mach package
 ```
 
-- 侧边栏与父进程后端：`additions/browser/components/agent-sidebar/`；React UI、Agent 引擎、72 个工具声明、`AddonBackend.sys.mjs` 和 `EnvironmentBackend.sys.mjs` 均在此维护，前端通过 `npm run build` 生成 bundle。
+- 侧边栏与父进程后端：`additions/browser/components/agent-sidebar/`；React UI、Agent 引擎、73 个工具声明、`AddonBackend.sys.mjs` 和 `EnvironmentBackend.sys.mjs` 均在此维护，前端通过 `npm run build` 生成 bundle。
 - 指纹配置层：`additions/dom/base/FrxFingerprintConfig.*`、`NavigatorUAData.*` 及 `scripts/apply-fingerprint-config.py` 写入的 Gecko / Necko 接入点。
 - 引擎观测层：`additions/js/...` 的 SpiderMonkey trace 与 `additions/dom/bindings/...` 的 WebAPI trace。
 - 环境数据不写进仓库或构建目录，运行时默认落在 `~/.firefox-reverse/environments`。
@@ -263,7 +263,7 @@ cd upstream && ./mach build && ./mach package
 │                                                                          │
 │  常驻引擎（父进程系统模块, .sys.mjs）                                     │
 │  ├ AgentSession / AgentLoop   会话、工具循环、上下文压缩                  │
-│  ├ ToolRouter / Tools         72 个工具的声明与路由                       │
+│  ├ ToolRouter / Tools         73 个工具的声明与路由                       │
 │  ├ AddonBackend               AMO 搜索、扩展生命周期与配置页              │
 │  ├ EnvironmentBackend         环境 CRUD、配置、进程与端口状态             │
 │  └ ConfigStore / Memory       本地配置与 SQLite 跨会话记忆                │
@@ -421,7 +421,7 @@ cd upstream && ./mach build && ./mach package
 - **新增模型**：Kimi（Moonshot，`kimi-k2.6`）、MiniMax（`MiniMax-M3`）、通义千问（Qwen，`qwen3-max`）—— 连同原有 DeepSeek / 智谱 GLM / Claude / OpenAI，主流大模型基本覆盖。
 - **MCP 外部驱动可见性**：新增 `AgentSession.listRunning()` + 侧栏「空闲自动跟随 / 忙时横幅」——外部（如 MCP director）驱动的会话能在侧栏**自动切到、实时流式、并显示绑定的工作目录**（配套 [frx-director-mcp](https://github.com/WhiteNightShadow/frx-director-mcp) 成本拆分玩法，见「两种工作模式」）。
 - **「停止」即时生效（框架级修复）**：`run_node` / `run_python` 卡住时点停止会**立刻杀掉子进程**（之前要干等到超时才结束）；`run_node` 默认超时 **300s → 30s**（正常 JS 加载足够，hang 住能更快释放）。
-- **工具补齐（当时）**：加入密码学常量识别、引擎层闭包真值读取、document-start hook 和结构无关派发器探测，工具数由 40+ 扩展到 **44+**；派发器探测后来合并进 JSVMP 工具链，当前版本以「工具大全」中的 **72 个**为准。
+- **工具补齐（当时）**：加入密码学常量识别、引擎层闭包真值读取、document-start hook 和结构无关派发器探测，工具数由 40+ 扩展到 **44+**；派发器探测后来合并进 JSVMP 工具链，当前版本以「工具大全」中的 **73 个**为准。
 - **方法论 / 健壮性**：简单站「快车道」判型（先 hook 对比标准算法、不硬扣混淆）、`page_eval` 全权 + 大输出 `saveTo` 落盘、SSR 站识别、长任务护栏对强模型软化（硬限制转软提示、随上下文窗口缩放）。
 
 ### v0.17 – v0.18（2026-06-08 起）
