@@ -1,6 +1,17 @@
 # 页面定位与 iframe
 
-v0.26.0 增量能力，不改变旧 `page_elements`、`page_eval` 或 selector/text 点击的默认语义。MCP 通过 `agent_tools({prefix:"page_"})` 获取当前浏览器实际支持的目录，再使用 `agent_call_tool`。
+v0.26.0 增量能力，不改变旧 `page_elements`、`page_eval` 或 selector/text 点击的定位规则。MCP 通过 `agent_tools({prefix:"page_"})` 获取当前浏览器实际支持的目录，再使用 `agent_call_tool`。
+
+## 原生输入
+
+`page_click`、`page_type` 都走 Firefox 原生输入通道，与 WebDriver 同一条路（鼠标用 `Window.synthesizeMouseEvent`，键盘用 `nsITextInputProcessor`），旧 selector/text 调用也一样：
+
+- 点击：鼠标沿一段曲线移到元素上（时长按菲茨定律随距离变化），按下后停顿几十毫秒再抬起。页面收到 isTrusted 的 pointer/mouse 移动和按下、抬起、click 序列，焦点和默认动作由浏览器完成。
+- 只点元素露在最上层的位置：先对元素框内的几个点做命中测试，点得到元素本身（或盖在输入框上的关联 label）才按下；都被别的元素盖住时返回 `target_obscured`，并写明盖住它的元素，不会去点遮挡物。
+- 输入：没聚焦就先原生点击输入框，全选旧内容，再逐字按键（keydown/keypress/beforeinput/input/keyup），大写字母和符号会按住 Shift；中文等非 ASCII 字符走输入法提交（composition 事件）。`submit:true` 发原生回车，表单会真正提交。
+- `delayMs` 控制按键间隔，默认 60ms 并带随机抖动，整段输入总时长封顶约 10 秒；一次最多 2000 字。返回的 `valueMatches` 表示输入框最终值是否等于 text，输入掩码或长度限制会让它为 false。
+
+以前的 selector/text 路径在页面里调用 `el.click()` 并直接赋值派发 input/change，页面看到的事件 isTrusted 为 false，也没有鼠标和键盘序列。`page_scroll` 仍直接滚动，不产生滚轮事件。
 
 ## 推荐流程
 
@@ -21,4 +32,4 @@ v0.26.0 增量能力，不改变旧 `page_elements`、`page_eval` 或 selector/t
 
 ## 回归
 
-`scripts/selftest-agent-tools.sh` 覆盖旧 Agent 与新定位测试。`scripts/verify-page-interaction.mjs` 使用独立临时 profile、本地跨域嵌套页面验证实际 DOM 变化、坐标事件、旧接口及过期引用，必须绑定被测 XUL 哈希。它不访问真实账号，也不代替第三方站点验收。
+`scripts/selftest-agent-tools.sh` 覆盖旧 Agent 与新定位测试。`scripts/verify-page-interaction.mjs` 使用独立临时 profile、本地跨域嵌套页面验证实际 DOM 变化、原生事件序列（可信的鼠标移动与按下抬起、逐字按键、输入法提交、回车提交表单、被遮挡时拒点）、坐标事件、旧接口及过期引用，必须绑定被测 XUL 哈希。它不访问真实账号，也不代替第三方站点验收。

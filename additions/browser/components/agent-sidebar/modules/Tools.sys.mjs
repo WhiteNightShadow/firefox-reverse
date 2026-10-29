@@ -153,7 +153,9 @@ function toolTable() {
       PAGE_QUERY, b => b.page && b.page.find, (b, a, ctx) => b.page.find(a, ctx), READ_ONLY),
     T(
       "page_click",
-      "点击元素：旧 selector/text 调用保持兼容；也可传 ref 或 frameId+role/name/label。新语义定位遇到多个命中会报错。坐标 x/y 使用选定 frame 的 viewport CSS 像素，不是桌面屏幕坐标；整页截图需减去 scrollX/Y，仅可点可视区。",
+      "点击元素：走 Firefox 原生输入（与 WebDriver 同一条路）——鼠标沿人手般的曲线移到元素上，按下、停顿、抬起，页面收到 isTrusted 的完整 pointer/mouse/click 序列，焦点和默认动作由浏览器自己完成。" +
+        "只点元素露在最上层的位置：被遮罩/弹窗盖住时返回 target_obscured（写明盖住它的元素），先关掉遮挡物，不要改用 page_eval 硬点。" +
+        "旧 selector/text 调用保持兼容；也可传 ref 或 frameId+role/name/label，新语义定位遇到多个命中会报错。坐标 x/y 使用选定 frame 的 viewport CSS 像素，不是桌面屏幕坐标；整页截图需减去 scrollX/Y，仅可点可视区。",
       {
         type: "object",
         properties: {
@@ -171,15 +173,17 @@ function toolTable() {
     ),
     T(
       "page_type",
-      "给输入框/文本域填值并触发 input/change 事件，可选回车提交。使用 selector，或 ref，或 frameId+role/name/label 定位。text 始终为待填内容。",
+      "像人一样键入输入框/文本域：没聚焦就先原生点击它，全选旧内容，再用 Firefox 原生键盘逐字输入（keydown/keypress/beforeinput/input/keyup，isTrusted），中文等非 ASCII 走输入法提交（composition 事件）；submit 按原生回车，表单会真正提交。" +
+        "返回 valueMatches 表示输入框最终值是否等于 text（掩码/长度限制会让它为 false）。一次最多 2000 字，更长的值用 page_eval 设置。使用 selector，或 ref，或 frameId+role/name/label 定位。text 始终为待填内容。",
       {
         type: "object",
         properties: {
           ...PAGE_LOCATOR,
           ref: PAGE_REF,
           selector: { type: "string", description: "目标输入框的 CSS 选择器" },
-          text: { type: "string", description: "要填入的文本" },
+          text: { type: "string", description: "要填入的文本（替换原有内容；空串表示清空）" },
           submit: { type: "boolean", description: "填完是否按回车提交，默认 false" },
+          delayMs: { type: "integer", minimum: 0, maximum: 500, description: "按键间隔毫秒，默认 60（带随机抖动）；整段输入总时长封顶约 10 秒，超出会自动加快" },
         },
         required: ["text"],
       },
