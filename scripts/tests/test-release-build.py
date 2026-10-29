@@ -3,6 +3,8 @@ activate/build flow against a stub mach and stub helper scripts."""
 from pathlib import Path
 import fcntl
 import hashlib
+import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -12,6 +14,7 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts/release-build.sh"
+RECORD_SCRIPT = REPO / "scripts/write-build-record.py"
 
 # Configure options recorded in the v0.26.2 packages (about:buildconfig), without the build host's
 # --with-l10n-base path. The macOS arm64 objdir was configured before --enable-bootstrap=no-update
@@ -58,13 +61,19 @@ def write_executable(path, text):
     path.chmod(0o755)
 
 
-# Records each call; on `build` it writes the application.ini a real build would produce.
+# Records each call; `configure` writes config.status.json and `build` the application.ini a real build would.
 STUB_MACH = """#!/usr/bin/env python3
-import os, pathlib, re, sys
+import json, os, pathlib, re, sys
 with open(os.environ["FRX_TEST_LOG"], "a") as log:
     log.write("mach " + " ".join(sys.argv[1:]) + "\\n")
 config = pathlib.Path(os.environ["MOZCONFIG"]).read_text()
 objdir = pathlib.Path(re.search(r"^mk_add_options MOZ_OBJDIR=(.+)$", config, re.M).group(1))
+if sys.argv[1] == "configure":
+    objdir.mkdir(parents=True, exist_ok=True)
+    options = [line.split(" ", 1)[1] for line in config.splitlines() if line.startswith("ac_add_options ")]
+    substs = {"target": "x86_64-pc-linux-gnu", "host": "x86_64-pc-linux-gnu", "CC": "/opt/mozbuild/clang/bin/clang --sysroot /opt/sysroot",
+              "CC_VERSION": "20.1.8", "RUSTC_VERSION": "1.95.0", "MOZ_CONFIGURE_OPTIONS": " ".join(repr(o) for o in options) + " 'DMG_TOOL=/opt/dmg'"}
+    (objdir / "config.status.json").write_text(json.dumps({"topobjdir": str(objdir), "substs": list(substs.items())}))
 if sys.argv[1] == "build":
     (objdir / "dist/bin").mkdir(parents=True, exist_ok=True)
     (objdir / "dist/bin/application.ini").write_text(
@@ -168,18 +177,19 @@ class ReleaseBuildTest(unittest.TestCase):
         self.assertIn("l10n 检出有改动", result.stderr)
 
 
-@unittest.skipUnless(shutil.which("sha256sum") and shutil.which("node"), "needs sha256sum and node")
+@unittest.skipUnless(shutil.which("node"), "needs node")
 class ReleaseBuildFlowTest(unittest.TestCase):
     """A copy of the script in a throwaway repository, with mach and the helper scripts replaced by stubs."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="frx-release-flow-test-")
-        root = Path(self.temp.name)
+        root = self.root = Path(self.temp.name)
         self.repo, self.upstream, self.l10n, self.bin = root / "repo", root / "upstream", root / "l10n", root / "bin"
         self.log = root / "calls.log"
 
         shutil.copytree(REPO / "configs", self.repo / "configs")
         write_executable(self.repo / "scripts/release-build.sh", SCRIPT.read_text())
+        write_executable(self.repo / "scripts/write-build-record.py", RECORD_SCRIPT.read_text())
         write_executable(self.repo / "scripts/repack-zh-cn.sh", STUB_REPACK)
         for name, language in (("selftest-agent-tools.sh", "bash"), ("apply-patches.sh", "bash"),
                                ("force-build-id-relink.sh", "bash"), ("verify-linux-package.sh", "bash"),
@@ -199,8 +209,6 @@ class ReleaseBuildFlowTest(unittest.TestCase):
 
         write_executable(self.bin / "npm", logging_stub("npm", "bash"))
         write_executable(self.bin / "7z", "#!/bin/sh\nexit 0\n")
-        if not shutil.which("flock"):
-            write_executable(self.bin / "flock", "#!/bin/sh\nexit 0\n")
         (root / "home").mkdir()
         self.env = {key: value for key, value in os.environ.items() if not key.startswith(("FRX_", "MOZ_", "UPSTREAM_"))}
         self.env.update(PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}", HOME=str(root / "home"),
@@ -247,6 +255,17 @@ class ReleaseBuildFlowTest(unittest.TestCase):
                          f"{hashlib.sha256(package.read_bytes()).hexdigest()}  {package.name}\n")
         self.assertIn(f"ac_add_options --with-l10n-base={self.l10n}\n", (self.dist / "mozconfig.linux-x86_64").read_text())
         self.assertIn(f"COMPLETE linux-x86_64 {self.commit} 20261024082441", result.stdout)
+        record = json.loads((self.dist / "build-record.linux-x86_64.json").read_text())
+        self.assertEqual((record["target"], record["version"], record["buildId"]), ("linux-x86_64", "9.8.7", "20261024082441"))
+        self.assertEqual(record["source"], {"commit": self.commit, "baseline": self.baseline, "l10n": self.translations})
+        self.assertEqual(record["mozconfig"]["file"], "configs/mozconfig.linux-x64")
+        self.assertEqual(record["toolchain"], {"cc": "clang", "ccVersion": "20.1.8", "rustcVersion": "1.95.0"})
+        self.assertIn("--with-l10n-base=<path>", record["configure"]["options"])
+        self.assertIn("DMG_TOOL=<path>", record["configure"]["options"])
+        self.assertEqual(record["outputs"], [{"name": package.name, "size": package.stat().st_size,
+                                              "sha256": hashlib.sha256(package.read_bytes()).hexdigest()}])
+        self.assertTrue(record["host"]["cpus"] and record["host"]["system"])
+        self.assertFalse(any(path in json.dumps(record) for path in (str(self.root), "/opt/")), "the record keeps no machine paths")
 
         result = self.run_script("build", "windows-x86_64")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -256,7 +275,6 @@ class ReleaseBuildFlowTest(unittest.TestCase):
                                  "firefox-reverse-v9.8.7-windows-x86_64-installer.exe"])
         self.assertEqual(list(self.upstream.glob("obj-*/.frx-package-start.*")), [])
 
-    @unittest.skipUnless(shutil.which("flock"), "needs util-linux flock")
     def test_locks_keep_activation_and_builds_apart(self):
         self.assertEqual(self.run_script("activate").returncode, 0)
         locks = self.upstream / ".frx-release-locks"
@@ -286,6 +304,27 @@ class ReleaseBuildFlowTest(unittest.TestCase):
         self.assertIn("firefox-*.mac.dmg，实际有 0 个", result.stderr)
         self.assertFalse((self.dist / "firefox-reverse-v9.8.7-macos-arm64.dmg").exists())
 
+
+
+class BuildRecordTest(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("write_build_record", RECORD_SCRIPT)
+        self.record = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.record)
+
+    def test_machine_paths_are_redacted(self):
+        redact = self.record.redact
+        self.assertEqual(redact("--with-l10n-base=/home/builder/l10n"), "--with-l10n-base=<path>")
+        self.assertEqual(redact("DMG_TOOL=C:\\tools\\dmg.exe"), "DMG_TOOL=<path>")
+        self.assertEqual(redact("/srv/objdir"), "<path>")
+        self.assertEqual(redact("--enable-release"), "--enable-release")
+        self.assertEqual(redact("MOZ_SOURCE_REPO=https://github.com/WhiteNightShadow/firefox-reverse"),
+                         "MOZ_SOURCE_REPO=https://github.com/WhiteNightShadow/firefox-reverse")
+
+    def test_compilers_are_named_by_program(self):
+        self.assertEqual(self.record.program("/home/builder/.mozbuild/clang/bin/clang --sysroot /home/builder/sysroot"), "clang")
+        self.assertEqual(self.record.program(["C:\\mozbuild\\clang\\bin\\clang-cl.exe", "-m64"]), "clang-cl.exe")
+        self.assertIsNone(self.record.program(None))
 
 if __name__ == "__main__":
     unittest.main()

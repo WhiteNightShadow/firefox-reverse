@@ -50,7 +50,8 @@ v0.26.2（2026-10-24编译验收，10-25发布）是按这套流程走通的，�
    - 设好`MOZ_SOURCE_REPO`、`MOZ_SOURCE_CHANGESET`和`MOZ_BUILD_DATE`，依次跑`./mach configure`、`scripts/verify-branding.py`、`scripts/force-build-id-relink.sh`、`./mach build`，再确认`application.ini`里的`SourceStamp`和`BuildID`；
    - 排队跑`scripts/repack-zh-cn.sh`，只取这次新打出的包，按下表改名放进候选目录。候选目录默认是`dist/v<版本>-candidate`，可以用`FRX_DIST_DIR`改；
    - 检查包：linux跑`scripts/verify-linux-package.sh`；windows跑`scripts/verify-windows-installer.py`，用7-Zip取出安装程序的整个`core/`，和zip里的`firefox/`逐文件比sha256，不运行安装向导，报告写进`windows-installer-check.json`。v0.26.2是50个文件全部一致；
-   - 把sha256写进`<目标>.sha256`。
+   - 把sha256写进`<目标>.sha256`；
+   - 写构建记录`build-record.<目标>.json`：提交、锁定基线、l10n提交、mozconfig的sha256、configure参数、编译器版本、主机概况和产物sha256。机器路径都换成`<path>`，也不记主机名，可以直接留档。
 5. 控制并行数，最多同时编三个。v0.26.2五个目标同时编时，mac x86_64和linux x86_64的rustc（gkrust的lto）被oom杀掉，这两个单独重编就过了。
 
 ci按`firefox-reverse-<tag>-<平台>.<扩展名>`从release下载候选包，文件名必须严格照下表：
@@ -198,7 +199,8 @@ ci矩阵里没有apple silicon，这一项在本机跑。macos没有`timeout`，
    - `CHANGELOG.md`顶部加一行；
    - `README.md`版本记录最上面加“### v<版本>（正式版，<日期>）”，日期写计划发布的那天；
    - 改到的专题文档同步更新；
-   - `docs/verification/release-v<版本>/summary.json`写包sha256、各平台ci结果、本机和真机检查、已知限制，不写个人数据。格式参考v0.26.2那份。
+   - `docs/verification/release-v<版本>/summary.json`写包sha256、各平台ci结果、本机和真机检查、已知限制，不写个人数据。格式参考v0.26.2那份；
+   - 五个目标的`build-record.<目标>.json`复制到同一目录，下次换编译机时照着核对工具链版本。
 2. 社区贡献者署名：
    - 个人仓库的协作者至少有写权限，所以不加协作者；
    - github contributors只统计默认分支上的提交作者，`Co-authored-by`不算；

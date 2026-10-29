@@ -65,7 +65,9 @@ UPSTREAM_DIR=<源码树> scripts/release-build.sh activate
 UPSTREAM_DIR=<源码树> FRX_L10N_BASE=<l10n目录> MOZ_BUILD_DATE=<BuildID> scripts/release-build.sh build <目标>
 ```
 
-完整步骤见[release-process.md](release-process.md)第2步。
+完整步骤见[release-process.md](release-process.md)第2步。每个目标编完会在候选目录写一份`build-record.<目标>.json`，记下实际用的工具链版本和configure参数，换编译机时拿它核对。
+
+mac的两个目标也可以在mac本机出：`release-build.sh`在macos上用python代替util-linux的`flock`加锁，`sha256sum`不在时用`shasum`。工具链同样由bootstrap下载到`MOZBUILD_STATE_PATH`，rust用rustup装的1.95.0。
 
 ## 注意
 
