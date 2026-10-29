@@ -11,9 +11,9 @@
 | **页面/JS** | `page_info` | 当前页概况（URL/标题/脚本数/UA） |
 | | `page_eval` | 在页面上下文执行 JS，读变量/调函数/验证想法 |
 | | `page_navigate` | 导航当前标签页到某 URL |
-| | `page_click` | 按 CSS 选择器或可见文字点击元素 |
+| | `page_click` | 按 CSS 选择器、可见文字或 ref 原生点击元素（可信的鼠标移动和按下/抬起，被遮挡时报 target_obscured） |
 | | `page_scroll` | 滚动页面（增量/到底/滚到某元素） |
-| | `page_type` | 给输入框填值并触发 input/change 事件 |
+| | `page_type` | 像人一样逐字键入输入框（原生键盘事件，中文走输入法提交，可选原生回车提交） |
 | | `page_screenshot` | 截当前页可视区为 PNG（给用户看，或喂视觉模型） |
 | **网络** | `net_capture` | start/stop/status 控制请求捕获 |
 | | `net_list` | 列已捕获请求摘要 |

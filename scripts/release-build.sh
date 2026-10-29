@@ -16,7 +16,9 @@
 #   FRX_BUILD_JOBS  mach build 的并行数，默认 16
 #   UPSTREAM_REF、FRX_L10N_REF  换掉锁定的基线和 l10n 提交，只给测试用
 #
-# build 在候选目录里留下发布文件、mozconfig.<目标> 和 <目标>.sha256。
+# build 在候选目录里留下发布文件、mozconfig.<目标>、<目标>.sha256 和构建记录 build-record.<目标>.json
+# （提交、基线、l10n、configure 参数、编译器版本、主机概况、产物 sha256，不含机器路径）。
+# 五个目标都能在 linux x86_64 编译机上出；mac 目标也可以在 mac 本机出。
 
 set -euo pipefail
 export GIT_PAGER=cat PAGER=cat
@@ -43,6 +45,34 @@ need() {
   for name in "$@"; do
     command -v "$name" >/dev/null || fail "缺少命令：$name"
   done
+}
+
+# util-linux flock 的用法（-n 不等待、-s 共享、-x 独占、-u 释放，最后是 fd）。没有它的主机（macOS）
+# 用 python 对同一个继承下来的 fd 加 flock(2) 锁；锁跟着打开的文件走，python 退出后仍由本脚本持有。
+lock_fd() {
+  if command -v flock >/dev/null; then
+    flock "$@"
+    return
+  fi
+  python3 -c '
+import fcntl, sys
+flags, fd = sys.argv[1:-1], int(sys.argv[-1])
+operation = fcntl.LOCK_UN if "-u" in flags else fcntl.LOCK_SH if "-s" in flags else fcntl.LOCK_EX
+if "-n" in flags and operation != fcntl.LOCK_UN:
+    operation |= fcntl.LOCK_NB
+try:
+    fcntl.flock(fd, operation)
+except BlockingIOError:
+    sys.exit(1)
+' "$@"
+}
+
+checksum() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$@"
+  else
+    shasum -a 256 "$@"
+  fi
 }
 
 # 确认变量指向一个目录，并把它改写成绝对路径。
@@ -170,11 +200,11 @@ verify_packages() {
 activate() {
   require_dir UPSTREAM_DIR
   require_baseline
-  need node npm python3 flock
+  need node npm python3
   require_clean_checkout
   open_locks
   exec 7>"$LOCKS/tree.lock"
-  flock -n -x 7 || fail "有目标正在编译，等编完再激活"
+  lock_fd -n -x 7 || fail "有目标正在编译，等编完再激活"
 
   local commit previous
   commit=$(git -C "$REPO_ROOT" rev-parse HEAD)
@@ -202,7 +232,7 @@ build() {
   select_objdir
   require_baseline
   require_l10n
-  need node python3 flock sha256sum file unzip tar
+  need node python3 file unzip tar
   if [[ "$TARGET" == windows-x86_64 ]]; then
     command -v 7zz >/dev/null || command -v 7z >/dev/null || [[ -x "$HOME/.mozbuild/7zz/7zz" ]] \
       || fail "缺少 7-Zip，检查 windows 安装程序要用"
@@ -220,9 +250,9 @@ build() {
 
   open_locks
   exec 7>"$LOCKS/tree.lock"
-  flock -n -s 7 || fail "源码树正在激活"
+  lock_fd -n -s 7 || fail "源码树正在激活"
   exec 8>"$LOCKS/$TARGET.lock"
-  flock -n 8 || fail "$TARGET 已经在编译"
+  lock_fd -n 8 || fail "$TARGET 已经在编译"
 
   print_mozconfig > "$dist/mozconfig.$TARGET"
   export MOZCONFIG=$dist/mozconfig.$TARGET
@@ -240,7 +270,7 @@ build() {
     || fail "application.ini 的 BuildID 不是 $MOZ_BUILD_DATE"
 
   exec 9>"$LOCKS/package.lock"
-  flock 9
+  lock_fd 9
   marker=$(mktemp "$OBJDIR/.frx-package-start.XXXXXX")
   UPSTREAM_DIR="$UPSTREAM_DIR" bash "$REPO_ROOT/scripts/repack-zh-cn.sh"
   while read -r pattern suffix; do
@@ -248,11 +278,16 @@ build() {
     names+=("firefox-reverse-v$VERSION-$suffix")
   done < <(assets)
   rm -f "$marker"
-  flock -u 9
+  lock_fd -u 9
   exec 9>&-
 
   verify_packages "$dist/firefox-reverse-v$VERSION-$TARGET"
-  (cd "$dist" && sha256sum "${names[@]}") | tee "$dist/$TARGET.sha256"
+  (cd "$dist" && checksum "${names[@]}") | tee "$dist/$TARGET.sha256"
+  python3 "$REPO_ROOT/scripts/write-build-record.py" --target "$TARGET" --version "$VERSION" --build-id "$MOZ_BUILD_DATE" \
+    --commit "$commit" --upstream "$UPSTREAM_DIR" --l10n "$FRX_L10N_BASE" --objdir "$OBJDIR" \
+    --repo-config "$CONFIG" --repo-config-name "configs/${CONFIG##*/}" --mozconfig "$dist/mozconfig.$TARGET" \
+    --dist "$dist" --output "$dist/build-record.$TARGET.json" "${names[@]}" > /dev/null
+  echo "[release-build] 构建记录：$dist/build-record.$TARGET.json"
   echo "COMPLETE $TARGET $commit $MOZ_BUILD_DATE"
 }
 

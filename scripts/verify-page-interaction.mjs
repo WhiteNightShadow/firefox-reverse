@@ -30,10 +30,12 @@ const server = http.createServer((request, response) => {
   response.setHeader("Content-Type", "text/html; charset=utf-8");
   const origin = `http://127.0.0.1:${server.address().port}`;
   const cross = origin.replace("127.0.0.1", "localhost");
-  const fixture = `<style>button,input{margin:8px;padding:12px}iframe{width:600px;height:250px}body{margin:0}</style>
+  const fixture = `<style>button,input{margin:8px;padding:12px}iframe{width:600px;height:250px}body{margin:0}#cover{position:relative;display:inline-block}#overlay{position:absolute;inset:0;background:rgba(0,0,0,.1)}</style>
+    <script>window.__frxEvents=[];for(const type of ["mousemove","pointerdown","mousedown","pointerup","mouseup","click","keydown","keypress","beforeinput","input","keyup","compositionstart","compositionend","submit"])document.addEventListener(type,event=>__frxEvents.push([type,event.isTrusted,event.target.id||event.target.localName,event.key||event.inputType||""]),true);</script>
     <button id="go" onclick="this.dataset.clicked='yes';this.dataset.trusted=String(event.isTrusted)" aria-label="Continue">Go</button>
-    <label for="account">Account</label><input id="account" onkeyup="this.dataset.enter=String(event.key==='Enter' && event.keyCode===13 && event.which===13)"><input type="password" aria-label="Secret" value="never-in-snapshot">
+    <form id="form" onsubmit="event.preventDefault();this.dataset.submitted=String(event.isTrusted)"><label for="account">Account</label><input id="account" onkeyup="this.dataset.enter=String(event.key==='Enter' && event.keyCode===13 && event.which===13)"><button id="send">Send</button></form><input type="password" aria-label="Secret" value="never-in-snapshot">
     <button>Duplicate</button><button>Duplicate</button><button hidden>Hidden</button>
+    <span id="cover"><button id="covered" onclick="this.dataset.clicked='yes'">Covered</button><span id="overlay"></span></span>
     <div id="shadow"></div><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<button>Shadow</button>';</script>`;
   response.end(`<!doctype html><title>FRX Page Fixture</title>${fixture}${request.url === "/" ? `<iframe src="${cross}/child"></iframe>` : request.url === "/child" ? `<iframe src="${origin}/nested"></iframe>` : ""}`);
 });
@@ -78,7 +80,9 @@ try {
   check("semantic nested lookup", found.count === 1);
   check("nested reference click", (await call("click", { ref: found.elements[0].ref })).ok);
   check("ambiguous target rejected", /ambiguous_target/.test((await call("click", { frameId: frame, name: "Duplicate" })).error));
-  check("semantic type treats text as value", (await call("type", { frameId: frame, label: "Account", text: "filled-value", submit: true })).ok);
+  const nestedTyped = await call("type", { frameId: frame, label: "Account", text: "filled-value", submit: true });
+  assert(nestedTyped.ok, `semantic type treats text as value: ${JSON.stringify(nestedTyped)}`);
+  checks.push("semantic type treats text as value");
   await call("scroll", { ref: found.elements[0].ref });
   const childRect = (await call("find", { frameId: frame, role: "button", name: "Continue" })).elements[0].rect;
   check("nested frame coordinate click", (await call("click", { frameId: frame, x: childRect.x + 5, y: childRect.y + 5 })).ok);
@@ -96,7 +100,25 @@ try {
   assert(coordinates.ok, `coordinate click: ${JSON.stringify(coordinates)}; target=${JSON.stringify(topButton)}`);
   checks.push("coordinate click");
   check("coordinate click dispatched trusted event", (await call("eval", { expression: "document.querySelector('#go').dataset.trusted" })).value === "true");
+  // Native input: trusted, complete sequences and browser default actions, for the old selector/text calls too.
+  const events = async () => JSON.parse((await call("eval", { expression: "JSON.stringify(window.__frxEvents.splice(0))" })).value);
+  const inOrder = (log, wanted) => wanted.map(type => log.findIndex(entry => entry[0] === type)).every((index, position, found) => index >= 0 && (position === 0 || index > found[position - 1]));
+  await events();
   check("legacy selector click", (await call("click", { selector: "#go" })).ok);
+  const clickLog = await events();
+  check("click travels with trusted mouse moves", clickLog.filter(entry => entry[0] === "mousemove" && entry[1]).length >= 2);
+  const pressed = clickLog.filter(entry => ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].includes(entry[0]));
+  check("click is a trusted down/up/click sequence on the target", pressed.length === 5 && pressed.every(entry => entry[1] && entry[2] === "go") && inOrder(pressed, ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]));
+  const typed = await call("type", { selector: "#account", text: "Ab中", submit: true });
+  check("typing reports the final value", typed.ok && typed.valueMatches === true && typed.submitted === true);
+  const typeLog = await events();
+  const keydowns = typeLog.filter(entry => entry[0] === "keydown").map(entry => entry[3]);
+  check("typing presses each ASCII key with Shift for capitals", ["Shift", "A", "b", "Enter"].every(key => keydowns.includes(key)) && keydowns.indexOf("Shift") < keydowns.indexOf("A"));
+  check("typing sends trusted keypress, beforeinput and input", ["keypress", "beforeinput", "input", "keyup"].every(type => typeLog.some(entry => entry[0] === type && entry[1])));
+  check("non-ASCII text arrives through a composition", ["compositionstart", "compositionend"].every(type => typeLog.some(entry => entry[0] === type && entry[1])));
+  check("typed value", (await call("eval", { expression: "document.querySelector('#account').value" })).value === "Ab中");
+  check("Enter submits the form natively", (await call("eval", { expression: "document.querySelector('#form').dataset.submitted" })).value === "true");
+  check("covered element is not pressed", /target_obscured: covered by span#overlay/.test((await call("click", { selector: "#covered" })).error) && (await call("eval", { expression: "String(document.querySelector('#covered').dataset.clicked)" })).value === "undefined");
   check("scoped click cannot escape scope", /target_not_found/.test((await call("click", { selector: "#go", scope: "#shadow" })).error));
   check("scoped type cannot escape scope", /target_not_found/.test((await call("type", { selector: "#account", scope: "#shadow", text: "wrong" })).error));
   check("legacy elements", (await call("elements", { limit: 2 })).count === 2);

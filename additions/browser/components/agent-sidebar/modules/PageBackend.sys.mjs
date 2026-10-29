@@ -666,53 +666,22 @@ export class PageBackend {
     return v;
   }
 
-  /** 按 CSS 选择器或可见文字点击元素（自动滚动到可视区）。 */
+  /** 按 CSS 选择器或可见文字点击元素（自动滚动到可视区）。旧调用沿用原来的定位规则，也走原生输入。 */
   async click(args = {}, ctx) {
-    if (["ref", "frameId", "role", "name", "label", "scope", "exact", "x", "y"].some(key => args[key] !== undefined)) return this.interaction.act("click", args, ctx);
-    const { selector, text } = args;
-    if (!selector && !text) {
+    const semantic = ["ref", "frameId", "role", "name", "label", "scope", "exact", "x", "y"].some(key => args[key] !== undefined);
+    if (!semantic && !args.selector && !args.text) {
       throw new Error("click 需要 selector 或 text");
     }
-    const sel = JSON.stringify(selector || "");
-    const txt = JSON.stringify(text || "");
-    return this._pageOp(`(function(){
-      function vis(e){ return !!(e.offsetWidth||e.offsetHeight||(e.getClientRects&&e.getClientRects().length)); }
-      var el=null, sel=${sel}, txt=${txt};
-      if(sel){ try{ el=document.querySelector(sel); }catch(e){} }
-      if(!el && txt){
-        var all=document.querySelectorAll('a,button,[role=button],input[type=submit],input[type=button],[onclick],summary,label,li,span,div');
-        var exact=[],part=[];
-        for(var i=0;i<all.length;i++){ var e=all[i]; if(!vis(e))continue; var s=(e.innerText||e.textContent||'').trim(); if(s===txt)exact.push(e); else if(s&&s.indexOf(txt)>=0)part.push(e); }
-        var c=exact.length?exact:part;
-        c.sort(function(a,b){return (a.textContent||'').length-(b.textContent||'').length;});
-        el=c[0]||null;
-      }
-      if(!el) return {ok:false,error:'未找到可点元素（selector/text 都没命中）'};
-      try{ el.scrollIntoView({block:'center',inline:'center'}); }catch(e){}
-      el.click();
-      return {ok:true,clicked:true,tag:el.tagName.toLowerCase(),text:(el.innerText||el.value||'').trim().slice(0,80)};
-    })()`, ctx);
+    return this.interaction.act("click", semantic ? args : { ...args, legacy: true }, ctx);
   }
 
-  /** 给输入框/文本域填值并派发 input/change（可选回车提交）。 */
+  /** 逐字键入输入框/文本域（可选回车提交）。旧调用沿用原来的定位规则，也走原生输入。 */
   async type(args = {}, ctx) {
-    if (["ref", "frameId", "role", "name", "label", "scope", "exact"].some(key => args[key] !== undefined)) return this.interaction.act("type", args, ctx);
-    const { selector, text, submit } = args;
-    if (!selector) {
+    const semantic = ["ref", "frameId", "role", "name", "label", "scope", "exact"].some(key => args[key] !== undefined);
+    if (!semantic && !args.selector) {
       throw new Error("type 需要 selector");
     }
-    return this._pageOp(`(function(){
-      var el=document.querySelector(${JSON.stringify(selector)});
-      if(!el) return {ok:false,error:'未找到输入框'};
-      try{ el.focus(); }catch(e){}
-      var proto=(el.tagName==='TEXTAREA')?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
-      var d=Object.getOwnPropertyDescriptor(proto,'value');
-      if(d&&d.set){ d.set.call(el, ${JSON.stringify(text || "")}); } else { el.value=${JSON.stringify(text || "")}; }
-      el.dispatchEvent(new Event('input',{bubbles:true}));
-      el.dispatchEvent(new Event('change',{bubbles:true}));
-      ${submit ? "el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,which:13,bubbles:true}));el.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',keyCode:13,which:13,bubbles:true}));" : ""}
-      return {ok:true,value:String(el.value).slice(0,120)};
-    })()`, ctx);
+    return this.interaction.act("type", semantic ? args : { ...args, legacy: true }, ctx);
   }
 
   /** 滚动：到底/到顶/滚到某元素/增量。 */
