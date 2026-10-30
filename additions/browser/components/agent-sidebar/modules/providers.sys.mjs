@@ -4,7 +4,17 @@
  * 自定义端点可选择 OpenAI Chat/Responses、Anthropic Messages 或 Gemini GenerateContent。React 面板用 listProviders() 渲染下拉，用
  * buildClientFromStore() 在发送时构造 LlmClient。
  */
-import { LlmClient, openCodeRequestHeaders } from "./LlmClient.sys.mjs";
+import { LlmClient, PROTOCOLS, openCodeRequestHeaders, protocolSupportsReasoningEffort } from "./LlmClient.sys.mjs";
+
+/** 设置页“协议”下拉的选项；reasoningEffort 标明该协议是否显示 OpenAI 形态的思考等级。 */
+export const CUSTOM_PROTOCOL_OPTIONS = Object.freeze(
+  [
+    [PROTOCOLS.OPENAI, "OpenAI 兼容（/v1/chat/completions）"],
+    [PROTOCOLS.OPENAI_RESPONSES, "OpenAI Responses API（/v1/responses）"],
+    [PROTOCOLS.ANTHROPIC, "Anthropic 兼容（/v1/messages）"],
+    [PROTOCOLS.GEMINI, "Google Gemini 原生（GenerateContent）"],
+  ].map(([value, label]) => Object.freeze({ value, label, reasoningEffort: protocolSupportsReasoningEffort(value) }))
+);
 import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
 
 /** 内置 Claude 模型（Anthropic 协议自定义端点用；中转站 /v1/models 往往列不出 Claude）。
@@ -100,8 +110,10 @@ export const BUILTIN_PROVIDERS = Object.freeze({
  * @returns {string}
  */
 export function normalizeBaseUrl(raw) {
-  let u = String(raw || "").trim().replace(/\/+$/, "");
-  u = u.replace(/\/models\/[^/]+:(?:generateContent|streamGenerateContent)$/i, "");
+  // 请求路径是拼在 base 后面的，base 带 ?query/#hash 没有意义；误贴的 Gemini 端点还会把 key 带在 ?key= 里。
+  let u = String(raw || "").trim().replace(/[?#].*$/, "").replace(/\/+$/, "");
+  // Gemini：…/models/<model>:generateContent、…/models/<model>（opencode 端点表的写法）都剥到版本根。
+  u = u.replace(/\/models\/[^/]+?(?::(?:generateContent|streamGenerateContent))?$/i, "");
   u = u.replace(/:(?:generateContent|streamGenerateContent)$/i, "");
   u = u.replace(/\/(chat\/completions|completions|messages|responses|models)$/i, "");
   return u.replace(/\/+$/, "");
@@ -195,8 +207,8 @@ export async function fetchModels(baseUrl, token, protocol = "openai") {
               m.supportedGenerationMethods.includes("generateContent")
           )
           .map(m => (typeof m === "string" ? m : m && (m.id || m.name || m.model)))
-          .map(name => (protocol === "gemini" ? String(name).replace(/^models\//, "") : name))
-          .filter(Boolean);
+          .filter(name => typeof name === "string" && name)
+          .map(name => (protocol === "gemini" ? name.replace(/^models\//, "") : name));
         if (names.length) {
           return names;
         }
@@ -314,10 +326,7 @@ export function buildClientFromStore(store, overrides = {}) {
     request: {
       // Anthropic extended thinking uses a different object shape and token
       // budget contract; do not translate an OpenAI-compatible level into it.
-      reasoning_effort:
-        protocol === "openai" || protocol === "openai-responses"
-          ? reasoningEffort
-          : "auto",
+      reasoning_effort: protocolSupportsReasoningEffort(protocol) ? reasoningEffort : "auto",
     },
   });
 }

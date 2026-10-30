@@ -546,11 +546,15 @@ export const agentSession = {
                 {
                   signal: ac.signal,
                   maxTokens: 2048,
+                  // 少思考、给输出留足余量：推理模型的思考 token 也算在 maxTokens 里。
+                  auxiliary: true,
                   cacheKey: cacheKey + ":projection",
                 }
               );
               recordUsage(projected.usage, { phase: "projection" });
-              const summary = String(projected.content || "").trim();
+              // 被长度截断的记录是半截的：不落盘，沿用上一份投影（早期消息不能因此永久退出上下文）。
+              const truncated = projected.finishReason === "length" || projected.finishReason === "max_tokens";
+              const summary = truncated ? "" : String(projected.content || "").trim();
               if (summary) {
                 const now = Date.now();
                 await conversationStore.setContextProjection(threadId, {

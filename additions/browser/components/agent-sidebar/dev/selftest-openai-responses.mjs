@@ -78,6 +78,12 @@ check("function tool uses flattened Responses schema", body.tools[0].name === "p
 check("Responses fields use output token limit, no chat-only fields", body.max_output_tokens === 2048 && body.temperature === undefined && body.stream_options === undefined);
 check("stateless reasoning round-trip is enabled", body.store === false && body.include.includes("reasoning.encrypted_content"));
 check("reasoning effort and prompt cache are mapped", body.reasoning.effort === "xhigh" && body.prompt_cache_key === "thread-1");
+check("reasoning summaries are requested next to the effort", body.reasoning.summary === "auto");
+const plain = new LlmClient({ protocol: PROTOCOLS.OPENAI_RESPONSES, baseUrl: "https://api.openai.com", apiKey: "test-key", model: "gpt-4.1" });
+const plainBody = JSON.parse(plain.buildRequest([{ role: "user", content: "hi" }]).init.body);
+check("models without a reasoning setting get neither reasoning nor include", plainBody.reasoning === undefined && plainBody.include === undefined && plainBody.store === false);
+const aux = JSON.parse(client.buildRequest([{ role: "user", content: "summarize" }], { auxiliary: true, maxTokens: 2048 }).init.body);
+check("auxiliary calls think less and keep output headroom for the reasoning", aux.reasoning.effort === "low" && aux.max_output_tokens === 16384);
 
 const translated = toResponsesInput([
   { role: "system", content: "first" },
@@ -86,7 +92,7 @@ const translated = toResponsesInput([
   { role: "assistant", content: "call", tool_calls: [{ id: "c2", function: { name: "f", arguments: "{}" } }] },
   { role: "tool", tool_call_id: "c2", content: "ok" },
 ]);
-check("legacy assistant text uses input content blocks", translated.input[0].content[0].type === "input_text");
+check("assistant history uses output_text, which is all the API accepts for that role", translated.input[0].content[0].type === "output_text");
 check("legacy chat tool history is translated", translated.instructions === "first\n\nsecond" && translated.input[2].type === "function_call" && translated.input[3].type === "function_call_output");
 
 console.log("[2] Parse non-stream Responses result");
@@ -144,6 +150,27 @@ check("stream deltas reach UI callbacks", streamedText === "Inspecting." && stre
 check("stream tool call is complete", streamed.toolCalls[0].id === "call_1" && streamed.toolCalls[0].function.arguments === '{"tab":1}');
 check("stream completed output retains encrypted reasoning", streamed.responseOutput[0].encrypted_content === "encrypted-reasoning");
 check("stream usage and stop reason are parsed", streamed.usage.input_tokens === 3 && streamed.finishReason === "tool_calls");
+const readStream = (list, onDelta = () => {}) =>
+  client._readStreamResponses(
+    new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode(list.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""))); controller.close(); } })),
+    onDelta,
+    () => {}
+  );
+const bare = await readStream([
+  { type: "response.output_item.added", output_index: 0, item: { ...functionCallItem, arguments: "" } },
+  { type: "response.function_call_arguments.delta", output_index: 0, delta: '{"tab":1}' },
+  { type: "response.output_item.done", output_index: 0, item: functionCallItem },
+  { type: "response.output_text.delta", output_index: 1, delta: "Done." },
+  { type: "response.completed", response: { status: "completed", usage: { input_tokens: 3, output_tokens: 5 } } },
+]);
+check("a completed event without output keeps the streamed text and calls", bare.content === "Done." && bare.toolCalls[0].function.arguments === '{"tab":1}' && bare.usage.input_tokens === 3 && bare.finishReason === "tool_calls");
+const cut = await readStream([
+  { type: "response.output_item.added", output_index: 0, item: { ...functionCallItem, arguments: "" } },
+  { type: "response.output_item.added", output_index: 1, item: { id: "fc_2", type: "function_call", call_id: "call_2", name: "env_create", arguments: "" } },
+  { type: "response.function_call_arguments.delta", output_index: 0, delta: '{"tab":1}' },
+  { type: "response.output_item.done", output_index: 0, item: functionCallItem },
+]);
+check("a stream cut before a call finishes drops the unfinished call instead of running it with {}", cut.toolCalls.length === 1 && cut.toolCalls[0].id === "call_1");
 
 console.log("[4] AgentLoop returns raw output items to the next tool round");
 let turn = 0;
@@ -181,6 +208,27 @@ const turnResult = await runAgentTurn({
 });
 check("AgentLoop preserves Responses output for stateless continuation", rawOutputWasReturned && turn === 2);
 check("AgentLoop completes the tool round", turnResult.stopReason === "final" && turnResult.content.includes("页面已检查"));
+
+console.log("[5] Reasoning summaries fall back when the organization is not verified");
+const seen = [];
+globalThis.fetch = async (_url, requestInit) => {
+  const body = JSON.parse(requestInit.body);
+  seen.push(body);
+  if (body.reasoning?.summary) {
+    return new Response('{"error":{"message":"Your organization must be verified to generate reasoning summaries."}}', { status: 400, statusText: "Bad Request" });
+  }
+  return new Response(JSON.stringify({ status: "completed", output: [assistantItem], usage: { input_tokens: 2, output_tokens: 1 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+};
+try {
+  const result = await client.chat([{ role: "user", content: "hi" }]);
+  check(
+    "a rejected summary is retried without it, keeping effort and encrypted reasoning",
+    result.content === "I will inspect it." && seen.length === 2 && seen[0].reasoning.summary === "auto" && seen[1].reasoning.summary === undefined && seen[1].reasoning.effort === "high" && seen[1].include.includes("reasoning.encrypted_content")
+  );
+  check("the rejection is remembered for this model", JSON.parse(client.buildRequest([{ role: "user", content: "hi" }]).init.body).reasoning.summary === undefined);
+} finally {
+  globalThis.fetch = originalFetch;
+}
 
 console.log(`\nOpenAI Responses 自测：${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -17,7 +17,7 @@ function legacyProfile(store, providers) {
 }
 
 /** 模型配置管理：同一 provider 可保存多组账号/端点，选择历史配置即可切换。 */
-export default function SettingsPane({ store, providers, fetchModels, onClose }) {
+export default function SettingsPane({ store, providers, protocolOptions = [], fetchModels, onClose }) {
   const initialProfiles = store.listModelProfiles
     ? store.listModelProfiles()
     : [legacyProfile(store, providers)];
@@ -269,11 +269,8 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         <>
           <label className="settings-pane__field">
             协议
-            <select value={customProtocol} onChange={e => { setCustomProtocol(e.target.value); setFetchedModels([]); setManual(false); setStatus(""); }}>
-              <option value="openai">OpenAI 兼容（/v1/chat/completions）</option>
-              <option value="openai-responses">OpenAI Responses API（/v1/responses）</option>
-              <option value="anthropic">Anthropic 兼容（/v1/messages）</option>
-              <option value="gemini">Google Gemini 原生（GenerateContent）</option>
+            <select value={customProtocol} onChange={e => { setCustomProtocol(e.target.value); setFetchedModels([]); setFetchMsg(""); setManual(false); setStatus(""); }}>
+              {protocolOptions.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
             </select>
           </label>
           <label className="settings-pane__field">
@@ -288,7 +285,7 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         <input type="password" value={apiKey} placeholder="sk-..." onChange={e => { setApiKey(e.target.value); setStatus(""); }} />
       </label>
 
-      {isCustom && (customProtocol === "openai" || customProtocol === "openai-responses") && (
+      {isCustom && protocolOptions.some(p => p.value === customProtocol && p.reasoningEffort) && (
         <label className="settings-pane__field">
           思考等级
           <select value={customReasoningEffort} onChange={e => { setCustomReasoningEffort(e.target.value); setStatus(""); }}>

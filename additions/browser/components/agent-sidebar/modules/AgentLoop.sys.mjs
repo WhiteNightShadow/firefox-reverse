@@ -146,13 +146,16 @@ async function summarizeForHandoff(client, msgs, fromIdx, signal, onUsage, cache
       { role: "system", content: HANDOFF_PROMPT },
       { role: "user", content: "以下是迄今的执行记录，据此输出交接摘要：\n\n" + transcript },
     ],
-    { signal, maxTokens: 2048, cacheKey: cacheKey ? cacheKey + ":handoff" : "" }
+    // auxiliary：少思考、给输出留足余量（推理模型的思考 token 也算在 maxTokens 里）。
+    { signal, maxTokens: 2048, auxiliary: true, cacheKey: cacheKey ? cacheKey + ":handoff" : "" }
   );
   try {
     onUsage && onUsage(res.usage, { phase: "handoff" });
   } catch {
     /* usage reporting never blocks the Agent */
   }
+  // 被长度截断的摘要是半截的，当没有摘要处理（调用方退回机械摘要），别把半截当交接。
+  if (res && (res.finishReason === "length" || res.finishReason === "max_tokens")) return "";
   return (res && res.content ? String(res.content) : "").trim();
 }
 
@@ -763,6 +766,40 @@ export async function runAgentTurn(p) {
         res.finishReason === "max_tokens" ||
         (txt.trim().length < 8 && reasoningLen > 2000);
 
+      // 【工具调用本身没生成好】：Gemini 的 MALFORMED_FUNCTION_CALL（参数大、引号/换行没转义时常见）或
+      // 截断正好落在工具调用上（参数不完整，没派发）。都不是"模型只说不做"，也不是"想太多"：把服务端给的
+      // 原因告诉模型让它重发，并按截断那套计数，免得误判成 drift 或把预算耗在思考上。
+      if (res.finishReason === "malformed_function_call" || res.truncatedToolCall) {
+        truncRetries++;
+        if (truncRetries > MAX_TRUNC_RETRIES) {
+          emit({ type: "final", content: res.content, round });
+          return {
+            content:
+              (res.content || "") +
+              `\n\n（已停下）模型连续 ${truncRetries - 1} 次没能生成出完整有效的工具调用` +
+              (res.finishMessage ? `（服务端原因：${String(res.finishMessage).slice(0, 300)}）` : "") +
+              `。进展已落盘。建议换更稳的模型续跑，或把该模型 max_tokens 调大。`,
+            rounds: round,
+            toolCalls: allToolCalls,
+            messages: msgs,
+            stopReason: "final",
+          };
+        }
+        msgs.push({ role: "assistant", content: txt || "（上轮的工具调用没有生成完整）" });
+        msgs.push({
+          role: "user",
+          content: res.truncatedToolCall
+            ? "（系统）你上一条的工具调用参数被输出长度限制截断了（finish_reason=length），本次调用未执行。" +
+              "⚠ **别再重发同样的大内容**——重试还会被截断。改用其一：① 要复制/改**已落盘的文件**→ `fs_copy(src,dst)` 拷现成的、再只写小补丁；" +
+              "② 确需新写大文件 → 分多段 `fs_write({path,content,append:true})` 每段 ≤2KB；③ 缩短本轮思考/少灌内容。"
+            : "（系统）你上一条的工具调用没有生成成功，服务端判定为无效的函数调用" +
+              (res.finishMessage ? `（原因：${String(res.finishMessage).slice(0, 300)}）` : "") +
+              "，本次调用未执行。请**重新发出这个调用**：参数必须是一个合法 JSON 对象，字符串值里的引号、反斜杠、换行要正确转义；" +
+              "内容很大就分多段 `fs_write({path,content,append:true})` 每段 ≤2KB。",
+        });
+        continue;
+      }
+
       // 【截断专用处理】(Fix 1)：与 drift/autoContinue **完全解耦**。截断不是"漂移不动手"，是"想太多被切"——
       // 若按 autoContinue 累计，3 次就误判 drift、外层再两轮 drift 即"已停下"=用户实测的"DeepSeek 跑一会突然
       // 截断然后会话停了"。故：不碰 autoContinues、不把那半截废思考回灌（白占 80K 预算还会顺着想下去），
@@ -857,6 +894,9 @@ export async function runAgentTurn(p) {
     }
     msgs.push(asstMsg);
 
+    // 工具返回的图先攒着，整批 tool 结果回灌完再作为一条 user 图片消息追加：OpenAI 要求 tool 消息紧跟
+    // tool_calls，Gemini 要求一轮调用的 functionResponse 数量对得上且连在一起，中间插 user 消息都会 400。
+    const mediaBlocks = [];
     for (const tc of toolCalls) {
       if (signal && signal.aborted) {
         break; // 手动停止：跳出，外层轮次边界会干净返回
@@ -1028,9 +1068,12 @@ export async function runAgentTurn(p) {
           }
         }
         if (blocks.length > 1) {
-          msgs.push({ role: "user", content: blocks });
+          mediaBlocks.push(...blocks);
         }
       }
+    }
+    if (mediaBlocks.length) {
+      msgs.push({ role: "user", content: mediaBlocks });
     }
 
     // A1 无进展软提醒（轻量、不强制）：连续 NO_PROGRESS_BUDGET 次零真实前进 → 注入**一条温和提醒**，

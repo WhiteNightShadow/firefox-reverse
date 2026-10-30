@@ -22,12 +22,29 @@ export const PROTOCOLS = Object.freeze({
   GEMINI: "gemini",
 });
 
+/** 自定义端点可选的协议；设置页、ConfigStore 都从这里派生，别再各抄一份。 */
+export const CUSTOM_PROTOCOLS = Object.freeze(Object.values(PROTOCOLS));
+
+/** OpenAI 形态的 reasoning_effort 只有这两种协议认；Anthropic/Gemini 的思考配置是另一套，不翻译。 */
+export function protocolSupportsReasoningEffort(protocol) {
+  return protocol === PROTOCOLS.OPENAI || protocol === PROTOCOLS.OPENAI_RESPONSES;
+}
+
 // Compatibility decisions live for the parent-process lifetime so an
 // OpenAI/Anthropic-compatible gateway that rejects optional fields is probed
 // only once per browser run, not once per user turn.
 const _cacheFieldRejectedEndpoints = new Set();
 const _streamUsageRejectedEndpoints = new Set();
+// Optional per-model features (reasoning summaries, Gemini thought summaries)
+// that a model or gateway rejected; keyed by endpoint and model.
+const _modelFeatureRejected = new Set();
 let _geminiCallSequence = 0;
+
+// Auxiliary calls (handoff summary, context projection) carry no tools and
+// want a short answer, but on reasoning models the thinking tokens count
+// against the same output limit, so they get a floor instead of the caller's
+// small cap.
+const AUXILIARY_OUTPUT_FLOOR = { [PROTOCOLS.OPENAI_RESPONSES]: 16384, [PROTOCOLS.GEMINI]: 8192 };
 
 /* setTimeout/clearTimeout 解析：
  * - Node / chrome document：globalThis 上就有，直接用。
@@ -139,6 +156,7 @@ export class LlmClient {
     this._compatKey = `${this.protocol}|${this.baseUrl}|${this.chatPath}`;
     this._cacheFieldsRejected = _cacheFieldRejectedEndpoints.has(this._compatKey);
     this._streamUsageRejected = _streamUsageRejectedEndpoints.has(this._compatKey);
+    this._modelKey = `${this._compatKey}|${this.model}`;
     this._configuredMaxTokens = Number.isFinite(cfg.request?.max_tokens) ? cfg.request.max_tokens : null;
     this._configuredTemperature = Number.isFinite(cfg.request?.temperature) ? cfg.request.temperature : null;
     this.request = Object.assign(
@@ -154,11 +172,45 @@ export class LlmClient {
     return this.baseUrl + this.chatPath;
   }
 
+  /** 这个模型在这个端点上是否还能带某个可选特性（上次被拒就不再带）。 */
+  _featureAllowed(name, opts) {
+    return !opts.disableFeatures?.has(name) && !_modelFeatureRejected.has(`${name}|${this._modelKey}`);
+  }
+
+  _setFeatureRejected(name, rejected) {
+    const key = `${name}|${this._modelKey}`;
+    if (rejected) _modelFeatureRejected.add(key);
+    else _modelFeatureRejected.delete(key);
+  }
+
+  /** 辅助调用（交接摘要/上下文投影）的输出上限：思考 token 也算在内，给个下限免得摘要被切。 */
+  _outputLimit(limit, opts, reasoningActive) {
+    const floor = opts.auxiliary && reasoningActive ? AUXILIARY_OUTPUT_FLOOR[this.protocol] : 0;
+    return floor && Number.isFinite(limit) ? Math.max(limit, floor) : limit;
+  }
+
+  /** 记住（或撤销）端点/模型拒绝的可选特性。 */
+  _rememberFeatures(names, rejected) {
+    for (const name of names) {
+      if (name === "promptCache") {
+        this._cacheFieldsRejected = rejected;
+        _cacheFieldRejectedEndpoints[rejected ? "add" : "delete"](this._compatKey);
+      } else if (name === "streamUsage") {
+        this._streamUsageRejected = rejected;
+        _streamUsageRejectedEndpoints[rejected ? "add" : "delete"](this._compatKey);
+      } else {
+        this._setFeatureRejected(name, rejected);
+      }
+    }
+  }
+
   /**
    * 构造请求（url + fetch init），不发送。抽出来便于 dry-run 自测与单元测试。
    * @param {ChatMessage[]} messages
-   * @param {object} [opts]  { tools, model, stream, reasoningEffort, maxTokens, cacheKey, sessionId }
-   * @returns {{ url: string, init: object, cacheApplied: boolean }}
+   * @param {object} [opts]  { tools, model, stream, reasoningEffort, maxTokens, cacheKey, sessionId,
+   *   auxiliary（无工具的辅助调用：少思考、给输出留足余量）, disableFeatures（chat() 回退时去掉的可选特性）}
+   * @returns {{ url: string, init: object, cacheApplied: boolean, streamUsageApplied: boolean,
+   *   features: string[]（本次带上的可选特性，被拒时 chat() 去掉它们重发一次）}}
    */
   buildRequest(messages, opts = {}) {
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -178,10 +230,11 @@ export class LlmClient {
       !opts.disablePromptCache &&
       !!cacheKey;
 
+    // 辅助调用不需要深思：配置了思考等级的就降到 low（所有推理模型都认），auto 的保持不发。
+    const configuredEffort = normalizeReasoningEffort(opts.reasoningEffort ?? this.request.reasoning_effort);
+    const reasoningEffort = opts.auxiliary && configuredEffort !== "auto" ? "low" : configuredEffort;
+
     if (this.protocol === PROTOCOLS.OPENAI) {
-      const reasoningEffort = normalizeReasoningEffort(
-        opts.reasoningEffort ?? this.request.reasoning_effort
-      );
       const body = {
         model,
         messages,
@@ -215,6 +268,7 @@ export class LlmClient {
         url: this.endpoint,
         cacheApplied,
         streamUsageApplied,
+        features: [...(cacheApplied ? ["promptCache"] : []), ...(streamUsageApplied ? ["streamUsage"] : [])],
         init: {
           method: "POST",
           headers: {
@@ -232,22 +286,28 @@ export class LlmClient {
 
     if (this.protocol === PROTOCOLS.OPENAI_RESPONSES) {
       const { instructions, input } = toResponsesInput(messages);
+      const reasoningActive = reasoningEffort !== "auto";
+      const features = [];
       const body = {
         model,
         input,
         stream: opts.stream ?? this.request.stream ?? false,
-        max_output_tokens: opts.maxTokens ?? this.request.max_tokens,
+        max_output_tokens: this._outputLimit(opts.maxTokens ?? this.request.max_tokens, opts, reasoningActive),
+        // store:false 让每个 reasoning 输出项自带 encrypted_content，多轮工具循环无状态回灌。
         store: false,
-        include: ["reasoning.encrypted_content"],
       };
       if (instructions) {
         body.instructions = instructions;
       }
-      const reasoningEffort = normalizeReasoningEffort(
-        opts.reasoningEffort ?? this.request.reasoning_effort
-      );
-      if (reasoningEffort !== "auto") {
+      if (reasoningActive) {
         body.reasoning = { effort: reasoningEffort };
+        // 老网关仍要显式 include 才回 encrypted_content；非推理模型会拒绝这个 include，所以只在开了思考时带。
+        body.include = ["reasoning.encrypted_content"];
+        // 思考摘要默认不返回，要显式要；未验证的组织会被拒，chat() 去掉它重发一次后记住。
+        if (this._featureAllowed("reasoningSummary", opts)) {
+          body.reasoning.summary = "auto";
+          features.push("reasoningSummary");
+        }
       }
       if (opts.tools) {
         body.tools = opts.tools.map(t => {
@@ -264,11 +324,13 @@ export class LlmClient {
       const cacheApplied = cacheEnabled && this.providerId === "custom";
       if (cacheApplied) {
         body.prompt_cache_key = cacheKey;
+        features.push("promptCache");
       }
       return {
         url: this.endpoint,
         cacheApplied,
         streamUsageApplied: false,
+        features,
         init: {
           method: "POST",
           headers: {
@@ -296,11 +358,19 @@ export class LlmClient {
           ? this.chatPath.replace(/:(?:streamGenerateContent|generateContent)\/?$/i, ":" + method)
           : `${this.chatPath.replace(/\/+$/, "")}/${encodeURIComponent(modelId)}:${method}`;
       const { systemInstruction, contents } = toGeminiRequest(messages);
+      const features = [];
       const generationConfig = {};
-      const maxOutputTokens = opts.maxTokens ?? this._configuredMaxTokens;
+      // 思考模型的 thinking token 也算进 maxOutputTokens；辅助调用给个下限。配置里没写上限就随模型默认。
+      const maxOutputTokens = this._outputLimit(opts.maxTokens ?? this._configuredMaxTokens, opts, true);
       if (Number.isFinite(maxOutputTokens)) generationConfig.maxOutputTokens = maxOutputTokens;
       if (Number.isFinite(this._configuredTemperature)) {
         generationConfig.temperature = this._configuredTemperature;
+      }
+      // 思考摘要（thought:true 的 part）要显式要；不支持思考的模型会拒绝，chat() 去掉它重发一次后记住。
+      // 辅助调用不要摘要。thinkingBudget/thinkingLevel 各代模型规则不同，这里不碰，随模型默认。
+      if (!opts.auxiliary && this._featureAllowed("includeThoughts", opts)) {
+        generationConfig.thinkingConfig = { includeThoughts: true };
+        features.push("includeThoughts");
       }
       const body = {
         contents,
@@ -308,23 +378,13 @@ export class LlmClient {
       };
       if (systemInstruction) body.systemInstruction = systemInstruction;
       if (opts.tools?.length) {
-        body.tools = [
-          {
-            functionDeclarations: opts.tools.map(tool => {
-              const fn = tool.function || tool;
-              return {
-                name: fn.name,
-                description: fn.description || "",
-                parameters: toGeminiSchema(fn.parameters),
-              };
-            }),
-          },
-        ];
+        body.tools = [{ functionDeclarations: opts.tools.map(geminiFunctionDeclaration) }];
       }
       return {
         url: this.baseUrl + path + (streaming ? "?alt=sse" : ""),
         cacheApplied: false,
         streamUsageApplied: false,
+        features,
         init: {
           method: "POST",
           headers: {
@@ -369,6 +429,8 @@ export class LlmClient {
       return {
         url: this.baseUrl + path,
         cacheApplied,
+        streamUsageApplied: false,
+        features: cacheApplied ? ["promptCache"] : [],
         init: {
           method: "POST",
           headers: {
@@ -473,6 +535,7 @@ export class LlmClient {
     const requestOpts = { ...opts, stream: streaming };
     let built = this.buildRequest(messages, requestOpts);
     let optionalFieldFallbackUsed = false;
+    let droppedFeatures = null;
 
     // 瞬时错误（网关 5xx / 上游抖动 / 网络）自动重试，避免中转站后端偶发失败直接断掉整轮。
     const maxAttempts = 3;
@@ -532,30 +595,28 @@ export class LlmClient {
       if (!resp.ok) {
         stopWatch();
         const errText = await resp.text().catch(() => "");
-        if (
-          (built.cacheApplied || built.streamUsageApplied) &&
-          !optionalFieldFallbackUsed &&
-          [400, 404, 422].includes(resp.status)
-        ) {
-          // OpenAI/Anthropic-compatible gateways frequently reject fields they
-          // do not proxy. Disable native cache fields for this client and retry
-          // the exact request once; user-visible behavior remains unchanged.
-          if (built.cacheApplied) {
-            this._cacheFieldsRejected = true;
-            _cacheFieldRejectedEndpoints.add(this._compatKey);
-          }
-          if (built.streamUsageApplied) {
-            this._streamUsageRejected = true;
-            _streamUsageRejectedEndpoints.add(this._compatKey);
-          }
+        const optional = built.features || [];
+        if (optional.length && !optionalFieldFallbackUsed && [400, 404, 422].includes(resp.status)) {
+          // Gateways and models reject optional fields they do not know: prompt_cache_key,
+          // stream_options, reasoning summaries, Gemini thought summaries. Drop every optional
+          // feature of this request and retry it once. The rejection sticks only if the retry
+          // goes through; a 4xx caused by something else must not blacklist the features for
+          // the rest of the browser run.
+          this._rememberFeatures(optional, true);
+          droppedFeatures = optional;
           optionalFieldFallbackUsed = true;
           built = this.buildRequest(messages, {
             ...requestOpts,
             disablePromptCache: true,
             disableStreamUsage: true,
+            disableFeatures: new Set(optional),
           });
           attempt--;
           continue;
+        }
+        if (droppedFeatures) {
+          this._rememberFeatures(droppedFeatures, false);
+          droppedFeatures = null;
         }
         // 5xx / 网关·上游错误属瞬时（中转站后端抖动）→ 可重试；4xx 是请求/鉴权问题 → 不重试。
         const transient =
@@ -632,89 +693,69 @@ export class LlmClient {
       const text = await resp.text();
       return this.parseResponse(JSON.parse(text));
     }
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
     let content = "";
     let reasoningContent = "";
     const toolCalls = [];
     let finishReason = "";
     let usage = null;
     let leakSuppressed = false; // 检测到工具调用泄漏标记后，停止把 content 打到 UI
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
+    for await (const data of sseData(resp, onActivity)) {
+      if (data === "[DONE]") {
+        continue;
       }
-      if (onActivity) {
-        onActivity(); // 收到数据 → 重置空闲看门狗（流式期间永不误超时）
+      let chunk;
+      try {
+        chunk = JSON.parse(data);
+      } catch {
+        continue;
       }
-      buffer += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-        if (!line.startsWith("data:")) {
-          continue;
+      const choice = chunk.choices && chunk.choices[0];
+      const delta = (choice && choice.delta) || {};
+      if (delta.content) {
+        content += delta.content;
+        // 一旦累积内容里出现工具调用泄漏标记，停止把后续 content 打到 UI（避免畸形标记刷屏）；
+        // 真实工具调用在流末由 recoverInlineToolCalls 还原。
+        if (!leakSuppressed && looksLikeToolCallLeak(content)) {
+          leakSuppressed = true;
         }
-        const data = line.slice(5).trim();
-        if (data === "[DONE]") {
-          continue;
+        if (!leakSuppressed) {
+          try {
+            onDelta(delta.content);
+          } catch {}
         }
-        let chunk;
-        try {
-          chunk = JSON.parse(data);
-        } catch {
-          continue;
+      }
+      if (delta.reasoning_content) {
+        reasoningContent += delta.reasoning_content;
+        if (onReasoning) {
+          try {
+            onReasoning(delta.reasoning_content);
+          } catch {}
         }
-        const choice = chunk.choices && chunk.choices[0];
-        const delta = (choice && choice.delta) || {};
-        if (delta.content) {
-          content += delta.content;
-          // 一旦累积内容里出现工具调用泄漏标记，停止把后续 content 打到 UI（避免畸形标记刷屏）；
-          // 真实工具调用在流末由 recoverInlineToolCalls 还原。
-          if (!leakSuppressed && looksLikeToolCallLeak(content)) {
-            leakSuppressed = true;
+      }
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const i = tc.index || 0;
+          if (!toolCalls[i]) {
+            toolCalls[i] = { id: tc.id || "", type: "function", function: { name: "", arguments: "" } };
           }
-          if (!leakSuppressed) {
-            try {
-              onDelta(delta.content);
-            } catch {}
+          if (tc.id) {
+            toolCalls[i].id = tc.id;
           }
-        }
-        if (delta.reasoning_content) {
-          reasoningContent += delta.reasoning_content;
-          if (onReasoning) {
-            try {
-              onReasoning(delta.reasoning_content);
-            } catch {}
-          }
-        }
-        if (delta.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            const i = tc.index || 0;
-            if (!toolCalls[i]) {
-              toolCalls[i] = { id: tc.id || "", type: "function", function: { name: "", arguments: "" } };
+          if (tc.function) {
+            if (tc.function.name) {
+              toolCalls[i].function.name = tc.function.name;
             }
-            if (tc.id) {
-              toolCalls[i].id = tc.id;
-            }
-            if (tc.function) {
-              if (tc.function.name) {
-                toolCalls[i].function.name = tc.function.name;
-              }
-              if (tc.function.arguments) {
-                toolCalls[i].function.arguments += tc.function.arguments;
-              }
+            if (tc.function.arguments) {
+              toolCalls[i].function.arguments += tc.function.arguments;
             }
           }
         }
-        if (choice && choice.finish_reason) {
-          finishReason = choice.finish_reason;
-        }
-        if (chunk.usage) {
-          usage = chunk.usage;
-        }
+      }
+      if (choice && choice.finish_reason) {
+        finishReason = choice.finish_reason;
+      }
+      if (chunk.usage) {
+        usage = chunk.usage;
       }
     }
     let outContent = content;
@@ -735,27 +776,24 @@ export class LlmClient {
     if (!resp.body || typeof resp.body.getReader !== "function") {
       return this.parseResponse(JSON.parse(await resp.text()));
     }
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
     let content = "";
     let reasoningContent = "";
-    let usage = null;
     let finalResponse = null;
     let failure = null;
-    const outputItems = new Map();
-
-    const consumeEvent = data => {
-      if (!data || data === "[DONE]") return;
+    const outputItems = new Map(); // output_index → item（added 先占位，delta 补参数，done 给完整项）
+    const doneItems = new Set(); // 收到过 output_item.done 的 output_index
+    for await (const data of sseData(resp, onActivity)) {
+      if (data === "[DONE]") continue;
       let event;
       try {
         event = JSON.parse(data);
       } catch {
-        return;
+        continue;
       }
       const index = Number.isInteger(event.output_index) ? event.output_index : null;
       if (event.type === "response.output_item.added" || event.type === "response.output_item.done") {
         if (index !== null && event.item) outputItems.set(index, event.item);
+        if (event.type === "response.output_item.done" && index !== null) doneItems.add(index);
       } else if (event.type === "response.function_call_arguments.delta" && index !== null) {
         const item = outputItems.get(index) || {
           id: event.item_id || "",
@@ -767,6 +805,10 @@ export class LlmClient {
         item.arguments = String(item.arguments || "") + String(event.delta || "");
         if (event.call_id) item.call_id = event.call_id;
         outputItems.set(index, item);
+      } else if (event.type === "response.function_call_arguments.done" && index !== null) {
+        // 完整参数以 done 事件为准（有的网关只发 done 不发 delta）。
+        const item = outputItems.get(index);
+        if (item && typeof event.arguments === "string") item.arguments = event.arguments;
       } else if (event.type === "response.output_text.delta" && event.delta) {
         content += event.delta;
         try {
@@ -779,36 +821,25 @@ export class LlmClient {
         } catch {}
       } else if (event.type === "response.completed" || event.type === "response.incomplete") {
         finalResponse = event.response || null;
-        usage = finalResponse?.usage || usage;
       } else if (event.type === "response.failed" || event.type === "error") {
         const error = event.response?.error || event.error || {};
         failure = error.message || event.message || "OpenAI Responses stream failed";
       }
-    };
-
-    const consumeLine = line => {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("data:")) consumeEvent(trimmed.slice(5).trim());
-    };
-
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (onActivity) onActivity();
-      buffer += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        consumeLine(buffer.slice(0, nl));
-        buffer = buffer.slice(nl + 1);
-      }
     }
-    buffer += decoder.decode();
-    if (buffer.trim()) consumeLine(buffer);
     if (failure) throw new LlmError(failure);
-    if (finalResponse) return this.parseResponse(finalResponse);
-
+    const fill = result => {
+      if (!result.content && content) result.content = content;
+      if (!result.reasoningContent && reasoningContent) result.reasoningContent = reasoningContent;
+      return result;
+    };
+    // 终态事件带了完整 output 就以它为准；有的转换网关的 completed 只带 usage，这时用流里累积的项目。
+    if (Array.isArray(finalResponse?.output) && finalResponse.output.length) {
+      return fill(this.parseResponse(finalResponse));
+    }
     const output = [...outputItems.entries()]
       .sort(([a], [b]) => a - b)
+      // 流没正常收尾时，只经过 output_item.added、参数还是空的调用不能派发（会拿 {} 去执行有副作用的工具）。
+      .filter(([index, item]) => item.type !== "function_call" || doneItems.has(index) || !!finalResponse)
       .map(([, item]) => item);
     if (content && !output.some(item => item.type === "message")) {
       output.push({
@@ -817,105 +848,59 @@ export class LlmClient {
         content: [{ type: "output_text", text: content }],
       });
     }
-    const result = parseResponsesResponse({ output, status: "completed", usage });
-    if (!result.content && content) result.content = content;
-    if (!result.reasoningContent && reasoningContent) result.reasoningContent = reasoningContent;
-    return result;
+    return fill(
+      parseResponsesResponse({
+        ...(finalResponse || {}),
+        output,
+        status: finalResponse?.status || "completed",
+        usage: finalResponse?.usage || null,
+      })
+    );
   }
 
-  /** 读取 Gemini SSE，同时保留原始 model parts（包括 functionCall thoughtSignature）。 */
+  /** 读取 Gemini SSE：part 按到达顺序保留（含 functionCall 的 thoughtSignature），相邻纯文本才合并。 */
   async _readStreamGemini(resp, onDelta, onReasoning, onActivity) {
     if (!resp.body || typeof resp.body.getReader !== "function") {
       return this.parseResponse(JSON.parse(await resp.text()));
     }
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
     let finishReason = "";
+    let finishMessage = "";
     let usageMetadata = null;
     let promptFeedback = null;
     let failure = null;
-    const rawParts = new Map();
-    let partOrder = 0;
-
-    const consumeEvent = data => {
-      if (!data || data === "[DONE]") return;
+    const parts = [];
+    for await (const data of sseData(resp, onActivity)) {
+      if (data === "[DONE]") continue;
       let event;
       try {
         event = JSON.parse(data);
       } catch {
-        return;
+        continue;
       }
       if (event.error) {
         failure = event.error.message || "Gemini stream failed";
-        return;
+        continue;
       }
       usageMetadata = event.usageMetadata || usageMetadata;
       promptFeedback = event.promptFeedback || promptFeedback;
       const candidate = event.candidates?.[0];
-      if (!candidate) return;
+      if (!candidate) continue;
       if (candidate.finishReason) finishReason = candidate.finishReason;
-      const occurrences = new Map();
+      if (candidate.finishMessage) finishMessage = candidate.finishMessage;
       for (const part of candidate.content?.parts || []) {
-        const baseKey = part?.functionCall?.name
-          ? `function:${part.functionCall.name}`
-          : typeof part?.text === "string"
-            ? `text:${!!part.thought}`
-            : `other:${part?.type || "part"}`;
-        const occurrence = occurrences.get(baseKey) || 0;
-        occurrences.set(baseKey, occurrence + 1);
-        const key = `${baseKey}:${occurrence}`;
-        const entry = rawParts.get(key) || { order: partOrder++, part: {} };
-        const previous = entry.part;
-        const merged = { ...previous, ...part };
-        if (typeof previous.text === "string" && typeof part.text === "string") {
-          merged.text = previous.text + part.text;
-        }
-        if (previous.functionCall && part.functionCall) {
-          merged.functionCall = {
-            ...previous.functionCall,
-            ...part.functionCall,
-            args: { ...(previous.functionCall.args || {}), ...(part.functionCall.args || {}) },
-          };
-        }
-        rawParts.set(key, { ...entry, part: merged });
-        if (typeof part.text === "string") {
+        if (!part || typeof part !== "object") continue;
+        if (typeof part.text === "string" && part.text) {
           try {
             if (part.thought) onReasoning && onReasoning(part.text);
             else onDelta && onDelta(part.text);
           } catch {}
         }
-      }
-    };
-
-    const consumeLine = line => {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("data:")) consumeEvent(trimmed.slice(5).trim());
-    };
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (onActivity) onActivity();
-      buffer += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        consumeLine(buffer.slice(0, nl));
-        buffer = buffer.slice(nl + 1);
+        appendGeminiPart(parts, part);
       }
     }
-    buffer += decoder.decode();
-    if (buffer.trim()) consumeLine(buffer);
     if (failure) throw new LlmError(failure);
     return parseGeminiResponse({
-      candidates: [
-        {
-          content: {
-            role: "model",
-            parts: [...rawParts.values()].sort((a, b) => a.order - b.order).map(x => x.part),
-          },
-          finishReason,
-        },
-      ],
+      candidates: [{ content: { role: "model", parts }, finishReason, finishMessage }],
       usageMetadata,
       promptFeedback,
     });
@@ -926,78 +911,112 @@ export class LlmClient {
     if (!resp.body || typeof resp.body.getReader !== "function") {
       return this.parseResponse(JSON.parse(await resp.text()));
     }
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
     let content = "";
     const blocks = {}; // index → { tc? }
     const toolCalls = [];
     let finishReason = "";
     let usage = null;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
+    for await (const data of sseData(resp, onActivity)) {
+      if (!data || data === "[DONE]") {
+        continue;
       }
-      if (onActivity) {
-        onActivity(); // 收到数据 → 重置空闲看门狗（流式期间永不误超时）
+      let ev;
+      try {
+        ev = JSON.parse(data);
+      } catch {
+        continue;
       }
-      buffer += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-        if (!line.startsWith("data:")) {
-          continue;
+      if (ev.type === "message_start") {
+        if (ev.message && ev.message.usage) {
+          usage = { ...(usage || {}), ...ev.message.usage };
         }
-        const data = line.slice(5).trim();
-        if (!data || data === "[DONE]") {
-          continue;
+      } else if (ev.type === "content_block_start") {
+        const cb = ev.content_block || {};
+        if (cb.type === "tool_use") {
+          const tc = { id: cb.id, type: "function", function: { name: cb.name, arguments: "" } };
+          blocks[ev.index] = { tc };
+          toolCalls.push(tc);
+        } else {
+          blocks[ev.index] = {};
         }
-        let ev;
-        try {
-          ev = JSON.parse(data);
-        } catch {
-          continue;
+      } else if (ev.type === "content_block_delta") {
+        const d = ev.delta || {};
+        if (d.type === "text_delta" && d.text) {
+          content += d.text;
+          try {
+            onDelta && onDelta(d.text);
+          } catch {}
+        } else if (d.type === "input_json_delta" && d.partial_json != null) {
+          const b = blocks[ev.index];
+          if (b && b.tc) {
+            b.tc.function.arguments += d.partial_json;
+          }
         }
-        if (ev.type === "message_start") {
-          if (ev.message && ev.message.usage) {
-            usage = { ...(usage || {}), ...ev.message.usage };
-          }
-        } else if (ev.type === "content_block_start") {
-          const cb = ev.content_block || {};
-          if (cb.type === "tool_use") {
-            const tc = { id: cb.id, type: "function", function: { name: cb.name, arguments: "" } };
-            blocks[ev.index] = { tc };
-            toolCalls.push(tc);
-          } else {
-            blocks[ev.index] = {};
-          }
-        } else if (ev.type === "content_block_delta") {
-          const d = ev.delta || {};
-          if (d.type === "text_delta" && d.text) {
-            content += d.text;
-            try {
-              onDelta && onDelta(d.text);
-            } catch {}
-          } else if (d.type === "input_json_delta" && d.partial_json != null) {
-            const b = blocks[ev.index];
-            if (b && b.tc) {
-              b.tc.function.arguments += d.partial_json;
-            }
-          }
-        } else if (ev.type === "message_delta") {
-          if (ev.delta && ev.delta.stop_reason) {
-            finishReason = ev.delta.stop_reason;
-          }
-          if (ev.usage) {
-            usage = { ...(usage || {}), ...ev.usage };
-          }
+      } else if (ev.type === "message_delta") {
+        if (ev.delta && ev.delta.stop_reason) {
+          finishReason = ev.delta.stop_reason;
+        }
+        if (ev.usage) {
+          usage = { ...(usage || {}), ...ev.usage };
         }
       }
     }
     return { content, reasoningContent: "", toolCalls, finishReason, usage, raw: null };
   }
+}
+
+/**
+ * 逐条产出 SSE 的 data 载荷（去掉 "data:" 前缀和首尾空白）。四种协议的流都走这里：按行分帧、
+ * 兼容 CRLF、每段数据都 bump 空闲看门狗，流结束时把没带换行的最后一行也交出去。
+ */
+async function* sseData(resp, onActivity) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const payload = line => {
+    const trimmed = line.trim();
+    return trimmed.startsWith("data:") ? trimmed.slice(5).trim() : null;
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (onActivity) {
+      onActivity(); // 收到数据 → 重置空闲看门狗（流式期间永不误超时）
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf("\n")) >= 0) {
+      const data = payload(buffer.slice(0, nl));
+      buffer = buffer.slice(nl + 1);
+      if (data !== null) {
+        yield data;
+      }
+    }
+  }
+  buffer += decoder.decode();
+  const tail = payload(buffer);
+  if (tail !== null) {
+    yield tail;
+  }
+}
+
+/**
+ * 流式 chunk 里的 part 按到达顺序收进 parts。只有相邻的同类纯文本（都是思考或都是正文）才拼成一个 part；
+ * functionCall 等其余 part 各占一位，并行的同名调用绝不合并。thoughtSignature 可能跟在一个空文本 part 里
+ * 晚到，要挂到它所属的那段文本上；已带签名的 part 不再和别的 part 合并（文档明令禁止，合了下一轮回灌会 400）。
+ */
+function appendGeminiPart(parts, part) {
+  const last = parts[parts.length - 1];
+  const plainText = p =>
+    typeof p.text === "string" && Object.keys(p).every(key => ["text", "thought", "thoughtSignature"].includes(key));
+  if (last && plainText(last) && plainText(part) && !!last.thought === !!part.thought && !last.thoughtSignature) {
+    last.text += part.text;
+    if (part.thoughtSignature) last.thoughtSignature = part.thoughtSignature;
+    return;
+  }
+  parts.push({ ...part });
 }
 
 /* ── DeepSeek 等模型偶发把 tool_calls 以**文本标记**泄漏进 content（而非结构化 tool_calls 字段），
@@ -1133,16 +1152,23 @@ function nextGeminiCallId() {
 
 function normalizeGeminiUsage(metadata) {
   if (!metadata || typeof metadata !== "object") return null;
+  const candidates = Number(metadata.candidatesTokenCount) || 0;
+  const thoughts = Number(metadata.thoughtsTokenCount) || 0;
   return {
     prompt_tokens: metadata.promptTokenCount,
-    completion_tokens: metadata.candidatesTokenCount,
-    reasoning_tokens: metadata.thoughtsTokenCount,
+    // OpenAI 语义下 completion_tokens 是全部输出（含推理）；Gemini 把思考单列在 thoughtsTokenCount。
+    completion_tokens: candidates + thoughts,
+    reasoning_tokens: thoughts,
     prompt_cache_hit_tokens: metadata.cachedContentTokenCount,
   };
 }
 
+// 模型生成的调用本身无效（参数大、引号/换行没转义时常见）或响应畸形：不是正常收尾，AgentLoop 据此让模型重发。
+const GEMINI_MALFORMED = new Set(["MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "MALFORMED_RESPONSE"]);
+
 function geminiFinishReason(reason, hasToolCalls) {
   if (reason === "MAX_TOKENS") return "length";
+  if (GEMINI_MALFORMED.has(reason)) return "malformed_function_call";
   if (hasToolCalls) return "tool_calls";
   if (reason === "SAFETY" || reason === "RECITATION" || reason === "PROHIBITED_CONTENT") {
     return "content_filter";
@@ -1186,12 +1212,16 @@ function parseGeminiResponse(json) {
     }
   }
   const finishReason = geminiFinishReason(candidate.finishReason, toolCalls.length > 0);
+  // A call returned at the output limit may contain only partial arguments: not dispatched, but the
+  // loop is told that the truncation hit a tool call so it asks for a smaller write, not less thinking.
+  const truncatedToolCall = finishReason === "length" && toolCalls.length > 0;
   return {
     content: content.join(""),
     reasoningContent: reasoning.join(""),
-    // A call returned at the output limit may contain only partial arguments.
-    toolCalls: finishReason === "length" ? [] : toolCalls,
+    toolCalls: truncatedToolCall ? [] : toolCalls,
     finishReason,
+    finishMessage: String(candidate.finishMessage || ""),
+    truncatedToolCall,
     usage: normalizeGeminiUsage(json?.usageMetadata),
     raw: json,
     geminiContent: candidate.content || null,
@@ -1312,28 +1342,46 @@ function toGeminiParts(content) {
   });
 }
 
-const GEMINI_SCHEMA_FIELDS = new Set([
-  "description", "format", "nullable", "enum", "required", "minimum", "maximum",
-  "minItems", "maxItems", "minLength", "maxLength", "pattern",
+// Gemini 文档列出的 JSON Schema 关键字；其余（additionalProperties:false 之外的扩展、pattern 等）剥掉。
+const GEMINI_JSON_SCHEMA_KEYS = new Set([
+  "type", "title", "description", "properties", "required", "additionalProperties",
+  "enum", "format", "items", "prefixItems", "minItems", "maxItems", "minimum", "maximum", "anyOf", "oneOf",
 ]);
 
-function toGeminiSchema(schema = {}) {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-    return { type: "OBJECT", properties: {} };
-  }
+/** 工具参数的 JSON Schema 只留 Gemini 认的关键字，递归到 properties / items / anyOf。 */
+function geminiJsonSchema(schema) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return {};
   const out = {};
-  if (schema.type) out.type = String(schema.type).toUpperCase();
-  for (const key of GEMINI_SCHEMA_FIELDS) {
-    if (schema[key] !== undefined) out[key] = schema[key];
+  for (const [key, value] of Object.entries(schema)) {
+    if (!GEMINI_JSON_SCHEMA_KEYS.has(key)) continue;
+    if (key === "properties") {
+      if (value && typeof value === "object") {
+        out.properties = Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, geminiJsonSchema(sub)]));
+      }
+    } else if (key === "items" || key === "additionalProperties") {
+      out[key] = Array.isArray(value) ? value.map(geminiJsonSchema) : typeof value === "object" && value ? geminiJsonSchema(value) : value;
+    } else if (key === "anyOf" || key === "oneOf" || key === "prefixItems") {
+      if (Array.isArray(value)) out[key] = value.map(geminiJsonSchema);
+    } else {
+      out[key] = value;
+    }
   }
-  if (schema.properties && typeof schema.properties === "object") {
-    out.properties = Object.fromEntries(
-      Object.entries(schema.properties).map(([key, value]) => [key, toGeminiSchema(value)])
-    );
-  }
-  if (schema.items) out.items = toGeminiSchema(schema.items);
-  if (!out.type) out.type = out.properties ? "OBJECT" : "STRING";
   return out;
+}
+
+/**
+ * OpenAI 形态的工具声明 → Gemini functionDeclaration。参数走 parametersJsonSchema（标准 JSON Schema：
+ * 没 items 的数组、没 properties 的自由对象都合法），而 OpenAPI 子集的 parameters 对这两种会 400；
+ * 没有参数的工具省略该字段。
+ */
+export function geminiFunctionDeclaration(tool) {
+  const fn = tool.function || tool;
+  const declaration = { name: fn.name, description: fn.description || "" };
+  const schema = geminiJsonSchema(fn.parameters);
+  if (schema.properties && Object.keys(schema.properties).length) {
+    declaration.parametersJsonSchema = { ...schema, type: "object" };
+  }
+  return declaration;
 }
 
 /** 将 AgentLoop 的 OpenAI 形态上下文转成无状态 Responses API input。 */
@@ -1364,7 +1412,7 @@ export function toResponsesInput(messages) {
     }
 
     const role = message.role === "assistant" ? "assistant" : "user";
-    const content = responsesMessageContent(message.content);
+    const content = responsesMessageContent(message.content, role);
     if (content !== "" || !message.tool_calls?.length) {
       input.push({ role, content });
     }
@@ -1384,18 +1432,23 @@ export function toResponsesInput(messages) {
   return { instructions: instructionParts.join("\n\n"), input };
 }
 
-function responsesMessageContent(content) {
+/** 消息 content → Responses input 内容；assistant 历史只能是 output_text/refusal，user 才有 input_* 项。 */
+function responsesMessageContent(content, role = "user") {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) {
     return content == null ? "" : String(content);
   }
+  const textType = role === "assistant" ? "output_text" : "input_text";
   return content.flatMap(part => {
     if (typeof part === "string") {
-      return [{ type: "input_text", text: part }];
+      return [{ type: textType, text: part }];
     }
     if (!part || typeof part !== "object") return [];
     if (part.type === "text" || part.type === "input_text" || part.type === "output_text") {
-      return [{ type: "input_text", text: String(part.text || "") }];
+      return [{ type: textType, text: String(part.text || "") }];
+    }
+    if (role === "assistant") {
+      return [part.type === "refusal" ? part : { type: textType, text: JSON.stringify(part) }];
     }
     if (part.type === "image_url" || part.type === "input_image") {
       const image = part.image_url;

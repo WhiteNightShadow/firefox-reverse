@@ -9,7 +9,9 @@ import {
   normalizeBaseUrl,
   resolveChatPath,
   buildClientFromStore,
+  CUSTOM_PROTOCOL_OPTIONS,
 } from "../modules/providers.sys.mjs";
+import { CUSTOM_PROTOCOLS } from "../modules/LlmClient.sys.mjs";
 import { ConfigStore } from "../modules/ConfigStore.sys.mjs";
 
 let fail = 0;
@@ -27,6 +29,11 @@ check("normalize 剥 chat/completions", normalizeBaseUrl("https://a.com/compatib
 check("normalize 剥 messages", normalizeBaseUrl("https://a.com/v1/messages"), "https://a.com/v1");
 check("normalize 剥 responses", normalizeBaseUrl("https://a.com/v1/responses"), "https://a.com/v1");
 check("normalize 剥 Gemini 完整生成端点", normalizeBaseUrl("https://a.com/v1beta/models/gemini-2.5-flash:generateContent"), "https://a.com/v1beta");
+check("normalize 剥 Gemini 流式端点和 query", normalizeBaseUrl("https://a.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"), "https://a.com/v1beta");
+check("normalize 不把 ?key= 留在 base 里", normalizeBaseUrl("https://a.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIza-secret"), "https://a.com/v1beta");
+check("normalize 剥不带方法的模型路径", normalizeBaseUrl("https://a.com/v1beta/models/gemini-2.5-flash"), "https://a.com/v1beta");
+check("协议选项与 LlmClient 的清单一致", CUSTOM_PROTOCOL_OPTIONS.map(o => o.value), [...CUSTOM_PROTOCOLS]);
+check("只有 OpenAI 两种协议显示思考等级", CUSTOM_PROTOCOL_OPTIONS.filter(o => o.reasoningEffort).map(o => o.value), ["openai", "openai-responses"]);
 check("normalize 剥 models", normalizeBaseUrl("https://a.com/v1/models"), "https://a.com/v1");
 check("chatPath 无版本段", resolveChatPath("openai", "https://api.deepseek.com"), "/v1/chat/completions");
 check("chatPath 带 /v1", resolveChatPath("openai", "https://dashscope.aliyuncs.com/compatible-mode/v1"), "/chat/completions");
@@ -79,7 +86,7 @@ cs.setModel("custom", "gemini-2.5-flash");
 const geminiClient = buildClientFromStore(cs);
 check("Gemini 自定义配置使用原生模型路径", geminiClient.endpoint, "https://generativelanguage.googleapis.com/v1beta/models");
 requestBody = JSON.parse(geminiClient.buildRequest([{ role: "user", content: "hi" }]).init.body);
-check("Gemini 自定义配置保留模型默认 thinking", requestBody.thinkingConfig, undefined);
+check("Gemini 自定义配置只要思考摘要、不设预算", requestBody.generationConfig.thinkingConfig, { includeThoughts: true });
 check("Gemini 不继承 OpenAI 默认 token 上限和 temperature", [requestBody.generationConfig.maxOutputTokens, requestBody.generationConfig.temperature], [undefined, undefined]);
 check("协议值通过新 ConfigStore 实例持久化", new ConfigStore(cs.b).getCustomProtocol(), "gemini");
 cs.setCustomBaseUrl("https://dashscope.aliyuncs.com/compatible-mode/v1/");
@@ -152,6 +159,7 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ models: [
       { name: "models/gemini-2.5-flash", supportedGenerationMethods: ["generateContent", "countTokens"] },
       { name: "models/text-embedding-004", supportedGenerationMethods: ["embedContent"] },
+      { supportedGenerationMethods: ["generateContent"] },
     ] }));
   }
   // 其余：模拟文档站，404 + HTML

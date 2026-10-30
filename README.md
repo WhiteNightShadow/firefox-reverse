@@ -313,7 +313,7 @@ cd upstream && ./mach build && ./mach package
 ## 📝 版本更新记录
 
 ### main（尚未发布）
-- **模型协议**：自定义模型端点新增 OpenAI Responses API 与 Gemini 原生 GenerateContent；支持流式文本、function calling、图片输入和工具循环。Gemini 原生调用使用模型默认 thinking 配置。
+- **模型协议**：自定义模型端点新增 OpenAI Responses API 与 Gemini 原生 GenerateContent；支持流式文本、function calling、图片输入、工具循环和思考摘要（模型或网关不认时自动去掉重发并记住）。Gemini 的工具声明走标准 JSON Schema（`parametersJsonSchema`），思考预算随模型默认；并行同名调用、被输出上限截断的调用、服务端判定无效的调用都有专门处理，不会静默丢调用。Responses 只在开启思考时带 `include`，非推理模型照常可用。感谢 [@awaxiaoyu](https://github.com/awaxiaoyu) 实现两个协议。
 
 ### v0.26.2（正式版，2026-10-24）
 - **macos数据目录（issue #18）**：默认的`~/Library/Application Support/Firefox`被系统拒绝访问时（如macos 27），改用独立目录`FirefoxReverse`：已有profile就原地接续，没有就新建配置并在侧栏提示一次；旧目录不读、不复制、不删除。磁盘满、i/o错误、只读卷、路径被文件占用、注册表损坏，以及显式`MOZ_APP_DATA`不可读时仍停止并给出诊断。感谢[@leihualiang](https://github.com/leihualiang)报告问题、[@odtu945](https://github.com/odtu945)定位根因并在真实macos 27拦截环境中实测预览版（[社区记录](docs/community/)，[启动说明](docs/macos-startup-diagnostics.md)）。

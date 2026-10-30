@@ -9,6 +9,7 @@
  * LoginManager 加密存储留后续增强。
  */
 
+import { CUSTOM_PROTOCOLS as KNOWN_PROTOCOLS } from "./LlmClient.sys.mjs";
 import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
 import { normalizeFontScale } from "./SidebarTypography.sys.mjs";
 
@@ -17,7 +18,8 @@ const MODEL_PROFILES_KEY = PREF_PREFIX + "modelProfiles.v1";
 const ACTIVE_MODEL_PROFILE_KEY = PREF_PREFIX + "activeModelProfileId";
 const MAX_MODEL_PROFILES = 50;
 const LEGACY_PROVIDER_IDS = ["deepseek", "zhipu", "kimi", "minimax", "qwen", "custom"];
-const CUSTOM_PROTOCOLS = new Set(["openai", "openai-responses", "anthropic", "gemini"]);
+// 协议清单只在 LlmClient 维护一份；这里认不出的值回落到 openai。
+const CUSTOM_PROTOCOLS = new Set(KNOWN_PROTOCOLS);
 
 function normalizeCustomProtocol(value) {
   const protocol = String(value || "").trim();
