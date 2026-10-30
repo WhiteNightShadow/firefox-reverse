@@ -139,6 +139,7 @@ signer_trace/webapi_trace 必须 **arm → clear → 只触发一次新请求 �
 | 脚本 | scripts_capture_all / scripts_list / scripts_save(toWorkspace) / code_search / find_param_entry |
 | JSVMP/WASM | jsvmp_trace / jsvmp_query / jsvmp_split_dispatcher / jsvmp_disassemble / wasm_probe / wasm_disasm / js_trace |
 | 判型/常量 | **crypto_scan**(一段数据/源码→识别 RC4/XXTEA/MD5/SHA/AES/SM4/自定义base64，免暴力扫常量) / **closure_read**(读闭包变量真值：解码后字节码·S-box·常量池，page_eval 够不到的) |
+| 断点/日志 | **debug_breakpoint**(快照断点：按源码片段 text / 行号 / 请求 xhr 定位，命中不暂停，抓实参·作用域变量·调用栈；`vars` 深序列化指定变量，`condition` 过滤) / **page_console**(页面 console.* 和脚本错误，不用提前开) / **clear_site_data**(按站点清 cookie/存储/缓存，干净状态重跑) |
 | 抓真实入参 | **简单站先「hook 日志大法」**(page_eval 包 `window.fetch`/XHR/crypto 记入参出参→交互触发→读 `window.__log`)；**首屏/导航就触发的**用 `hook_inject`(document-start 注入、早于页面 JS、跨刷新存活,start→page_navigate→query)；**够不到的闭包内部值**才用 signer_trace(引擎层 Debugger 观测、不注入) |
 | 白盒诊断 | **whitebox_diff(浏览器真值 vs Node复刻 引擎级差分→第一处分叉分支+源码行+驱动它的env值+崩溃栈;非侵入;治"复刻和浏览器结果对不上")** |
 | Web-API 指纹 | webapi_trace / webapi_query(env/flow) |

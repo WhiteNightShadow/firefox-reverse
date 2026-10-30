@@ -40,6 +40,19 @@ const server = http.createServer((request, response) => {
     response.end(gzipSync(`${replayServer.live} ${request.url} 签名`));
     return;
   }
+  // /debug carries a function with locals for the snapshot breakpoint, a request sent from a function, console output
+  // and an uncaught error, so one page exercises debug_breakpoint, page_console and clear_site_data.
+  if (request.url.startsWith("/debug")) {
+    response.setHeader("Content-Type", "text/html; charset=utf-8");
+    response.end(`<!doctype html><title>FRX Debug</title><script>
+      function frxHash(s){let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))|0;return h;}
+      window.sign=function sign(u){const key="k-"+u.length;const salt=[1,2,3];return frxHash(u + key)+salt.length;};
+      window.sendIt=function sendIt(v){const payload={v,n:2};return fetch("/replay/sent?v="+v,{method:"POST",body:JSON.stringify(payload)}).then(r=>r.status);};
+      console.log("frx-log",{a:1});console.warn("frx-warn");console.error("frx-error");
+      setTimeout(()=>{throw new Error("frx-boom")},0);
+    </script>`);
+    return;
+  }
   // /determinism records the first random values before any other script runs, in the page and in a same-origin frame.
   if (request.url.startsWith("/determinism")) {
     response.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -150,7 +163,7 @@ try {
   // just a separately constructed PageBackend. Fail before metadata fallback.
   await wire.execute('return !!ChromeUtils.importESModule("resource:///modules/agentsidebar/Backends.sys.mjs").getBackends().page;');
   const catalog = await wire.execute(JS_TOOLS);
-  check("73 live browser tools", catalog.count === 73 && catalog.missingDeclared.length === 0);
+  check("76 live browser tools", catalog.count === 76 && catalog.missingDeclared.length === 0);
   const routed = await wire.executeAsync(JS_CALLTOOL, ["page_find", { role: "button", name: "Continue" }, null]);
   check("MCP dispatch semantic query", routed.ok && routed.data?.count === 1);
   const clicked = await wire.executeAsync(JS_CALLTOOL, ["page_click", { ref: routed.data.elements[0].ref }, null]);
@@ -266,6 +279,45 @@ try {
   await visit(`${origin}/determinism`);
   const unseeded = await pageValues();
   check("real randomness after stop", unseeded.uuid !== expected.uuid && unseeded.random[0] !== expected.random[0]);
+  // debug_breakpoint: a snapshot at a source text, with condition and deep vars, then a request breakpoint.
+  await visit(`${origin}/debug`);
+  const placed = await tool("debug_breakpoint", { action: "start", scriptUrl: "/debug", text: "return frxHash(u + key)", vars: "key,salt", condition: "u !== 'skip'" });
+  check("breakpoint lands on the inline script", placed.ok && placed.data?.applied?.length === 1 && /\/debug$/.test(placed.data.applied[0].url));
+  check("page keeps running past the breakpoint", typeof (await call("eval", { expression: "window.sign('skip') + window.sign('abc')" })).value === "number");
+  const snapshots = (await tool("debug_breakpoint", { action: "query" })).data;
+  const snap = snapshots?.hits?.[0];
+  check("breakpoint snapshot has arguments, scope previews, deep vars and the stack",
+    snapshots?.count === 1 && snapshots.skippedByCondition === 1 && snap.arguments[0] === "abc" && snap.scopes[0].names.key === "str:k-3"
+      && JSON.stringify(snap.vars) === JSON.stringify({ key: "k-3", salt: [1, 2, 3] }) && snap.stack[0].startsWith("sign@") && snap.line > 0);
+  check("breakpoint stops", (await tool("debug_breakpoint", { action: "stop" })).data?.ok === true);
+  const armed = await tool("debug_breakpoint", { action: "start", xhr: "*/replay/sent*" });
+  check("request breakpoint arms", armed.ok && armed.data?.mode === "xhr");
+  check("the request still goes out", (await call("eval", { expression: "window.sendIt('q')" })).value === 200);
+  const requestHits = (await tool("debug_breakpoint", { action: "query" })).data;
+  const reqHit = requestHits?.hits?.[0];
+  check("request breakpoint captures the calling frame", requestHits?.count === 1 && /\/replay\/sent\?v=q$/.test(reqHit.request.url) && reqHit.request.method === "POST"
+    && reqHit.scopes.some(s => s.names.payload) && reqHit.stack.some(f => f.startsWith("sendIt@")));
+  await tool("debug_breakpoint", { action: "stop" });
+  // page_console: console calls and the uncaught error, filters, incremental reads.
+  let consoleData;
+  for (let i = 0; i < 30; i++) {
+    consoleData = (await tool("page_console", {})).data;
+    if (consoleData?.messages?.some(m => m.source === "engine" && /frx-boom/.test(m.text))) break;
+    await delay(100);
+  }
+  const byLevel = Object.fromEntries((consoleData?.messages || []).filter(m => m.source === "console" && /^frx-/.test(m.text)).map(m => [m.level, m.text]));
+  check("page_console returns console calls and the uncaught error", byLevel.log === 'frx-log {"a":1}' && byLevel.warn === "frx-warn" && byLevel.error === "frx-error"
+    && consoleData.messages.some(m => m.source === "engine" && m.level === "error" && /frx-boom/.test(m.text) && /\/debug/.test(m.file)));
+  const warnings = (await tool("page_console", { level: "warn", pattern: "frx" })).data.messages;
+  check("page_console filters by level and pattern", warnings.length === 1 && warnings[0].text === "frx-warn");
+  const lastConsoleT = consoleData.messages.at(-1).t;
+  await call("eval", { expression: "console.info('frx-later')" });
+  check("page_console reads incrementally with since", (await tool("page_console", { since: lastConsoleT })).data.messages.map(m => m.text).join() === "frx-later");
+  // clear_site_data: cookie and localStorage of the fixture site are gone afterwards.
+  check("fixture stores a cookie and localStorage", (await call("eval", { expression: "(()=>{document.cookie='frx=1; path=/';localStorage.setItem('frx','1');return document.cookie.includes('frx=1') && localStorage.getItem('frx')==='1';})()" })).value === true);
+  const clearedSite = await tool("clear_site_data", { what: ["cookies", "storage"] });
+  check("clear_site_data clears cookies and storage of the site", clearedSite.ok && clearedSite.data?.cleared?.length === 2
+    && JSON.stringify((await call("eval", { expression: "[document.cookie.includes('frx=1'), localStorage.getItem('frx')]" })).value) === "[false,null]");
   const result = { buildID: identity.buildID, xulSHA256: hash, checks, limitations: ["Synthetic fixtures, not third-party website acceptance", "Closed shadow roots unsupported"] };
   if (options.includes("--output")) await fs.writeFile(option("--output"), JSON.stringify(result, null, 2) + "\n");
   console.log(JSON.stringify(result, null, 2));

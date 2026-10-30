@@ -503,6 +503,38 @@ function toolTable() {
       { confirm: true }
     ),
     T(
+      "debug_breakpoint",
+      "**快照断点**（引擎层 Debugger，命中**不暂停页面**）：在一处代码上下断，每次执行到这里就抓**实参、this、作用域链上的变量预览、调用栈**，存最近几条，页面照常跑。" +
+        "治「想看某行跑到时局部变量是什么」「这个请求是哪段代码、带着什么状态发出去的」。" +
+        "三种定位：**text**（给一段独一无二的源码片段，混淆代码不用数行号）、**line**（scriptUrl + 行号 + 可选列号）、**xhr**（请求 url 匹配：fetch/XHR/beacon 发出那一刻抓发起它的页面调用帧，不注入页面）。" +
+        "`condition` 是在命中帧里求值的 JS 表达式，真才记（如 `url.includes('/api')`）；`vars` 指定要**深序列化**的变量名（逗号分隔，沿作用域链找），其余变量只给一行预览。" +
+        "用法 start→触发（交互 / page_navigate 重载，跨导航存活、脚本重编译会自动重新下断）→query→stop。热路径上命中超过 2000 次或 10 分钟会自动卸掉。" +
+        "与 signer_trace 的分工：signer_trace 按函数抓每次调用的入参；debug_breakpoint 按位置抓那一刻的完整局部状态。",
+      {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["start", "query", "stop"], description: "start=下断 / query=读命中 / stop=撤掉" },
+          scriptUrl: { type: "string", description: "脚本 url 子串，收窄到目标文件（line 模式必填；text 模式建议给）" },
+          text: { type: "string", description: "[text] 要定位的源码片段（逐字匹配，越独特越好）；断在它之后第一个可下断的位置" },
+          occurrence: { type: "integer", description: "[text] 片段第几次出现，默认 1" },
+          line: { type: "integer", description: "[line] 行号（1 起）" },
+          column: { type: "integer", description: "[line] 列号（1 起，可选；压缩成一行的代码用它定位）" },
+          xhr: { type: "string", description: "[xhr] 请求 url 匹配：子串，或带 * 的 fnmatch" },
+          condition: { type: "string", description: "命中帧里求值的 JS 表达式，真才记录" },
+          vars: { type: "string", description: "要深序列化的变量名，逗号分隔（如 'e,t,sign'）" },
+          scopeDepth: { type: "integer", description: "作用域链向外看几层，默认 3" },
+          maxHits: { type: "integer", description: "保留最后 N 条命中（环形缓冲，默认 10，最多 50）" },
+          depth: { type: "integer", description: "[vars] 深序列化递归深度，默认 3" },
+          maxArr: { type: "integer", description: "[vars] 数组逐元素上限，默认 256" },
+          limit: { type: "integer", description: "[query] 最多返回几条命中" },
+        },
+        required: ["action"],
+      },
+      b => b.page && b.page.debugBreakpoint,
+      (b, a, ctx) => b.page.debugBreakpoint(a, ctx),
+      { confirm: true }
+    ),
+    T(
       "hook_inject",
       "**document-start hook 注入**（治『首屏/导航时就触发的签名请求，page_eval 装 hook 来不及、`window.__log is undefined`』）：在**每个新页面、早于页面 JS** 注入你的 hook → 页面自己的 fetch/XHR 都走你的包装、**跨刷新存活**。用法 start→**page_navigate/刷新**→query→stop：① `hook_inject(action:start)` **不传 script＝用内置 preset**（包 fetch+XHR+sendBeacon，把每次请求 url/method/headers/body 记进 `window.__frxhook`）；传 `script` 则注入你自己的 IIFE 片段（自带防重复 guard、往某全局数组 push）。② `page_navigate(目标URL)` 触发——注入在页面 JS 之前，首屏请求被记下。③ `hook_inject(action:query)` 读回记录（默认读 `window.__frxhook`；自定义片段换了变量名就传 `global`）。④ `hook_inject(action:stop)` 关。**只在『必须靠导航/首屏才触发』时用**；能交互触发不刷新的，直接 page_eval 装 hook 更轻（见 skill「hook 日志大法」）。注：同 net 观测，只在**当前内容进程**生效，跨进程导航可能漏。",
       {
@@ -737,6 +769,24 @@ function toolTable() {
       },
       b => b.page && b.page.automationScan,
       (b, a, ctx) => b.page.automationScan(a, ctx),
+      READ_ONLY
+    ),
+    T(
+      "page_console",
+      "读当前页面的**控制台消息**：console.log/warn/error 等调用（引擎按文档缓存最近 1000 条，页面加载时打的也在，不用提前开）和脚本错误/警告（source=engine）。" +
+        "用途：看页面自己打的调试日志、签名/校验失败时的报错、未捕获异常的位置。可按 level / 正则 / since 过滤；clear:true 清掉已缓存的 console.* 记录。",
+      {
+        type: "object",
+        properties: {
+          level: { type: "string", description: "只要这个级别：log / info / warn / error / debug / trace；省略=全部" },
+          pattern: { type: "string", description: "正则，只要文本匹配的消息" },
+          since: { type: "number", description: "只要 t 大于这个时间戳（毫秒）的消息，配合上次结果增量读" },
+          limit: { type: "integer", description: "最多返回几条（取最新的），默认 50，最多 200" },
+          clear: { type: "boolean", description: "读完后清掉该文档缓存的 console.* 记录" },
+        },
+      },
+      b => b.page && b.page.readConsole,
+      (b, a, ctx) => b.page.readConsole(a, ctx),
       READ_ONLY
     ),
     T(
@@ -1009,6 +1059,23 @@ function toolTable() {
     ),
 
     // ───────── Cookie 管理（backend: cookies；nsICookieManager，含 httpOnly） ─────────
+    T(
+      "clear_site_data",
+      "清当前站点（默认按当前标签页的站点，也可指定 site）的数据：cookies / storage（localStorage、IndexedDB、Cache API、Service Worker）/ cache / permissions / auth（HTTP 认证）/ hsts / all。" +
+        "走 Firefox 自己的清除站点数据服务，和设置里的「清除 cookie 和网站数据」同一条路。用途：从干净状态重跑一遍登录/签名流程、排除本地缓存影响、重置风控状态。" +
+        "清完页面内存里的状态还在，要从头跑就 reload:true 或 page_navigate 重开。",
+      {
+        type: "object",
+        properties: {
+          site: { type: "string", description: "站点（如 example.com）；省略=当前标签页的站点" },
+          what: { type: "array", items: { type: "string", enum: ["cookies", "storage", "cache", "permissions", "auth", "hsts", "all"] }, description: "要清的数据，默认 cookies + storage + cache" },
+          reload: { type: "boolean", description: "清完刷新当前页" },
+        },
+      },
+      b => b.page && b.page.clearSiteData,
+      (b, a, ctx) => b.page.clearSiteData(a, ctx),
+      { confirm: true, progress: true }
+    ),
     T(
       "cookies",
       "管理浏览器 cookie（经引擎 nsICookieManager，**含 httpOnly**——page_eval 的 document.cookie 拿不到 httpOnly；可跨域、可管理登录态）。" +

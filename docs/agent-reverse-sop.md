@@ -16,6 +16,9 @@
 | | `page_type` | 像人一样逐字键入输入框（原生键盘事件，中文走输入法提交，可选原生回车提交） |
 | | `page_screenshot` | 截当前页可视区为 PNG（给用户看，或喂视觉模型） |
 | | `page_determinism` | 固定页面的Math.random和crypto随机数，同输入得到同一个签名；replica把同一串随机数的node版写进工作目录（[说明](replay-and-determinism.md)） |
+| | `page_console` | 读当前页的console.*消息和引擎上报的脚本错误，可按级别、正则、时间增量读 |
+| | `debug_breakpoint` | 按源码片段、行号或请求url下快照断点：命中不暂停，抓实参、this、作用域变量预览、指定变量的深序列化和调用栈（[说明](debug-tools.md)） |
+| | `clear_site_data` | 按站点清cookie、本地存储、缓存、权限、认证状态，从干净状态重跑流程 |
 | **网络** | `net_capture` | start/stop/status 控制请求捕获 |
 | | `net_list` | 列已捕获请求摘要 |
 | | `net_get` | 取单条请求完整信息（headers/body/调用栈） |
@@ -27,7 +30,7 @@
 | | `jsvmp_status` / `jsvmp_query` | 查 trace 是否就绪 / 读 VM 执行轨迹 |
 | **组合** | `find_param_entry` | 把某参数关联到「哪些请求带它 + 它在哪些 JS 行」 |
 
-> 改动型工具（page_eval / page_navigate / page_click / page_type / page_scroll / page_determinism / net_capture / net_replay / scripts_* / jsvmp_trace）默认可在「设置」里开启执行前确认。
+> 改动型工具（page_eval / page_navigate / page_click / page_type / page_scroll / page_determinism / debug_breakpoint / clear_site_data / net_capture / net_replay / scripts_* / jsvmp_trace）默认可在「设置」里开启执行前确认。
 
 ### 自动操作（无需人工介入）
 - **DOM 路线（默认，当前模型即可）**：用 `page_info`/`page_eval` 读页面结构与可点元素 → `page_click`/`page_scroll`/`page_type`/`page_navigate` 操作 → 再读状态确认，循环推进。
@@ -70,6 +73,8 @@ firefox-reverse 把「hook/插桩/日志/源码插桩」统一成 C++ 引擎层�
 | 通用四板斧 | firefox-reverse 原生 |
 |---|---|
 | Hook 函数 | `page_eval`（在页面里包/读函数） |
+| 断点看局部状态 | `debug_breakpoint`（快照断点，命中不暂停） |
+| 看控制台 | `page_console` |
 | 插桩 / 日志 | C++ `jsvmp_trace`（引擎级 per-op，JS 不可见） |
 | 源码级插桩 | `scripts_capture_all` + 离线 `tools/*` 反汇编 |
 | 网络截获 | `net_capture` / `net_get`（含调用栈） |

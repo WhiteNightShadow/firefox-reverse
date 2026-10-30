@@ -10,8 +10,12 @@
  * 避免 child→parent push 时 relay actor 生命周期（页面导航 actor 销毁）带来的丢失。
  */
 
+import { describeDbgArg, describeDbgDeep, previewDbg } from "./DebuggerValues.sys.mjs";
+import { PageDebugger } from "./PageDebugger.sys.mjs";
+
 const Cu = Components.utils;
 const Ci = Components.interfaces;
+const Cc = Components.classes;
 
 // ── 进程级（模块单例，跨 actor 实例/页面导航存活）发起者栈捕获 ──
 let _armed = false;
@@ -107,6 +111,82 @@ function drainNetStacks() {
   }
   _stash.clear();
   return out;
+}
+
+// ── debug_breakpoint：进程级单例（跨 actor 实例/导航存活），实现见 PageDebugger.sys.mjs。
+const _pageDebugger = new PageDebugger();
+
+// ── page_console：读当前文档的控制台消息。console.* 调用由 ConsoleAPIStorage 按 inner window 缓存（最近 1000 条，
+//    不用提前 arm，页面加载时打的日志也在）；脚本错误/警告来自本进程的 nsIConsoleService（按 innerWindowID 过滤）。
+function consoleRead(win, { level = "", pattern = "", limit = 50, clear = false, since = 0 } = {}) {
+  if (!win) {
+    return { ok: false, error: "no content window" };
+  }
+  const innerId = String(win.windowGlobalChild?.innerWindowId ?? win.windowUtils.currentInnerWindowID);
+  const storage = Cc["@mozilla.org/consoleAPI-storage;1"].getService(Ci.nsIConsoleAPIStorage);
+  const messages = [];
+  for (const ev of storage.getEvents(innerId) || []) {
+    try {
+      const args = Array.isArray(ev.arguments) ? ev.arguments.map(a => safeSerialize(a)) : [];
+      const rec = {
+        source: "console",
+        level: String(ev.level || "log"),
+        text: args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" ").slice(0, 2000),
+        args,
+        file: ev.filename || "",
+        line: ev.lineNumber || 0,
+        column: ev.columnNumber || 0,
+        t: Number(ev.timeStamp) || 0,
+      };
+      if (Array.isArray(ev.stacktrace) && ev.stacktrace.length) {
+        rec.stack = ev.stacktrace.slice(0, 5).map(f => `${f.functionName || "(anonymous)"}@${f.filename}:${f.lineNumber}:${f.columnNumber}`);
+      }
+      messages.push(rec);
+    } catch {
+      /* 单条序列化失败跳过 */
+    }
+  }
+  for (const m of Services.console.getMessageArray() || []) {
+    let e;
+    try {
+      e = m.QueryInterface(Ci.nsIScriptError);
+    } catch {
+      continue;
+    }
+    if (String(e.innerWindowID) !== innerId) continue;
+    messages.push({
+      source: "engine",
+      level: e.flags & Ci.nsIScriptError.warningFlag ? "warning" : "error",
+      text: String(e.errorMessage || "").slice(0, 2000),
+      file: e.sourceName || "",
+      line: e.lineNumber || 0,
+      column: e.columnNumber || 0,
+      category: e.category || "",
+      t: Number(e.timeStamp) || 0,
+    });
+  }
+  const re = pattern ? new RegExp(pattern, "i") : null;
+  const wanted = String(level || "").trim();
+  const filtered = messages
+    .filter(m => !wanted || m.level === wanted || (wanted === "error" && m.source === "engine" && m.level === "error"))
+    .filter(m => !re || re.test(m.text))
+    .filter(m => !since || m.t > Number(since))
+    .sort((a, b) => a.t - b.t);
+  const n = Math.max(1, Math.min(200, Number(limit) || 50));
+  const out = filtered.slice(-n);
+  if (clear) {
+    storage.clearEvents(innerId);
+  }
+  return {
+    ok: true,
+    innerWindowId: innerId,
+    total: filtered.length,
+    returned: out.length,
+    messages: out,
+    note:
+      "level 是 log/info/warn/error/debug/trace 等；source=engine 的是引擎上报的脚本错误/警告。" +
+      "只看新增的消息：下次传 since=本次最后一条的 t；clear:true 清掉已缓存的 console.* 记录（引擎错误不清）。只含当前顶层文档，iframe 里的不在内。",
+  };
 }
 
 // ── 进程级「document-start hook 注入」（在每个新页面、**早于页面 JS** 注入 hook，治"首屏/导航时就触发的
@@ -331,57 +411,6 @@ let _dbgConf = null;
 let _wbDbg = null;
 let _wbConf = null;
 
-// 把 Debugger.Object / 原始值安全描述成可经 actor 消息回传的普通值（深度≤2、截断大字符串）。
-// 字符串/数字直接回（签名器的 url/ts 实参就是原始值）；对象浅层 dump 出原始属性（如请求配置 e 的 url/method/params）。
-function describeDbgArg(v, depth = 0) {
-  const t = typeof v;
-  if (v === null || t === "undefined" || t === "boolean" || t === "number") {
-    return v;
-  }
-  if (t === "string") {
-    return v.length > 2000 ? v.slice(0, 2000) + "…(截断)" : v;
-  }
-  if (t === "bigint" || t === "symbol") {
-    return String(v);
-  }
-  if (v && t === "object") {
-    // Debugger.Object
-    let cls = "Object";
-    try {
-      cls = v.class || "Object";
-    } catch {
-      /* ignore */
-    }
-    if (depth >= 2) {
-      return "[" + cls + "]";
-    }
-    const out = {};
-    let names = [];
-    try {
-      names = v.getOwnPropertyNames().slice(0, 40);
-    } catch {
-      /* 取不到属性名 */
-    }
-    for (const n of names) {
-      let d;
-      try {
-        d = v.getOwnPropertyDescriptor(n);
-      } catch {
-        continue;
-      }
-      if (d && "value" in d) {
-        out[n] = describeDbgArg(d.value, depth + 1);
-      }
-    }
-    return Object.keys(out).length ? out : "[" + cls + "]";
-  }
-  try {
-    return String(v);
-  } catch {
-    return "[unserializable]";
-  }
-}
-
 function signerTraceStop() {
   try {
     if (_dbg) {
@@ -592,89 +621,6 @@ function signerTraceStart(win, { scriptUrl = "", fn = "", line = null, maxCalls 
 let _clo = null;          // Debugger 实例
 let _cloCaps = [];        // 捕获结果（环形缓冲）
 let _cloConf = null;
-
-// 把 Debugger 值**深序列化**成可经 actor 回传的普通值（治"256 字节 S-box / 几千字节解码后字节码要整段拿"）。
-// 数组(含 TypedArray)逐元素取（上限 maxArr），对象逐属性取（上限 200），递归到 maxDepth。
-function describeDbgDeep(v, depth, maxDepth, maxArr) {
-  const t = typeof v;
-  if (v === null || t === "undefined" || t === "boolean" || t === "number") {
-    return v;
-  }
-  if (t === "string") {
-    return v.length > 20000 ? v.slice(0, 20000) + "…(截断 " + v.length + ")" : v;
-  }
-  if (t === "bigint" || t === "symbol") {
-    return String(v);
-  }
-  if (v && t === "object") {
-    // Debugger.Object
-    let cls = "Object";
-    try { cls = v.class || "Object"; } catch {}
-    if (cls === "Function") {
-      let nm = "";
-      try { nm = v.name || ""; } catch {}
-      return "[function " + (nm || "anonymous") + "]";
-    }
-    if (depth >= maxDepth) {
-      return "[" + cls + "]";
-    }
-    // 数组 / TypedArray：逐 index 深取（这是 S-box / 解码字节码 / 常量池的关键路径）。
-    const isArrayLike = cls === "Array" || /Array$/.test(cls); // Array / Uint8Array / Int32Array …
-    if (isArrayLike) {
-      let len = 0;
-      try {
-        const d = v.getOwnPropertyDescriptor("length");
-        len = (d && typeof d.value === "number") ? d.value : 0;
-      } catch {}
-      const n = Math.min(len, maxArr);
-      const out = [];
-      for (let i = 0; i < n; i++) {
-        try {
-          const d = v.getOwnPropertyDescriptor(i);
-          out.push(d && "value" in d ? describeDbgDeep(d.value, depth + 1, maxDepth, maxArr) : null);
-        } catch { out.push(null); }
-      }
-      if (len > n) { out.push("…(+" + (len - n) + " more)"); }
-      return out;
-    }
-    // 普通对象：逐属性深取（上限 200）。
-    const out = {};
-    let names = [];
-    try { names = v.getOwnPropertyNames().slice(0, 200); } catch {}
-    for (const nm of names) {
-      let d;
-      try { d = v.getOwnPropertyDescriptor(nm); } catch { continue; }
-      if (d && "value" in d) {
-        out[nm] = describeDbgDeep(d.value, depth + 1, maxDepth, maxArr);
-      }
-    }
-    return out;
-  }
-  try { return String(v); } catch { return "[unserializable]"; }
-}
-
-// 浅预览（无 varNames 过滤时的"变量目录"用，避免整个模块作用域深序列化爆炸）。
-function previewDbg(v) {
-  const t = typeof v;
-  if (v === null) return null;
-  if (t === "undefined" || t === "boolean" || t === "number") return v;
-  if (t === "string") return v.length > 120 ? "str(" + v.length + "):" + v.slice(0, 120) + "…" : "str:" + v;
-  if (t === "bigint" || t === "symbol") return String(v);
-  if (v && t === "object") {
-    let cls = "Object";
-    try { cls = v.class || "Object"; } catch {}
-    if (cls === "Function") { let nm = ""; try { nm = v.name || ""; } catch {} return "[function " + (nm || "anon") + "]"; }
-    if (cls === "Array" || /Array$/.test(cls)) {
-      let len = 0;
-      try { const d = v.getOwnPropertyDescriptor("length"); len = (d && typeof d.value === "number") ? d.value : 0; } catch {}
-      return "[" + cls + " len=" + len + "]";
-    }
-    let kn = 0;
-    try { kn = v.getOwnPropertyNames().length; } catch {}
-    return "[" + cls + " keys=" + kn + "]";
-  }
-  return String(v);
-}
 
 function closureReadStop() {
   try {
@@ -966,6 +912,18 @@ export class AgentEvalChild extends JSWindowActorChild {
       return whiteboxCovStop();
     }
     // ── document-start hook 注入（早于页面 JS 注入 hook，抓首屏/导航时就触发的请求）──
+    if (message.name === "debug-bp-start") {
+      return _pageDebugger.start(this.contentWindow, message.data || {});
+    }
+    if (message.name === "debug-bp-query") {
+      return _pageDebugger.query(message.data || {});
+    }
+    if (message.name === "debug-bp-stop") {
+      return _pageDebugger.stop();
+    }
+    if (message.name === "console-read") {
+      return consoleRead(this.contentWindow, message.data || {});
+    }
     if (message.name === "hook-inject-start") {
       return hookInjectStart(this.contentWindow, message.data || {});
     }

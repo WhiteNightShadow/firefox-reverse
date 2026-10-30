@@ -593,6 +593,96 @@ export class PageBackend {
     }
   }
 
+  /** 快照断点（引擎层 Debugger，命中不暂停）：start→触发→query→stop。实现见 PageDebugger.sys.mjs。 */
+  async debugBreakpoint({ action = "start", ...rest } = {}, ctx) {
+    const a = this._topActorOrNull(ctx);
+    if (!a) {
+      return { ok: false, error: "拿不到当前标签页 actor（页面没加载完？切到目标标签页再试）。" };
+    }
+    try {
+      if (action === "start") {
+        return await this._q(a, "debug-bp-start", rest, ctx);
+      }
+      if (action === "query") {
+        return await this._q(a, "debug-bp-query", { limit: rest.limit }, ctx);
+      }
+      if (action === "stop") {
+        return await this._q(a, "debug-bp-stop", undefined, ctx);
+      }
+      return { ok: false, error: "action 必须是 start / query / stop" };
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+  }
+
+  /** 读当前文档的控制台消息（console.* 缓存 + 引擎脚本错误），只读。 */
+  async readConsole(args = {}, ctx) {
+    const a = this._topActorOrNull(ctx);
+    if (!a) {
+      return { ok: false, error: "拿不到当前标签页 actor（页面没加载完？切到目标标签页再试）。" };
+    }
+    try {
+      return await this._q(a, "console-read", args, ctx);
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+  }
+
+  /**
+   * 清当前站点（或指定站点）的数据：cookie、本地存储（localStorage/IndexedDB/Cache API/Service Worker）、缓存、
+   * 权限、HTTP 认证等，走 nsIClearDataService（和 Firefox 自己的"清除站点数据"同一条路）。
+   */
+  async clearSiteData({ site, what = ["cookies", "storage", "cache"], reload = false } = {}, ctx) {
+    const browser = activeBrowser(ctx);
+    const uri = browser.currentURI;
+    let target = String(site || "").trim();
+    if (!target) {
+      try {
+        target = Services.eTLD.getSchemelessSite(uri);
+      } catch {
+        target = uri.host;
+      }
+    }
+    if (!target) {
+      throw new Error("clear_site_data: 拿不到站点（当前页不是 http(s) 页面？给 site 参数）");
+    }
+    const C = Ci.nsIClearDataService;
+    const FLAGS = {
+      cookies: C.CLEAR_COOKIES,
+      storage: C.CLEAR_DOM_STORAGES,
+      cache: C.CLEAR_ALL_CACHES,
+      permissions: C.CLEAR_PERMISSIONS | C.CLEAR_STORAGE_ACCESS,
+      auth: C.CLEAR_AUTH_TOKENS | C.CLEAR_AUTH_CACHE,
+      hsts: C.CLEAR_HSTS,
+    };
+    FLAGS.all = Object.values(FLAGS).reduce((acc, flag) => acc | flag, 0);
+    const kinds = (Array.isArray(what) ? what : [what]).map(String);
+    const unknown = kinds.filter(k => !(k in FLAGS));
+    if (unknown.length) {
+      throw new Error(`clear_site_data: 不认识的 what：${unknown.join(", ")}（可选 ${Object.keys(FLAGS).join(" / ")}）`);
+    }
+    const flags = kinds.reduce((acc, k) => acc | FLAGS[k], 0);
+    await new Promise((resolve, reject) => {
+      Services.clearData.deleteDataFromSite(target, {}, true, flags, {
+        onDataDeleted: code => (code === 0 ? resolve() : reject(new Error("清除失败，错误码 " + code))),
+      });
+    });
+    if (reload) {
+      try {
+        browser.reload();
+      } catch {
+        /* 没有页面可刷新就算了 */
+      }
+    }
+    return {
+      ok: true,
+      site: target,
+      cleared: kinds,
+      reloaded: !!reload,
+      note: "已清除。页面里已经加载的脚本还持有旧状态（内存里的 token、已建立的连接）；要从干净状态重跑就 page_navigate 重新打开。",
+    };
+  }
+
   /** P5 白盒：浏览器侧"分支覆盖真值"采集（引擎层 Debugger collectCoverageInfo）。start→页内触发→query→stop。 */
   async whiteboxCoverage({ action = "start", scriptUrl } = {}, ctx) {
     const a = this._topActorOrNull(ctx);
