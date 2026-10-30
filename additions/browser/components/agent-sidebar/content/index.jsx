@@ -17,7 +17,7 @@ function loadModules() {
   const { configStore } = ChromeUtils.importESModule(
     "resource:///modules/agentsidebar/ConfigStore.sys.mjs"
   );
-  const { buildClientFromStore, listProviders, isVisionModel, fetchModels } = ChromeUtils.importESModule(
+  const { buildClientFromStore, listProviders, isVisionModel, fetchModels, CUSTOM_PROTOCOL_OPTIONS } = ChromeUtils.importESModule(
     "resource:///modules/agentsidebar/providers.sys.mjs"
   );
   const { conversationStore } = ChromeUtils.importESModule(
@@ -46,6 +46,7 @@ function loadModules() {
   return {
     store: configStore,
     providers: listProviders(),
+    protocolOptions: CUSTOM_PROTOCOL_OPTIONS,
     conversations: conversationStore,
     buildClient: () => buildClientFromStore(configStore),
     router,
@@ -94,6 +95,7 @@ function App({ mods }) {
         <SettingsPane
           store={mods.store}
           providers={mods.providers}
+          protocolOptions={mods.protocolOptions}
           fetchModels={mods.fetchModels}
           onClose={() => setView("chat")}
         />

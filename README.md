@@ -94,7 +94,7 @@
 
 **③ 配置模型账号**（配置一次，后续直接切换）
 点面板右上角 ⚙️ 设置 → 新建或选择一个命名配置，再填写供应商、API Key 和模型：
-- 支持 **DeepSeek**、**智谱 GLM**、**Kimi（Moonshot）**、**MiniMax**、**通义千问（Qwen）**、**Claude**、**OpenAI**，或任何 **OpenAI / Anthropic 协议兼容**的自定义端点（填 baseUrl + token + 模型名即可）。
+- 内置支持 **DeepSeek**、**智谱 GLM**、**Kimi（Moonshot）**、**MiniMax**、**通义千问（Qwen）**；自定义端点可选择 **OpenAI Chat Completions / OpenAI Responses / Anthropic Messages / Gemini GenerateContent**，接入 OpenAI、Claude、Gemini 或兼容服务。
 - 同一个渠道可以保存多个账号，例如“GPT 工作账号”“GPT 个人账号”，选择后从下一轮对话开始生效。
 
 > 💡 **模型选型建议**：简单 / 小站点用便宜模型（如 DeepSeek）即可上手；遇到复杂 / 大站点，弱模型在长链路里容易走弯路——这类目标建议用「自定义模型」端点接入 **Opus 4.8 或最新旗舰模型**，逆向推进更稳、少绕路。
@@ -147,7 +147,7 @@
 - **🔬 引擎层观测工具** —— 签名器入参、JSVMP 逐指令、WASM import 边界、浏览器真值 vs Node 复刻的分支差分深入 C++ 引擎，减少页面内 hook 和反调试对分析过程的干扰。
 - **🎛 两种工作模式** —— 全自动一条龙 / AI辅助逐阶段（你领航），按会话持久化、随时切换。
 - **🌐 站点无关** —— 面向**通用** JS / JSVMP / WASM / 签名逆向，不为任何特定网站定制；案例只是测试样例。
-- **🔌 任意大模型** —— DeepSeek / 智谱GLM / Kimi / MiniMax / 通义千问 / Claude / OpenAI 及任意 OpenAI/Anthropic 协议兼容端点，Key 保存在本地并直连所选服务。
+- **🔌 任意大模型** —— DeepSeek / 智谱GLM / Kimi / MiniMax / 通义千问，以及自定义 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Gemini GenerateContent 端点；Key 保存在本地并直连所选服务。
 - **🗂 会话与配置迁移** —— 单会话 JSON 导入/导出，模型账号按命名配置保存和切换；导出的会话文件不包含模型 API Key。
 - **🧰 通用 Skills** —— 从 `~/.firefox-reverse/skills`、工作区 `.agents/skills` 和 `.firefox-reverse/skills` 发现 `SKILL.md`，按任务需要加载正文和 references。
 - **🧩 Firefox 扩展管理** —— Agent 可搜索 AMO、查看安装状态、管理用户扩展生命周期并打开配置页；安装只接受 AMO 记录且继续经过 Firefox 哈希、兼容性、阻止列表与签名校验。
@@ -289,7 +289,7 @@ cd upstream && ./mach build && ./mach package
 ## ❓ FAQ
 
 - **要不要懂编译 / 配环境？** 不用。下载 Releases 安装包即可，配个大模型 Key 就能用。
-- **支持哪些大模型？** DeepSeek / 智谱GLM / Kimi（Moonshot）/ MiniMax / 通义千问（Qwen）/ Claude / OpenAI，以及任何 OpenAI/Anthropic 协议兼容的自定义端点。Key 只存本地。
+- **支持哪些大模型？** 内置 DeepSeek / 智谱GLM / Kimi（Moonshot）/ MiniMax / 通义千问（Qwen）；自定义端点支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Gemini GenerateContent。Key 只存本地。
 - **我的 Key / 数据会上传吗？** Key 保存在本地并由 Firefox-Reverse 直连你选择的模型服务，不经过项目作者的中转服务器。Agent 工作时会按任务需要把提示词、页面片段和工具结果发送给该模型服务；敏感任务请使用你信任或自托管的兼容端点。
 - **环境之间真的隔离吗？** 每个环境拥有独立 profile、进程和 Marionette 端口，Cookie、历史记录、收藏、LocalStorage 与缓存分别持久化。它们仍运行在同一台操作系统上，不等同于虚拟机级隔离。
 - **为什么保存指纹后页面没有立刻变化？** C++ 配置按进程启动读取。普通环境需要关闭后重新打开；当前主进程需要完整退出并重新启动 Firefox-Reverse。
@@ -311,6 +311,9 @@ cd upstream && ./mach build && ./mach package
 ---
 
 ## 📝 版本更新记录
+
+### main（尚未发布）
+- **模型协议**：自定义模型端点新增 OpenAI Responses API 与 Gemini 原生 GenerateContent；支持流式文本、function calling、图片输入、工具循环和思考摘要（模型或网关不认时自动去掉重发并记住）。Gemini 的工具声明走标准 JSON Schema（`parametersJsonSchema`），思考预算随模型默认；并行同名调用、被输出上限截断的调用、服务端判定无效的调用都有专门处理，不会静默丢调用。Responses 只在开启思考时带 `include`，非推理模型照常可用。感谢 [@awaxiaoyu](https://github.com/awaxiaoyu) 实现两个协议。
 
 ### v0.26.2（正式版，2026-10-24）
 - **macos数据目录（issue #18）**：默认的`~/Library/Application Support/Firefox`被系统拒绝访问时（如macos 27），改用独立目录`FirefoxReverse`：已有profile就原地接续，没有就新建配置并在侧栏提示一次；旧目录不读、不复制、不删除。磁盘满、i/o错误、只读卷、路径被文件占用、注册表损坏，以及显式`MOZ_APP_DATA`不可读时仍停止并给出诊断。感谢[@leihualiang](https://github.com/leihualiang)报告问题、[@odtu945](https://github.com/odtu945)定位根因并在真实macos 27拦截环境中实测预览版（[社区记录](docs/community/)，[启动说明](docs/macos-startup-diagnostics.md)）。
@@ -349,7 +352,7 @@ cd upstream && ./mach build && ./mach package
 - **AI 结果 Markdown（Issue #14）**：历史结果、已完成步骤、执行中的正文和思考段统一支持标题、加粗、列表、任务清单、引用、代码块和 GFM 表格；代码与宽表格在侧栏内横向滚动，支持深浅主题和未闭合的流式 Markdown。
 - **展示与链接边界**：原始对话、导出 JSON 和模型上下文不变；原始 HTML 作为文本显示，网页链接打开普通标签页，内部/可执行/文件链接不启用，Markdown 图片显示为可点击说明，工具截图沿用原展示方式。
 - **OpenCode Go 请求兼容（Issue #13）**：访问官方 OpenCode API 时自动发送自身 `User-Agent` 和每个会话稳定的 `x-opencode-session`；普通对话、工具循环、流式/重试、交接摘要和 ContextProjection 共用持久会话 ID。其它供应商的请求头保持原行为。
-- **配置方式**：模型设置选择“自定义”，Base URL 填 `https://opencode.ai/zen/go/v1`，按 [OpenCode 官方端点表](https://opencode.ai/docs/go/#endpoints) 选择 OpenAI Chat Completions 或 Anthropic Messages 协议及模型名，并填写 Go Key；无需手填 UA 或 Session ID。目前不支持仅提供 `/responses` 的模型。自建转发域名不自动识别为 OpenCode。
+- **配置方式**：模型设置选择“自定义”，Base URL 填 `https://opencode.ai/zen/go/v1`，按 [OpenCode 官方端点表](https://opencode.ai/docs/go/#endpoints) 选择 OpenAI Chat Completions 或 Anthropic Messages 协议及模型名，并填写 Go Key；无需手填 UA 或 Session ID。当前版本可为支持 Responses API 的其它端点选择 OpenAI Responses 协议；OpenCode Go 的 Responses 兼容性未验证。自建转发域名不自动识别为 OpenCode。
 - **验证范围**：本地 HTTP 协议回归覆盖同/不同会话、历史重载、导入、流式、重试及摘要请求；真实 Firefox 临时 profile 验证请求头能在网页指纹 UA 启用时正确发出。尚未使用 Go 付费账号进行线上推理验证。
 
 ### v0.24.1（2026-09-04）

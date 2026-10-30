@@ -17,7 +17,7 @@ function legacyProfile(store, providers) {
 }
 
 /** 模型配置管理：同一 provider 可保存多组账号/端点，选择历史配置即可切换。 */
-export default function SettingsPane({ store, providers, fetchModels, onClose }) {
+export default function SettingsPane({ store, providers, protocolOptions = [], fetchModels, onClose }) {
   const initialProfiles = store.listModelProfiles
     ? store.listModelProfiles()
     : [legacyProfile(store, providers)];
@@ -57,6 +57,8 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
   const isCustom = provider === "custom";
   const providerRef = useRef(provider);
   providerRef.current = provider;
+  const protocolRef = useRef(customProtocol);
+  protocolRef.current = customProtocol;
   const fetchSeqRef = useRef(0);
 
   function refreshProfiles(preferId) {
@@ -191,10 +193,14 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
     if (!fetchModels) return;
     const seq = ++fetchSeqRef.current;
     const forProvider = provider;
-    const stale = () => seq !== fetchSeqRef.current || providerRef.current !== forProvider;
+    const forProtocol = isCustom ? customProtocol : "openai";
+    const stale = () =>
+      seq !== fetchSeqRef.current ||
+      providerRef.current !== forProvider ||
+      (isCustom && protocolRef.current !== forProtocol);
     setFetchMsg("获取中…");
     try {
-      const list = await fetchModels(isCustom ? customUrl : current.baseUrl, apiKey);
+      const list = await fetchModels(isCustom ? customUrl : current.baseUrl, apiKey, forProtocol);
       if (stale()) return;
       setFetchedModels(list);
       setManual(false);
@@ -263,9 +269,8 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         <>
           <label className="settings-pane__field">
             协议
-            <select value={customProtocol} onChange={e => { setCustomProtocol(e.target.value); setFetchedModels([]); setManual(false); setStatus(""); }}>
-              <option value="openai">OpenAI 兼容（/v1/chat/completions）</option>
-              <option value="anthropic">Anthropic 兼容（/v1/messages）</option>
+            <select value={customProtocol} onChange={e => { setCustomProtocol(e.target.value); setFetchedModels([]); setFetchMsg(""); setManual(false); setStatus(""); }}>
+              {protocolOptions.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
             </select>
           </label>
           <label className="settings-pane__field">
@@ -280,7 +285,7 @@ export default function SettingsPane({ store, providers, fetchModels, onClose })
         <input type="password" value={apiKey} placeholder="sk-..." onChange={e => { setApiKey(e.target.value); setStatus(""); }} />
       </label>
 
-      {isCustom && customProtocol === "openai" && (
+      {isCustom && protocolOptions.some(p => p.value === customProtocol && p.reasoningEffort) && (
         <label className="settings-pane__field">
           思考等级
           <select value={customReasoningEffort} onChange={e => { setCustomReasoningEffort(e.target.value); setStatus(""); }}>

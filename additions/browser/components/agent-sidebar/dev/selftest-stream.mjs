@@ -68,5 +68,11 @@ const resp2 = {
 const res2 = await c._readStream(resp2, () => {});
 ok(res2.content === "你好，世界", "跨网络分块边界仍正确累积");
 
+// 边界：CRLF 行尾、最后一行没有换行（有的网关这样收尾）也要读到
+const crlf = new TextEncoder().encode('data: {"choices":[{"delta":{"content":"a"}}]}\r\ndata: {"choices":[{"delta":{"content":"b"},"finish_reason":"stop"}]}');
+let crlfServed = false;
+const res3 = await c._readStream({ body: { getReader() { return { read() { if (!crlfServed) { crlfServed = true; return Promise.resolve({ done: false, value: crlf }); } return Promise.resolve({ done: true }); } }; } } }, () => {});
+ok(res3.content === "ab" && res3.finishReason === "stop", "CRLF 行尾与无换行的末行都解析");
+
 console.log(`\n流式解析自测：${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

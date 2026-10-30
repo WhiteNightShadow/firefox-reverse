@@ -1,10 +1,20 @@
 /* providers.sys.mjs — 内置 LLM provider 元数据 + 从 ConfigStore 构造 LlmClient。
  *
- * 与 settings/agent.example.json 对应；A1 只列 openai 协议族的可用 provider，
- * anthropic / gemini 留 A2。React 面板用 listProviders() 渲染下拉，用
+ * 与 settings/agent.example.json 对应；内置 provider 使用 OpenAI Chat Completions，
+ * 自定义端点可选择 OpenAI Chat/Responses、Anthropic Messages 或 Gemini GenerateContent。React 面板用 listProviders() 渲染下拉，用
  * buildClientFromStore() 在发送时构造 LlmClient。
  */
-import { LlmClient, openCodeRequestHeaders } from "./LlmClient.sys.mjs";
+import { LlmClient, PROTOCOLS, openCodeRequestHeaders, protocolSupportsReasoningEffort } from "./LlmClient.sys.mjs";
+
+/** 设置页“协议”下拉的选项；reasoningEffort 标明该协议是否显示 OpenAI 形态的思考等级。 */
+export const CUSTOM_PROTOCOL_OPTIONS = Object.freeze(
+  [
+    [PROTOCOLS.OPENAI, "OpenAI 兼容（/v1/chat/completions）"],
+    [PROTOCOLS.OPENAI_RESPONSES, "OpenAI Responses API（/v1/responses）"],
+    [PROTOCOLS.ANTHROPIC, "Anthropic 兼容（/v1/messages）"],
+    [PROTOCOLS.GEMINI, "Google Gemini 原生（GenerateContent）"],
+  ].map(([value, label]) => Object.freeze({ value, label, reasoningEffort: protocolSupportsReasoningEffort(value) }))
+);
 import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
 
 /** 内置 Claude 模型（Anthropic 协议自定义端点用；中转站 /v1/models 往往列不出 Claude）。
@@ -18,7 +28,7 @@ export const ANTHROPIC_MODELS = [
 ];
 
 export const BUILTIN_PROVIDERS = Object.freeze({
-  // 目前只支持 DeepSeek（用户 2026-05-25 决定）。其它 provider 待后续按需再加。
+  // 内置 Provider 当前使用 OpenAI Chat Completions；协议选择只影响自定义端点。
   // 2026 模型：deepseek-v4-flash(标准) / deepseek-v4-pro(推理/思考档)。旧名 chat/reasoner 兼容。
   // Agent 默认 deepseek-v4-flash：支持 function calling(工具调用)，是工具驱动 Agent 的必需。
   // deepseek-v4-pro 是推理/思考档：**支持工具调用**（实测能连跑上百次工具——之前"不支持 tools 会 400"的判断错了）。
@@ -78,10 +88,10 @@ export const BUILTIN_PROVIDERS = Object.freeze({
     defaultModel: "qwen3-max",
     models: ["qwen3-max", "qwen-max-latest", "qwen-plus", "qwen-turbo", "qwen3.5-flash"],
   },
-  // 自定义端点：URL/token/协议/模型全部在设置里填；协议支持 OpenAI(/v1/chat/completions) 与 Anthropic(/v1/messages)。
+  // 自定义端点：URL/token/协议/模型全部在设置里填；支持 OpenAI Chat/Responses、Anthropic Messages 与 Gemini GenerateContent。
   // 视觉模型(gpt-4o 等)也通过自定义端点配置（OpenAI 协议 + 视觉模型名）。
   custom: {
-    label: "自定义（OpenAI / Anthropic 兼容）",
+    label: "自定义模型端点",
     protocol: "openai", // 实际协议由 store.getCustomProtocol() 决定
     baseUrl: "", // 用户在设置里填
     chatPath: "/v1/chat/completions",
@@ -100,8 +110,12 @@ export const BUILTIN_PROVIDERS = Object.freeze({
  * @returns {string}
  */
 export function normalizeBaseUrl(raw) {
-  let u = String(raw || "").trim().replace(/\/+$/, "");
-  u = u.replace(/\/(chat\/completions|completions|messages|models)$/i, "");
+  // 请求路径是拼在 base 后面的，base 带 ?query/#hash 没有意义；误贴的 Gemini 端点还会把 key 带在 ?key= 里。
+  let u = String(raw || "").trim().replace(/[?#].*$/, "").replace(/\/+$/, "");
+  // Gemini：…/models/<model>:generateContent、…/models/<model>（opencode 端点表的写法）都剥到版本根。
+  u = u.replace(/\/models\/[^/]+?(?::(?:generateContent|streamGenerateContent))?$/i, "");
+  u = u.replace(/:(?:generateContent|streamGenerateContent)$/i, "");
+  u = u.replace(/\/(chat\/completions|completions|messages|responses|models)$/i, "");
   return u.replace(/\/+$/, "");
 }
 
@@ -114,7 +128,7 @@ function hasVersionSegment(base) {
 
 /**
  * 自定义端点的 chat 路径：baseUrl 已带版本段就不再叠 /v1（否则 …/v1/v1/chat/completions 必 404）。
- * @param {"openai"|"anthropic"} protocol
+ * @param {"openai"|"openai-responses"|"anthropic"|"gemini"} protocol
  * @param {string} baseUrl
  * @returns {string}
  */
@@ -122,6 +136,12 @@ export function resolveChatPath(protocol, baseUrl) {
   const versioned = hasVersionSegment(normalizeBaseUrl(baseUrl));
   if (protocol === "anthropic") {
     return versioned ? "/messages" : "/v1/messages";
+  }
+  if (protocol === "openai-responses") {
+    return versioned ? "/responses" : "/v1/responses";
+  }
+  if (protocol === "gemini") {
+    return versioned ? "/models" : "/v1beta/models";
   }
   return versioned ? "/chat/completions" : "/v1/chat/completions";
 }
@@ -135,7 +155,7 @@ export function resolveChatPath(protocol, baseUrl) {
  * @param {string} [token]
  * @returns {Promise<string[]>}
  */
-export async function fetchModels(baseUrl, token) {
+export async function fetchModels(baseUrl, token, protocol = "openai") {
   const base = normalizeBaseUrl(baseUrl);
   if (!base) {
     throw new Error("请先填写 Base URL");
@@ -143,16 +163,23 @@ export async function fetchModels(baseUrl, token) {
   if (!/^https?:\/\//i.test(base)) {
     throw new Error("Base URL 需以 http:// 或 https:// 开头");
   }
-  const candidates = hasVersionSegment(base)
-    ? [base + "/models", base + "/v1/models"]
-    : [base + "/v1/models", base + "/models"];
+  const candidates =
+    protocol === "gemini"
+      ? [hasVersionSegment(base) ? base + "/models" : base + "/v1beta/models"]
+      : hasVersionSegment(base)
+        ? [base + "/models", base + "/v1/models"]
+        : [base + "/v1/models", base + "/models"];
   // 同时带 OpenAI(Bearer) 与 Anthropic(x-api-key+version) 两套鉴权头：OpenAI 网关忽略多余头，
   // Anthropic 官方/同款网关只认 x-api-key——只发 Bearer 会把有效 key 误报成 401。
   const headers = openCodeRequestHeaders(base);
   if (token) {
-    headers.Authorization = "Bearer " + token;
-    headers["x-api-key"] = token;
-    headers["anthropic-version"] = "2023-06-01";
+    if (protocol === "gemini") {
+      headers["x-goog-api-key"] = token;
+    } else {
+      headers.Authorization = "Bearer " + token;
+      headers["x-api-key"] = token;
+      headers["anthropic-version"] = "2023-06-01";
+    }
   }
   const attempts = [];
   for (const url of candidates) {
@@ -173,8 +200,15 @@ export async function fetchModels(baseUrl, token) {
         j && (Array.isArray(j.data) ? j.data : Array.isArray(j.models) ? j.models : Array.isArray(j) ? j : null);
       if (arr) {
         const names = arr
+          .filter(
+            m =>
+              protocol !== "gemini" ||
+              !Array.isArray(m?.supportedGenerationMethods) ||
+              m.supportedGenerationMethods.includes("generateContent")
+          )
           .map(m => (typeof m === "string" ? m : m && (m.id || m.name || m.model)))
-          .filter(Boolean);
+          .filter(name => typeof name === "string" && name)
+          .map(name => (protocol === "gemini" ? name.replace(/^models\//, "") : name));
         if (names.length) {
           return names;
         }
@@ -292,7 +326,7 @@ export function buildClientFromStore(store, overrides = {}) {
     request: {
       // Anthropic extended thinking uses a different object shape and token
       // budget contract; do not translate an OpenAI-compatible level into it.
-      reasoning_effort: protocol === "openai" ? reasoningEffort : "auto",
+      reasoning_effort: protocolSupportsReasoningEffort(protocol) ? reasoningEffort : "auto",
     },
   });
 }
