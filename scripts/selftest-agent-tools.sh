@@ -47,6 +47,7 @@ SELFTESTS=(
   selftest-page-interaction.mjs
   selftest-network-replay.mjs
   selftest-page-determinism.mjs
+  selftest-page-debugger.mjs
   selftest-thread-reservation.mjs
   selftest-workspace.mjs
   selftest-scripts.mjs
