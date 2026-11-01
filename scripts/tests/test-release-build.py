@@ -34,7 +34,8 @@ RELEASED = {
     "macos-x86_64": SHARED | {"--target=x86_64-apple-darwin"},
     "linux-x86_64": SHARED,
     "linux-arm64": SHARED | {"--target=aarch64-linux-gnu"},
-    "windows-x86_64": SHARED | {"--target=x86_64-pc-windows-msvc", "--disable-default-browser-agent"},
+    # --with-redist is new since v0.26.2: the windows package now carries the MSVC runtime DLLs.
+    "windows-x86_64": SHARED | {"--target=x86_64-pc-windows-msvc", "--disable-default-browser-agent", "--with-redist"},
 }
 OBJDIRS = {
     "macos-arm64": "obj-aarch64-apple-darwin",
