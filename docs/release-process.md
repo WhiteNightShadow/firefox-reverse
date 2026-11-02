@@ -72,7 +72,14 @@ ci按`firefox-reverse-<tag>-<平台>.<扩展名>`从release下载候选包，文
    bash scripts/macos-repack-adhoc-dmg.sh <原dmg> <输出dmg> arm64
    bash scripts/macos-repack-adhoc-dmg.sh <原dmg> <输出dmg> x86_64
    ```
-3. 除安装程序外的五个包，在本机各跑一次`scripts/prepare-native-candidate.py`，命令见第5步第2条，换掉`PACKAGE_TARGET`和包名。要用python 3.11以上，mac包还要用`hdiutil`和`codesign`，所以放在本机跑。它核对：
+3. 除安装程序外的五个包，在本机各跑一次`scripts/prepare-native-candidate.py`。在版本号提交的检出里，把包放进`candidate/`（先删掉上一次的`candidate-stage/`，脚本会把包解到那里），再跑：
+   ```sh
+   RELEASE_TAG=v<版本> PACKAGE_TARGET=<目标> SOURCE_COMMIT=<版本号提交> EXPECTED_BUILD_ID=<BuildID> \
+   PACKAGE_CHECKSUMS='{"<包名>":"<sha256>"}' GITHUB_ENV=<输出文件> \
+   EXPECTED_SIDEBAR_BUNDLE=additions/browser/components/agent-sidebar/content/agent-sidebar.bundle.js \
+   python3 scripts/prepare-native-candidate.py
+   ```
+   侧栏bundle的构建见第5步第1条；第5、6步的验收脚本第一步也是它。要用python 3.11以上，mac包还要用`hdiutil`和`codesign`，所以放在本机跑。它核对：
    - sha256、二进制架构和品牌资源；
    - `application.ini`的`SourceStamp`、`BuildID`，以及`frx-locale.js`里的版本号；
    - 内容沙箱：`security.sandbox.content.level`为0，windows的`firefox.exe`里有`MOZ_DISABLE_CONTENT_SANDBOX=1`注入；
@@ -110,68 +117,46 @@ ci按`firefox-reverse-<tag>-<平台>.<扩展名>`从release下载候选包，文
 
 ## 5. 本机mac arm64验收
 
-ci矩阵里没有apple silicon，这一项在本机跑。macos没有`timeout`，长任务可以用`perl -e 'alarm shift; exec @ARGV' <秒> <命令>`限时。
+ci矩阵里没有apple silicon，这一项在本机跑，用`scripts/release-accept.sh`。
 
 1. 准备版本号提交的干净检出，在`additions/browser/components/agent-sidebar`里执行`npm ci && npm run build`，生成侧栏bundle。ci里的“Rebuild exact-source sidebar”也是这样做的。frx-director-mcp检出到同一个固定提交，也执行`npm ci && npm run build`。
-2. 把最终arm64 dmg放进检出里的`candidate/`，核对包身份并解出应用。脚本会把`FRX_TEST_BINARY`、`FRX_TEST_XUL_SHA`、`FRX_TEST_BUNDLE_SHA`写进`GITHUB_ENV`指向的文件：
+2. 在这份检出里跑：
    ```sh
-   RELEASE_TAG=v<版本> PACKAGE_TARGET=macos-arm64 SOURCE_COMMIT=<版本号提交> EXPECTED_BUILD_ID=<BuildID> \
-   PACKAGE_CHECKSUMS='{"firefox-reverse-v<版本>-macos-arm64.dmg":"<sha256>"}' \
-   GITHUB_ENV=<输出文件> EXPECTED_SIDEBAR_BUNDLE=additions/browser/components/agent-sidebar/content/agent-sidebar.bundle.js \
-   python3 scripts/prepare-native-candidate.py
+   scripts/release-accept.sh --package <最终arm64 dmg> --target macos-arm64 --commit <版本号提交> \
+     --build-id <BuildID> --mcp-root <frx-director-mcp检出> --out <报告目录>
    ```
-3. 下面三项都在隔离环境里跑：`env -u MOZ_DISABLE_CONTENT_SANDBOX HOME=<临时> MOZ_APP_DATA=<临时> MOZ_LOCAL_APP_DATA=<临时> TMPDIR=<临时>/ MOZ_HEADLESS=1`。
-   - **指纹**：
-     ```sh
-     node scripts/verify-native-fingerprint.mjs --firefox <包装目录>/firefox --xul-sha256 "$FRX_TEST_XUL_SHA" \
-       --mcp-root <frx-director-mcp检出> --allow-unavailable-webgl --context-type tab \
-       --report-output native-report/FINGERPRINT-REPORT.json
-     ```
-     包装目录里放两样：`firefox`是一段`exec "<应用>/Contents/MacOS/firefox" "$@"`的脚本，`libxul.so`是指向`<应用>/Contents/MacOS/XUL`的符号链接。直接传指向可执行文件的符号链接会报“Couldn't load XPCOM”。
-   - **页面交互**：
-     ```sh
-     node scripts/verify-page-interaction.mjs --firefox "$FRX_TEST_BINARY" --xul-sha256 "$FRX_TEST_XUL_SHA" \
-       --mcp-root <frx-director-mcp检出> --output native-report/PAGE-REPORT.json --screenshot native-report/page-fixture.png
-     ```
-   - **全局提示词**：
-     ```sh
-     python3 scripts/verify-global-system-prompt.py --app "$FRX_TEST_BINARY" --source-commit <版本号提交> \
-       --build-id <BuildID> --bundle-sha256 "$FRX_TEST_BUNDLE_SHA" --output native-report/global-system-prompt
-     ```
-4. 数据目录场景共15个，运行时不要设`MOZ_APP_DATA`：
-   ```sh
-   env -u MOZ_APP_DATA -u MOZ_LOCAL_APP_DATA -u MOZ_DISABLE_CONTENT_SANDBOX \
-     python3 scripts/verify-macos-appdata.py --app "$FRX_TEST_BINARY" --xul-sha256 "$FRX_TEST_XUL_SHA" --output native-report/macos-appdata
-   ```
-   command line tools的默认sdk和链接器版本不匹配时，加`CC="cc -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"`。
-5. 环境生命周期：
-   ```sh
-   node scripts/verify-environment-lifecycle.mjs --firefox "$FRX_TEST_BINARY" --xul-sha256 "$FRX_TEST_XUL_SHA" \
-     --mcp-root <frx-director-mcp检出> --output native-report/ENVIRONMENT-LIFECYCLE.json
-   ```
-   三个场景，可以用`--scenarios`只跑其中几个：
+   数据目录场景要编一个测试用的dylib，command line tools的默认sdk和链接器版本不匹配时，先导出`CC="cc -isysroot <sdk路径>"`和`CXX`。脚本依次：
+   - 把dmg放进`candidate/`，用`scripts/prepare-native-candidate.py`核对包身份并解出应用，核对项见第3步第3条；
+   - 在隔离环境里跑页面交互、环境生命周期、原生指纹和全局提示词：临时的`HOME`、`MOZ_APP_DATA`、`MOZ_LOCAL_APP_DATA`和`TMPDIR`，无头，去掉`MOZ_DISABLE_CONTENT_SANDBOX`。指纹检查要一个目录，放`firefox`包装脚本和指向`XUL`的`libxul.so`链接（直接传指向可执行文件的符号链接会报“Couldn't load XPCOM”），脚本自己建；
+   - 跑15个数据目录场景，这一步不设`MOZ_APP_DATA`；
+   - 测完核对`codesign --verify --deep --strict`仍通过、`XUL`的sha256没变、没有残留的浏览器进程；
+   - 在报告目录写`acceptance.json`：每一步的结果、各项计数和测后核对。有一项不过就以非零退出。
+
+   每项默认限时900秒，可用`--timeout`改。报告文件名和ci的产物一样，第8步生成验证摘要时直接用。
+3. 环境生命周期有三个场景，单独排查时可以对`scripts/verify-environment-lifecycle.mjs`加`--scenarios`只跑其中几个：
    - `quit-channel`：外部webdriver占着环境的marionette时关闭环境，要走退出通道，cookie和localstorage重开后还在；
    - `identity`：没拉起这个环境的后端实例（相当于主浏览器重启后）要按命令行认出环境进程；记录里的pid属于别的程序时判为`dead`，一个信号都不发；
    - `restart`：环境在后端不知情时退出，重启后的后端显示已停止，并且能重新打开。
-6. 按本版改动补专项检查。
-7. 测完确认`codesign --verify --deep --strict <应用>`通过，`XUL`的sha256没变。
-8. intel dmg在本机只跑第2步，`PACKAGE_TARGET`换成`macos-x86_64`；原生运行交给ci的macos-15-intel。
+4. 按本版改动补专项检查。
+5. intel dmg用同一个脚本在本机经rosetta跑（`--target macos-x86_64`）；原生运行交给ci的macos-15-intel。linux包也用这个脚本，在对应架构的linux上跑（`--target linux-x86_64`或`linux-arm64`，要有coreutils的`timeout`）。
 
 ## 6. windows真机（改到windows进程、退出、路径时必做）
 
 环境生命周期的三个场景，ci的windows-latest也会跑。真机补的是ci没有的条件：长期使用的机器，以及访问不到mozilla服务的网络。v0.26.2的`Path`问题（windows的环境变量名是`Path`，系统工具因此找不到）当时就是在真机上查出的。
 
-没有真机时用本机qemu里的两台windows 11测试机代替（x64走tcg、没装vc++运行库；arm64走hvf、有运行库）：把最终zip、本仓库检出、frx-director-mcp的dist、便携python和git推进去，用计划任务在登录桌面会话里跑候选核对、页面交互、环境生命周期、原生指纹、全局提示词和`verify-windows-package.py`。没装运行库的那台能查出包里缺msvc运行库：v0.26.2的包在它上面启动即退（0xC0000135），v0.27.0带上运行库后通过。
+没有真机时用本机qemu里的两台windows 11测试机代替（x64走tcg、没装vc++运行库；arm64走hvf、有运行库）。没装运行库的那台能查出包里缺msvc运行库：v0.26.2的包在它上面启动即退（0xC0000135），v0.27.0带上运行库后通过。
 
-- 连接：ssh公钥登录；powershell脚本用`-EncodedCommand`（utf-16le的base64）执行，免得转义出错。
-- 上传：
-  - 最终zip；
-  - `scripts/verify-environment-lifecycle.mjs`；
-  - frx-director-mcp的`package.json`和`dist/bridge/marionetteWire.js`。生命周期验证只用这两个文件，缺了`package.json`会报esm错误；要在真机上跑指纹验证，就传整个frx-director-mcp。
-- 运行：`node verify-environment-lifecycle.mjs --firefox <解压目录>\firefox\firefox.exe --mcp-root <frx-director-mcp目录> --output <报告>`。
+用`scripts/release-accept-windows-vm.sh`跑：
+```sh
+scripts/release-accept-windows-vm.sh --ssh <用户>@<主机> --port <端口> --zip <最终zip> --commit <版本号提交> \
+  --build-id <BuildID> --mcp-root <frx-director-mcp检出> --out <报告目录> \
+  [--python-zip <python嵌入版zip>] [--git-zip <MinGit zip>] [--node-dir <机器上的node目录>] [--timeout-min 240]
+```
+- 它把这份检出按版本号提交做成浅克隆，带上构建好的侧栏bundle，连同最终zip、frx-director-mcp的`dist`和`package.json`、便携python和git推过去，再用计划任务在登录桌面会话里跑`scripts/release-accept-windows.ps1`：候选核对、页面交互、环境生命周期、原生指纹、全局提示词和`verify-windows-package.py`。从ssh会话直接起的firefox没有窗口站，所以要走桌面会话。
+- 机器要开ssh公钥登录，ssh用户就是登录桌面的用户；node在`PATH`里，或用`--node-dir`指定。远端命令一律用`-EncodedCommand`（utf-16le的base64）执行，免得转义出错，也不受默认shell影响。tcg模拟的x64要给`--timeout-min 240`；刚开机时加`--wait-min`等桌面登录。开机前确认没有别的任务在用这台机器。
+- 跑完把报告拉回`--out`、写`acceptance.json`，再删掉工作目录和计划任务，以及浏览器在`%TEMP%`下留的空文件`remote-settings-startup-bundle-*`和空目录`mozilla-temp-files`（`--keep`时保留）。
 - v0.26.2在真机上：`identity`、`restart`通过。修复前的提交`e80509f`在这两项上失败：严格身份核对返回`unknown`，重启后环境仍显示运行中，正是当时查出的问题。
 - 已知：机器访问不到mozilla服务时，`quit-channel`这一项会失败。请求0.4秒内就被取走，但浏览器15秒内没退出，后端强制结束；失败信息里会写明是这种情况。v0.26.1就有，不算新版本的回归，退出通道以ci的windows-latest结果为准。
-- 测完清理工作目录。测试启动还会在`%TEMP%`下留下空文件`remote-settings-startup-bundle-*`和空目录`mozilla-temp-files`，一并删掉。
 
 ## 7. 本机覆盖安装（维护者同意后）
 
@@ -194,6 +179,7 @@ ci矩阵里没有apple silicon，这一项在本机跑。macos没有`timeout`，
    - 检查前后书签、模型配置、指纹环境的数量不变。
 
    书签、模型配置、指纹环境的数量要和基线对得上。`--quit`会正常退出浏览器，最后确认没有残留进程。
+4. 最后对装好的应用再跑一次`codesign --verify --deep --strict`，并核对`XUL`的sha256和验收时测的那份相同，结果写成一个JSON，第8步生成摘要时作为`installedCheck`。
 
 ## 8. 文档和pr
 
@@ -201,7 +187,7 @@ ci矩阵里没有apple silicon，这一项在本机跑。macos没有`timeout`，
    - `CHANGELOG.md`顶部加一行；
    - `README.md`版本记录最上面加“### v<版本>（正式版，<日期>）”，日期写计划发布的那天；
    - 改到的专题文档同步更新；
-   - `docs/verification/release-v<版本>/summary.json`写包sha256、各平台ci结果、本机和真机检查、已知限制，不写个人数据。格式参考v0.26.2那份；
+   - `docs/verification/release-v<版本>/summary.json`用`scripts/release-summary.py <清单> <输出>`生成。清单写本次的六个包、ci的run和下载的产物目录、各台机器的报告目录（`release-accept.sh`和`release-accept-windows-vm.sh`的`--out`）、安装程序比对、覆盖安装的三份报告和已知限制，格式见脚本开头；清单里有本机路径，不入库。摘要只写包sha256、各平台结果、计数和主机描述，不写个人数据；缺证据或有一项不过时，状态是`incomplete`并列出`pending`；
    - 五个目标的`build-record.<目标>.json`复制到同一目录，下次换编译机时照着核对工具链版本。
 2. 社区贡献者署名：
    - 个人仓库的协作者至少有写权限，所以不加协作者；

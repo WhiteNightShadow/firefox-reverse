@@ -83,7 +83,7 @@ v0.27.0起五个目标都在维护者的apple silicon mac上出，不再用远�
   - 磁盘只够放一个objdir（12–14GB），每个目标出包、拷走后就删objdir。
   - 参考时长（`mach build`的wall time）：单独编、8个并发时，linux arm64约50分钟，windows x86_64约57分钟；linux x86_64是10个并发、mac上同时在编mac目标，约100分钟。打包、zh-CN重打包和检查另加几分钟。
 - `activate`会在容器里跑全部自测，自测挂一项就不写`.frx-release-applied`，`build`直接拒绝；换了提交必须重新`activate`。
-- 验收：mac在本机；linux arm64在虚拟机里原生跑；linux x86_64在容器里经rosetta跑一遍作冒烟，原生结果以ci的ubuntu-24.04为准；windows用本机qemu里的两台windows 11（x64走tcg，没装vc++运行库；arm64走hvf），验收经计划任务在登录桌面会话里跑，见release-process.md第6步。
+- 验收：mac在本机；linux arm64在虚拟机里原生跑；linux x86_64在容器里经rosetta跑一遍作冒烟，原生结果以ci的ubuntu-24.04为准，这三处都用`scripts/release-accept.sh`；windows用本机qemu里的两台windows 11（x64走tcg，没装vc++运行库；arm64走hvf），用`scripts/release-accept-windows-vm.sh`经计划任务在登录桌面会话里跑，见release-process.md第5、6步。
 
 ## 注意
 
