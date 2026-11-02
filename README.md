@@ -48,7 +48,7 @@
 - Agent 常驻浏览器侧边栏，当前精确注册 **76 个工具**，覆盖页面操作、网络抓包与离线回放、固定随机数、代码搜索、Cookie、WebAPI trace、JSVMP、WASM、文件读写、Skills、扩展与环境管理及 Node/Python 实打验证。
 - 支持**全自动**与**AI辅助**两种工作方式：既可以让 worker 独立推进，也可以由人或外部 MCP director 分阶段领航。
 - 工作目录、会话、阶段结论与生成脚本均落在本地；切换标签页或收起侧边栏不会中断正在运行的父进程 Agent。
-- 历史抽屉支持单会话 `.frx-chat.json` 导入/导出；导入会创建静止的新会话，不会自动执行历史任务，也不会携带 API Key、工作目录和环境绑定。
+- 历史抽屉支持导出当前会话（`.frx-chat.json`）或全部会话（`.frx-chats.json`，一个文件），换电脑后用「导入」一次导回，导入过的不会重复导入；导入会创建静止的新会话，不会自动执行历史任务，也不会携带 API Key、工作目录和环境绑定。
 - 模型设置支持命名配置，同一渠道可以保存多组账号、端点、模型与思考等级，后续直接从历史配置切换。
 - 侧栏设置支持编辑全局附加 system 提示词，保存在本机浏览器 prefs，同一 profile 的所有模型配置与会话共享；点击“保存并使用”后从下一轮对话生效，留空使用内置提示词。
 - 手动停止会留下明确的取消边界，下一条消息默认按新任务处理；只有明确要求继续时才恢复上一项任务。
@@ -313,6 +313,7 @@ cd upstream && ./mach build && ./mach package
 ## 📝 版本更新记录
 
 ### main（尚未发布）
+- **全部会话导出导入**（[#7](https://github.com/WhiteNightShadow/firefox-reverse/issues/7)）：历史抽屉新增「全部导出」，把全部会话存成一个`.frx-chats.json`，空会话不导出；「导入」单会话文件和全部会话文件都认，导入后保持原来的先后顺序。同一份会话（来源会话和它导出时的更新时间都相同）不会重复导入，导入后在本机接着聊过的也认得出来；来源里又更新过的作为新会话导入，不覆盖本地的。文件里有一条不合格就整个不导入，并指出是第几个会话。
 - **cookie工具**（[#2](https://github.com/WhiteNightShadow/firefox-reverse/issues/2)）：`cookies`的设置和删除改为按每个cookie自己的`originAttributes`操作，容器标签页和第三方iframe的分区cookie也能改、能删，隐私窗口里的加`includePrivate:true`。列表用`originAttributes`标出每个cookie在哪个罐里，原样传回就只动那一个。删除后逐个核对，`removed`只算确实删掉的：以前单个删除不管删没删掉都报1，域cookie（host带前导点）传不带点的域名时其实没删。改已有cookie时只改给了的属性，httpOnly、secure、sameSite、过期方式和partitioned沿用原值。
 
 ### v0.27.0（正式版，2026-11-02）
