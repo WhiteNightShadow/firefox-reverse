@@ -86,6 +86,83 @@ let badImport = false;
 try { await s.importThread('{"hello":true}'); } catch { badImport = true; }
 ok(badImport, "拒绝非 Firefox Reverse 会话 JSON");
 
+// 全部会话打包导出、导入（#7）：空会话不导出；单会话包和全部会话包都能导入；导入过的不重复导入。
+{
+  const office = new ConversationStore({ memoryOnly: true });
+  const a = await office.createThread();
+  await office.appendMessage(a.id, { role: "user", content: "分析签名 a" });
+  await office.appendMessage(a.id, { role: "assistant", content: "入口在 sign()" });
+  await office.renameThread(a.id, "签名分析");
+  const empty = await office.createThread();
+  const b = await office.createThread();
+  await office.appendMessage(b.id, { role: "user", content: "抓包 b" });
+  await office.setThreadMode?.(b.id, "assist");
+  const { bundle: all, skipped } = await office.exportAllThreads();
+  ok(all.format === "firefox-reverse-conversations" && all.schemaVersion === 1, "全部会话包带格式和版本");
+  ok(all.conversations.length === 2 && skipped.length === 1 && skipped[0].reason === "empty", "空会话不导出，并记在 skipped 里");
+  ok(all.conversations[0].sourceThreadId === b.id && all.conversations[1].sourceThreadId === a.id, "包里按最近更新排序");
+  ok(all.conversations.every(c => !("workspace" in c) && !("envId" in c) && !("usage" in c)), "包里不带本机目录、环境绑定和 Usage");
+  ok(!all.conversations.some(c => c.sourceThreadId === empty.id), "空会话不在包里");
+
+  const home = new ConversationStore({ memoryOnly: true });
+  const first = await home.importConversations(JSON.stringify(all));
+  ok(first.imported.length === 2 && first.duplicates.length === 0, "全部会话包一次导入两个会话");
+  const homeList = await home.listThreads();
+  ok(homeList[0].title === all.conversations[0].title && homeList[1].title === "签名分析", "导入后保持原来的先后顺序");
+  const importedA = first.imported.find(t => t.title === "签名分析");
+  ok(importedA.messages.length === 2 && importedA.workspace === null && importedA.envId === null && importedA.lastTurnStatus === "idle", "导入的会话保留消息，不绑定本机资源，保持静止");
+  ok(importedA.importedFrom.sourceThreadId === a.id && Number.isFinite(importedA.importedFrom.sourceUpdatedAt), "记下来源会话和它导出时的更新时间");
+
+  const again = await home.importConversations(JSON.stringify(all));
+  ok(again.imported.length === 0 && again.duplicates.length === 2 && (await home.listThreads()).length === 2, "同一个包再导一次不重复导入");
+  await home.appendMessage(importedA.id, { role: "user", content: "回家接着聊" });
+  const afterChat = await home.importConversations(JSON.stringify(all));
+  ok(afterChat.imported.length === 0 && afterChat.duplicates.length === 2, "导入后在本机接着聊过，再导同一个包也认得出来");
+
+  const sameProfile = await office.importConversations(JSON.stringify(all));
+  ok(sameProfile.imported.length === 0 && sameProfile.duplicates.length === 2, "导回原来的 profile：原会话没改过就不重复导入");
+  await office.appendMessage(a.id, { role: "user", content: "办公室又聊了一句" });
+  const updated = await office.exportAllThreads();
+  const third = await home.importConversations(JSON.stringify(updated.bundle));
+  ok(third.imported.length === 1 && third.imported[0].messages.length === 3 && third.duplicates.length === 1, "来源里更新过的作为新会话导入，没改过的跳过");
+
+  const single = await office.exportThread(b.id);
+  const singleIntoHome = await home.importConversations(JSON.stringify(single));
+  ok(singleIntoHome.imported.length === 0 && singleIntoHome.duplicates.length === 1, "单会话包也走同样的去重");
+  const fresh = new ConversationStore({ memoryOnly: true });
+  const singleIntoFresh = await fresh.importConversations(JSON.stringify(single));
+  ok(singleIntoFresh.imported.length === 1 && singleIntoFresh.imported[0].mode === "assist", "单会话包导入一个会话");
+
+  const broken = JSON.parse(JSON.stringify(all));
+  broken.conversations[1].messages[0].role = "system";
+  const before = (await fresh.listThreads()).length;
+  let brokenError = "";
+  try { await fresh.importConversations(JSON.stringify(broken)); } catch (e) { brokenError = e.message; }
+  ok(/第 2 个会话：第 1 条消息角色无效/.test(brokenError), "包里有一条不合格时报出是第几个会话");
+  ok((await fresh.listThreads()).length === before, "有不合格的条目时整个包都不导入");
+
+  let notArray = "";
+  try { await fresh.importConversations(JSON.stringify({ ...all, conversations: {} })); } catch (e) { notArray = e.message; }
+  ok(/缺少 conversations/.test(notArray), "conversations 不是数组时拒绝");
+  let tooMany = "";
+  try { await fresh.importConversations({ ...all, conversations: new Array(5001).fill(all.conversations[0]) }); } catch (e) { tooMany = e.message; }
+  ok(/会话数超过 5000/.test(tooMany), "会话数超过上限时拒绝");
+  let foreign = "";
+  try { await fresh.importConversations('{"format":"something-else","conversations":[]}'); } catch (e) { foreign = e.message; }
+  ok(/不是受支持的 Firefox Reverse 会话文件/.test(foreign), "别的 JSON 拒绝");
+
+  const failing = new ConversationStore({ memoryOnly: true });
+  failing._save = async () => { throw new Error("disk full"); };
+  let saveError = "";
+  try { await failing.importConversations(JSON.stringify(all)); } catch (e) { saveError = e.message; }
+  ok(saveError === "disk full" && (await failing.listThreads()).length === 0, "写盘失败时内存里也撤掉，不留半截");
+
+  const nothing = new ConversationStore({ memoryOnly: true });
+  await nothing.createThread();
+  const none = await nothing.exportAllThreads();
+  ok(none.bundle.conversations.length === 0 && none.skipped.length === 1, "全是空会话时包里没有会话");
+}
+
 // 第二个线程 + 排序（updatedAt 倒序）
 const t2 = await s.createThread();
 await s.appendMessage(t2.id, { role: "user", content: "第二个对话" });
