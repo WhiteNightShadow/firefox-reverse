@@ -1,8 +1,8 @@
 # 编译机准备
 
-正式包的五个目标都在一台linux x86_64编译机上出：linux x86_64是本机编译，另外四个是交叉编译。出包用`scripts/release-build.sh`，它在发布流程里的位置见[release-process.md](release-process.md)第2步。机器地址、账号和密钥不写进仓库。
+v0.26.2及之前的正式包，五个目标都在一台linux x86_64编译机上出：linux x86_64是本机编译，另外四个是交叉编译。那台机器在2026-10-25退掉了，v0.27.0起改在本机出包，见文末[本机出包](#本机出包)。出包都用`scripts/release-build.sh`，它在发布流程里的位置见[release-process.md](release-process.md)第2步。机器地址、账号和密钥不写进仓库。
 
-下面的数字来自编v0.26.2的那台编译机，它在2026-10-25退掉了。
+下面“机器”到“出包”各节的数字来自编v0.26.2的那台编译机。
 
 ## 机器
 
@@ -68,6 +68,22 @@ UPSTREAM_DIR=<源码树> FRX_L10N_BASE=<l10n目录> MOZ_BUILD_DATE=<BuildID> scr
 完整步骤见[release-process.md](release-process.md)第2步。每个目标编完会在候选目录写一份`build-record.<目标>.json`，记下实际用的工具链版本和configure参数，换编译机时拿它核对。
 
 mac的两个目标也可以在mac本机出：`release-build.sh`在macos上用python代替util-linux的`flock`加锁，`sha256sum`不在时用`shasum`。工具链同样由bootstrap下载到`MOZBUILD_STATE_PATH`，rust用rustup装的1.95.0。
+
+## 本机出包
+
+v0.27.0起五个目标都在维护者的apple silicon mac上出，不再用远端编译机。
+
+- **mac两个目标**：mac本机原生编译，工具链由bootstrap下载到`MOZBUILD_STATE_PATH`，rust用rustup装的1.95.0并加`x86_64-apple-darwin`目标。14核48GB的机器上`FRX_BUILD_JOBS`限到8，留内存给虚拟机；v0.27.0的`mach build`约40–46分钟一个目标（当时虚拟机里同时在编linux x86_64）。
+- **linux两个目标和windows**：在lima虚拟机（vz，开rosetta）里的x86_64 ubuntu 24.04容器中出，和原编译机同一套做法：mozilla的bootstrap工具链（clang、sysroot、vs、wine、nsis等）和rustup装的1.95.0加四个交叉目标，放在容器可见的共享目录里。虚拟机给10核、24GB内存、61GB磁盘。
+- 容器里的要点：
+  - 源码树、l10n、本仓库和工具链一律挂在不以`/w`开头的路径下（如`/builds`）。clang-cl把`/work/...`这样的参数当成`/w`警告选项，windows的midl预处理会报`no input files`。
+  - rosetta不保留argv[0]，rustup的代理分不清自己是rustc还是cargo，configure里的`rustup which rustc`会失败。把真实工具链的bin目录放到PATH最前，并显式设`RUSTC`、`CARGO`。
+  - gkrust的rustc要18GB左右内存，24GB的虚拟机要加12GB swapfile，虚拟机重启后要重新`swapon`。首轮以8个并发编，失败再以两个并发增量续编；v0.27.0的三个目标首轮都一遍编过。
+  - v0.27.0第一次编linux arm64时开的是10个并发，编到43分钟时宿主机被看门狗重启，原因没查明，虚拟机内存当时还宽裕。之后首轮改成8个并发，删掉objdir从头重编，没再出现。编译中途宿主机重启过，就不要接着增量编，直接删objdir重来。
+  - 磁盘只够放一个objdir（12–14GB），每个目标出包、拷走后就删objdir。
+  - 参考时长（`mach build`的wall time）：单独编、8个并发时，linux arm64约50分钟，windows x86_64约57分钟；linux x86_64是10个并发、mac上同时在编mac目标，约100分钟。打包、zh-CN重打包和检查另加几分钟。
+- `activate`会在容器里跑全部自测，自测挂一项就不写`.frx-release-applied`，`build`直接拒绝；换了提交必须重新`activate`。
+- 验收：mac在本机；linux arm64在虚拟机里原生跑；linux x86_64在容器里经rosetta跑一遍作冒烟，原生结果以ci的ubuntu-24.04为准；windows用本机qemu里的两台windows 11（x64走tcg，没装vc++运行库；arm64走hvf），验收经计划任务在登录桌面会话里跑，见release-process.md第6步。
 
 ## 注意
 

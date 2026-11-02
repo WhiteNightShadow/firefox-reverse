@@ -1,6 +1,6 @@
 # 发布流程
 
-v0.26.2（2026-10-24编译验收，10-25发布）是按这套流程走通的，后续正式版和预览版都照此执行。流程有变化时先改这份文档。早期规划见[distribution.md](distribution.md)，已不适用。
+v0.26.2（2026-10-24编译验收，10-25发布）是按这套流程走通的，后续正式版和预览版都照此执行。流程有变化时先改这份文档。v0.27.0起编译机换成本机（mac本机加lima虚拟机容器，见[build-host.md](build-host.md)的“本机出包”），其余步骤不变。早期规划见[distribution.md](distribution.md)，已不适用。
 
 ## 原则
 
@@ -22,7 +22,7 @@ v0.26.2（2026-10-24编译验收，10-25发布）是按这套流程走通的，�
 
 ## 2. 编译机出包
 
-编译机怎么准备见[build-host.md](build-host.md)。出包用`scripts/release-build.sh`：它在锁定基线源码树上打补丁，按`configs/`编译，做zh-CN重打包，再按发布文件名放进候选目录。任何一步失败都会停下。
+编译机怎么准备见[build-host.md](build-host.md)；本机出包时mac目标在mac上、linux和windows目标在lima容器里，命令相同。出包用`scripts/release-build.sh`：它在锁定基线源码树上打补丁，按`configs/`编译，做zh-CN重打包，再按发布文件名放进候选目录。任何一步失败都会停下。
 
 1. 把版本号提交放到编译机上：新克隆一份本仓库，detach到版本号提交。github不通时，在本机打bundle传过去：
    ```sh
@@ -49,7 +49,7 @@ v0.26.2（2026-10-24编译验收，10-25发布）是按这套流程走通的，�
    - 生成这次用的mozconfig，存成候选目录里的`mozconfig.<目标>`；
    - 设好`MOZ_SOURCE_REPO`、`MOZ_SOURCE_CHANGESET`和`MOZ_BUILD_DATE`，依次跑`./mach configure`、`scripts/verify-branding.py`、`scripts/force-build-id-relink.sh`、`./mach build`，再确认`application.ini`里的`SourceStamp`和`BuildID`；
    - 排队跑`scripts/repack-zh-cn.sh`，只取这次新打出的包，按下表改名放进候选目录。候选目录默认是`dist/v<版本>-candidate`，可以用`FRX_DIST_DIR`改；
-   - 检查包：linux跑`scripts/verify-linux-package.sh`；windows跑`scripts/verify-windows-installer.py`，用7-Zip取出安装程序的整个`core/`，和zip里的`firefox/`逐文件比sha256，不运行安装向导，报告写进`windows-installer-check.json`。v0.26.2是50个文件全部一致；
+   - 检查包：linux跑`scripts/verify-linux-package.sh`；windows跑`scripts/verify-windows-installer.py`，用7-Zip取出安装程序的整个`core/`，和zip里的`firefox/`逐文件比sha256，不运行安装向导，报告写进`windows-installer-check.json`。v0.26.2是50个文件全部一致，v0.27.0起带msvc运行库是54个；
    - 把sha256写进`<目标>.sha256`；
    - 写构建记录`build-record.<目标>.json`：提交、锁定基线、l10n提交、mozconfig的sha256、configure参数、编译器版本、主机概况和产物sha256。机器路径都换成`<path>`，也不记主机名，可以直接留档。
 5. 控制并行数，最多同时编三个。v0.26.2五个目标同时编时，mac x86_64和linux x86_64的rustc（gkrust的lto）被oom杀掉，这两个单独重编就过了。
@@ -160,6 +160,8 @@ ci矩阵里没有apple silicon，这一项在本机跑。macos没有`timeout`，
 ## 6. windows真机（改到windows进程、退出、路径时必做）
 
 环境生命周期的三个场景，ci的windows-latest也会跑。真机补的是ci没有的条件：长期使用的机器，以及访问不到mozilla服务的网络。v0.26.2的`Path`问题（windows的环境变量名是`Path`，系统工具因此找不到）当时就是在真机上查出的。
+
+没有真机时用本机qemu里的两台windows 11测试机代替（x64走tcg、没装vc++运行库；arm64走hvf、有运行库）：把最终zip、本仓库检出、frx-director-mcp的dist、便携python和git推进去，用计划任务在登录桌面会话里跑候选核对、页面交互、环境生命周期、原生指纹、全局提示词和`verify-windows-package.py`。没装运行库的那台能查出包里缺msvc运行库：v0.26.2的包在它上面启动即退（0xC0000135），v0.27.0带上运行库后通过。
 
 - 连接：ssh公钥登录；powershell脚本用`-EncodedCommand`（utf-16le的base64）执行，免得转义出错。
 - 上传：
