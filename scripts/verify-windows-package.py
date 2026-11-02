@@ -116,6 +116,12 @@ def validate(report, output):
         report["branding"] = branding.verify_package(root, commit)
         executable = root / "firefox.exe"
         report["binary_sha256"] = sha(executable)
+        # The MSVC runtime ships in the package (mozconfig --with-redist); the hosted runners have it installed,
+        # so a missing DLL would otherwise only show up on a Windows without the VC++ redistributable.
+        runtime = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"]
+        for name in runtime:
+            assert (root / name).is_file(), f"{name} missing from the package"
+        report["msvc_runtime"] = runtime
         ini = configparser.ConfigParser()
         ini.read(root / "application.ini", encoding="utf-8")
         assert ini["App"]["BuildID"] == build_id

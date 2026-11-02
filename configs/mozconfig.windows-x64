@@ -12,6 +12,11 @@ ac_add_options --disable-tests
 ac_add_options --disable-updater
 ac_add_options --disable-default-browser-agent
 
+# Package the MSVC runtime DLLs (vcruntime140, vcruntime140_1, msvcp140) from the toolchain's Redist directory,
+# as the official builds do. Without them firefox.exe exits with STATUS_DLL_NOT_FOUND on a Windows that has no
+# VC++ redistributable installed; configure resolves the directory from the Visual Studio toolchain.
+ac_add_options --with-redist
+
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-win64
 mk_add_options MOZ_CRASHREPORTER=0
 mk_add_options MOZ_TELEMETRY_REPORTING=0
