@@ -1079,22 +1079,37 @@ function toolTable() {
     T(
       "cookies",
       "管理浏览器 cookie（经引擎 nsICookieManager，**含 httpOnly**——page_eval 的 document.cookie 拿不到 httpOnly；可跨域、可管理登录态）。" +
-        "**action=list** 列出（按 domain/name 过滤，只读）；**action=set** 新增/修改（同 host+path+name 覆盖，会读回确认）；**action=remove** 删除（name+domain 删单个 / 只给 domain 删该 host 全部 / `all:true` 清空所有）。",
+        "**action=list** 列出（按 domain/name 过滤，只读）；**action=set** 新增/修改（同 host+path+name+罐 覆盖，会读回确认；改已有的只改给了的属性，其余沿用原值）；" +
+        "**action=remove** 删除（只给 domain 删该 host 全部，name/path 缩小范围；`all:true` 清空所有），删完逐个核对，removed 只算确实删掉的。" +
+        "容器标签页、第三方 iframe 的分区 cookie、隐私窗口里的 cookie 各在自己的罐里，list 结果用 `originAttributes` 标明：" +
+        "remove 不带 originAttributes 删所有罐里匹配的，带上就只删那个罐；set 不带写普通罐。隐私窗口的默认不列不删，要 includePrivate:true。",
       {
         type: "object",
         properties: {
           action: { type: "string", enum: ["list", "set", "remove"], description: "list=列出 / set=新增改 / remove=删除" },
-          name: { type: "string", description: "cookie 名（set 必填；list/remove 选填，list 时按名过滤）" },
+          name: { type: "string", description: "cookie 名（set 必填；list 按名过滤；remove 只删这个名字的）" },
           value: { type: "string", description: "[set] cookie 值（省略=空串）" },
-          domain: { type: "string", description: "cookie 的 host，如 example.com 或 .example.com（set 必填；list 按 host 子串过滤；remove 必填，除非 all）" },
-          path: { type: "string", description: "路径，默认 /" },
-          secure: { type: "boolean", description: "[set] 仅 https 发送" },
-          httpOnly: { type: "boolean", description: "[set] JS 读不到（document.cookie 不可见）" },
-          session: { type: "boolean", description: "[set] 会话 cookie（关浏览器即失效）；不设且无 expires/maxAge 时默认持久一年" },
+          domain: { type: "string", description: "cookie 的 host，如 example.com 或 .example.com（set 必填，前导点=域 cookie；list 按 host 子串过滤；remove 必填，除非 all，前导点可省，host-only 和域 cookie 都算）" },
+          path: { type: "string", description: "[set] 路径，默认 /；[remove] 只删这个路径的，省略=所有路径" },
+          secure: { type: "boolean", description: "[set] 仅 https 发送（新建默认 false，改已有的不给就沿用）" },
+          httpOnly: { type: "boolean", description: "[set] JS 读不到（document.cookie 不可见；新建默认 false，改已有的不给就沿用）" },
+          session: { type: "boolean", description: "[set] 会话 cookie（关浏览器即失效）；都不给时新建的默认持久一年，改已有的沿用原来的过期方式" },
           expires: { type: "number", description: "[set] 过期时间：unix 时间戳【秒】" },
           maxAge: { type: "number", description: "[set] 从现在起多少【秒】后过期（优先于 expires）" },
-          sameSite: { type: "number", description: "[set] 0=None 1=Lax 2=Strict（省略=引擎默认 UNSET）" },
-          all: { type: "boolean", description: "[remove] true=清空所有 cookie（忽略其它参数，慎用）" },
+          sameSite: { type: "number", description: "[set] 0=None 1=Lax 2=Strict（None 必须 secure；新建省略=引擎默认 UNSET，改已有的不给就沿用）" },
+          originAttributes: {
+            type: "object",
+            description: "cookie 所在的罐，只写非默认字段，没写的按 0/空串；把 list 返回的 originAttributes 原样传回即可。list/remove 只看这个罐，set 写进这个罐",
+            properties: {
+              userContextId: { type: "integer", description: "容器标签页 id（0=不在容器里）" },
+              privateBrowsingId: { type: "integer", description: "1=隐私窗口" },
+              partitionKey: { type: "string", description: "分区键，如 (https,example.com)" },
+              firstPartyDomain: { type: "string", description: "first-party isolation 的一方域" },
+            },
+          },
+          includePrivate: { type: "boolean", description: "[list/remove] 也包括隐私窗口里的 cookie（默认不含）" },
+          partitioned: { type: "boolean", description: "[set] 写成带 Partitioned 属性的分区 cookie（CHIPS，规范要求同时 secure）；省略时改已有的沿用原值，新建的不带" },
+          all: { type: "boolean", description: "[remove] true=清空所有 cookie（忽略其它参数，慎用；隐私窗口的要再加 includePrivate）" },
         },
         required: ["action"],
       },

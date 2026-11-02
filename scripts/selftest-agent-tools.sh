@@ -24,6 +24,7 @@ SELFTESTS=(
   selftest-markdown-streaming.mjs
   selftest-panel-live.mjs
   selftest-addons.mjs
+  selftest-cookies.mjs
   selftest-config.mjs
   selftest-global-system-prompt.mjs
   selftest-typography.mjs
