@@ -73,7 +73,7 @@ mac的两个目标也可以在mac本机出：`release-build.sh`在macos上用pyt
 
 v0.27.0起五个目标都在维护者的apple silicon mac上出，不再用远端编译机。
 
-- **mac两个目标**：mac本机原生编译，工具链由bootstrap下载到`MOZBUILD_STATE_PATH`，rust用rustup装的1.95.0并加`x86_64-apple-darwin`目标。14核48GB的机器上`FRX_BUILD_JOBS`限到8，留内存给虚拟机；v0.27.0的`mach build`约40–46分钟一个目标（当时虚拟机里同时在编linux x86_64）。
+- **mac两个目标**：在mac本机编，arm64原生编译，x86_64从arm64交叉编译；工具链由bootstrap下载到`MOZBUILD_STATE_PATH`，rust用rustup装的1.95.0并加`x86_64-apple-darwin`目标。14核48GB的机器上`FRX_BUILD_JOBS`限到8，留内存给虚拟机；v0.27.0的`mach build`约40–46分钟一个目标（当时虚拟机里同时在编linux x86_64）。
 - **linux两个目标和windows**：在lima虚拟机（vz，开rosetta）里的x86_64 ubuntu 24.04容器中出，和原编译机同一套做法：mozilla的bootstrap工具链（clang、sysroot、vs、wine、nsis等）和rustup装的1.95.0加四个交叉目标，放在容器可见的共享目录里。虚拟机给10核、24GB内存、61GB磁盘。
 - 容器里的要点：
   - 源码树、l10n、本仓库和工具链一律挂在不以`/w`开头的路径下（如`/builds`）。clang-cl把`/work/...`这样的参数当成`/w`警告选项，windows的midl预处理会报`no input files`。

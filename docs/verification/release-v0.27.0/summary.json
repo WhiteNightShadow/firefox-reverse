@@ -105,7 +105,7 @@
   }
  },
  "local": {
-  "buildHost": "the maintainer's Apple silicon Mac (macOS 26.7.1): macOS targets built natively, Linux and Windows targets cross-compiled in an x86_64 Ubuntu 24.04 container inside a Lima VM (Virtualization.framework, Rosetta)",
+  "buildHost": "the maintainer's Apple silicon Mac (macOS 26.7.1): macOS targets built on the Mac itself (x86_64 cross-compiled from arm64), Linux and Windows targets cross-compiled in an x86_64 Ubuntu 24.04 container inside a Lima VM (Virtualization.framework, Rosetta)",
   "macos-arm64": {
    "host": {
     "system": "macOS",
