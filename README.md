@@ -205,7 +205,7 @@ Agent 的推进遵循一条务实路线——**先拿到能用的，再追求吃
 | **白盒诊断（1）** | `whitebox_diff` | 对比浏览器真值与 Node 复刻的覆盖率、分支路径差异 |
 | **通用 JS trace（1）** | `js_trace` | AST 插桩配合 Node 执行，逐函数追踪普通 JavaScript |
 | **执行 / 文件（8）** | `run_node` `run_python` `npm_install` `fs_read` `fs_write` `fs_list` `fs_copy` `fs_mkdir` | 在工作目录执行脚本、安装依赖与管理文件 |
-| **Cookie / 站点数据（2）** | `cookies` `clear_site_data` | 通过引擎 Cookie 管理器列出、设置和删除 Cookie，包括 httpOnly Cookie；按站点清 cookie、本地存储、缓存、权限和认证状态 |
+| **Cookie / 站点数据（2）** | `cookies` `clear_site_data` | 通过引擎 Cookie 管理器列出、设置和删除 Cookie，包括 httpOnly Cookie，以及容器标签页、分区和隐私窗口里的 Cookie；按站点清 cookie、本地存储、缓存、权限和认证状态 |
 | **Firefox 扩展（2）** | `addons_query` `addons_manage` | 搜索 AMO、列出已安装扩展，并安全执行安装、启停、卸载和打开配置页 |
 | **Skills / 记忆（7）** | `skill_list` `skill_get` `skill_read_resource` `notes_add` `notes_get` `remember` `recall` | 发现并读取本机/工作区 Skill，兼容内置逆向方法论，记录会话笔记并维护跨会话记忆 |
 | **指纹环境（18）** | `env_current` `env_current_process` `env_read_current_process_config` `env_write_current_process_config` `env_reset_current_process_default` `env_list` `env_status` `env_create` `env_update` `env_open` `env_close` `env_read_config` `env_write_config` `env_generate_fingerprint` `env_capture_fingerprint` `env_import_fingerprint` `env_import` `env_delete` | 查询当前环境和主进程，管理环境生命周期，读写/生成/采集/导入指纹配置 |
@@ -311,6 +311,9 @@ cd upstream && ./mach build && ./mach package
 ---
 
 ## 📝 版本更新记录
+
+### main（尚未发布）
+- **cookie工具**（[#2](https://github.com/WhiteNightShadow/firefox-reverse/issues/2)）：`cookies`的设置和删除改为按每个cookie自己的`originAttributes`操作，容器标签页和第三方iframe的分区cookie也能改、能删，隐私窗口里的加`includePrivate:true`。列表用`originAttributes`标出每个cookie在哪个罐里，原样传回就只动那一个。删除后逐个核对，`removed`只算确实删掉的：以前单个删除不管删没删掉都报1，域cookie（host带前导点）传不带点的域名时其实没删。改已有cookie时只改给了的属性，httpOnly、secure、sameSite、过期方式和partitioned沿用原值。
 
 ### v0.27.0（正式版，2026-11-02）
 - **页面交互走原生输入**：`page_click`、`page_type`改走firefox原生输入通道（与webdriver同一条路）：鼠标沿曲线移到元素上再按下抬起，页面收到isTrusted的pointer/mouse/click序列；逐字按键，大写和符号按住shift，中文走输入法提交，`submit`发原生回车。只点元素露在最上层的位置，被盖住时返回`target_obscured`并写明遮挡物。旧的selector/text写法照常可用。（[说明](docs/page-interaction.md)）
