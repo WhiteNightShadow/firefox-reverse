@@ -1,0 +1,57 @@
+{
+  "target": "linux-arm64",
+  "version": "0.27.1",
+  "buildId": "20261104091052",
+  "source": {
+    "commit": "15751d9644db2fd3f27561433222188a3181e124",
+    "baseline": "cebc55aab4d2661d1f6c2d1526362947ec4016c1",
+    "l10n": "53be390d96a531cf526f5db0fa83c02f12465abb"
+  },
+  "mozconfig": {
+    "file": "configs/mozconfig.linux-arm64",
+    "sha256": "118d6789241e254575d3d384820f6e684197403919fe2c8d41366cfb7016c3f3",
+    "effectiveSha256": "f5479ed83069574bfe2ee7448a7eb606a2f1eba47a82866d5146ac5012e35c37"
+  },
+  "configure": {
+    "target": "aarch64-unknown-linux-gnu",
+    "host": "x86_64-pc-linux-gnu",
+    "options": [
+      "--enable-application=browser",
+      "--target=aarch64-linux-gnu",
+      "MOZBUILD_STATE_PATH=<path>",
+      "--disable-tests",
+      "--enable-release",
+      "--enable-bootstrap=no-update",
+      "MOZ_SOURCE_REPO=https://github.com/WhiteNightShadow/firefox-reverse",
+      "MOZ_SOURCE_CHANGESET=15751d9644db2fd3f27561433222188a3181e124",
+      "RUSTC=<path>",
+      "CARGO=<path>",
+      "--with-l10n-base=<path>",
+      "--disable-backgroundtasks",
+      "--disable-updater",
+      "--with-branding=browser/branding/unofficial",
+      "--disable-crashreporter"
+    ]
+  },
+  "toolchain": {
+    "cc": "clang",
+    "ccVersion": "20.1.8",
+    "rustcVersion": "1.95.0"
+  },
+  "host": {
+    "system": "Linux",
+    "release": "6.8.0-147-generic",
+    "machine": "x86_64",
+    "cpus": 10,
+    "memoryBytes": 25145835520,
+    "python": "3.12.3"
+  },
+  "outputs": [
+    {
+      "name": "firefox-reverse-v0.27.1-linux-arm64.tar.xz",
+      "size": 79154948,
+      "sha256": "0132531dded7a231707ba23716d1ad173d5e0bf46889c06a0a66fbda71f296cd"
+    }
+  ],
+  "recordedAt": "2026-11-04T13:26:04Z"
+}

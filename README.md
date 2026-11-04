@@ -222,7 +222,7 @@ Agent 的推进遵循一条务实路线——**先拿到能用的，再追求吃
 | **Linux** | x86_64 | ✅ 提供安装包 |
 | **Linux** | ARM64 (AArch64) | ✅ 提供安装包 |
 
-安装包在 **Linux 构建机上交叉编译**（macOS arm64 / macOS x86_64 / Windows64 / Linux x86_64 / Linux ARM64）后发布到 [Releases](../../releases)。macOS 两种架构使用独立对象目录构建，并在发布前校验 DMG 内主程序架构与签名；Linux 包会校验 ELF 架构和内置 Agent / 指纹环境模块。
+安装包在维护者本机出包（mac两个目标在mac上编译，windows和两个linux目标在lima虚拟机的x86_64容器里交叉编译），验收通过后发布到[Releases](../../releases)，出包和验收步骤见[发布流程](docs/release-process.md)。macOS 两种架构使用独立对象目录构建，并在发布前校验 DMG 内主程序架构与签名；Linux 包会校验 ELF 架构和内置 Agent / 指纹环境模块。
 
 ---
 
@@ -312,9 +312,12 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
-### main（尚未发布）
-- **全部会话导出导入**（[#7](https://github.com/WhiteNightShadow/firefox-reverse/issues/7)）：历史抽屉新增「全部导出」，把全部会话存成一个`.frx-chats.json`，空会话不导出；「导入」单会话文件和全部会话文件都认，导入后保持原来的先后顺序。同一份会话（来源会话和它导出时的更新时间都相同）不会重复导入，导入后在本机接着聊过的也认得出来；来源里又更新过的作为新会话导入，不覆盖本地的。文件里有一条不合格就整个不导入，并指出是第几个会话。
+### v0.27.1（正式版，2026-11-04）
 - **cookie工具**（[#2](https://github.com/WhiteNightShadow/firefox-reverse/issues/2)）：`cookies`的设置和删除改为按每个cookie自己的`originAttributes`操作，容器标签页和第三方iframe的分区cookie也能改、能删，隐私窗口里的加`includePrivate:true`。列表用`originAttributes`标出每个cookie在哪个罐里，原样传回就只动那一个。删除后逐个核对，`removed`只算确实删掉的：以前单个删除不管删没删掉都报1，域cookie（host带前导点）传不带点的域名时其实没删。改已有cookie时只改给了的属性，httpOnly、secure、sameSite、过期方式和partitioned沿用原值。
+- **全部会话导出导入**（[#7](https://github.com/WhiteNightShadow/firefox-reverse/issues/7)）：历史抽屉新增「全部导出」，把全部会话存成一个`.frx-chats.json`，空会话不导出；「导入」单会话文件和全部会话文件都认，导入后保持原来的先后顺序。同一份会话（来源会话和它导出时的更新时间都相同）不会重复导入，导入后在本机接着聊过的也认得出来；来源里又更新过的作为新会话导入，不覆盖本地的。文件里有一条不合格就整个不导入，并指出是第几个会话。
+- **发版验收脚本**：本机mac/linux验收、windows测试机验收和验证摘要改用仓库里的脚本（`scripts/release-accept.sh`、`scripts/release-accept-windows-vm.sh`、`scripts/release-summary.py`），测完核对签名和`XUL`没被改动，结果写进每台机器的`acceptance.json`。（[发布流程](docs/release-process.md)）
+- **最终包验收**：五目标六包统一SourceStamp `15751d9644db2fd3f27561433222188a3181e124`、BuildID `20261104091052`。mac arm64/intel、windows x86_64、linux x86_64/arm64原生指纹回归分别通过213/197/212/182/182项，各通过78项页面/agent检查、三个环境生命周期场景（12/9/6项）和8类提示词场景/11条合成请求（[原生ci](https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/41838542368)）；mac arm64另过15个数据目录场景和从v0.27.0原位升级检查，`cookies`工具和会话导出导入在最终包的真引擎里做了专项检查；windows在windows 11 x64（没装vc++运行库）和windows 11 arm64测试机上各过一遍完整验收，安装程序与zip的54个文件一致。（[验证摘要](docs/verification/release-v0.27.1/summary.json)）
+- **安装包**：[v0.27.1 Release](https://github.com/WhiteNightShadow/firefox-reverse/releases/tag/v0.27.1)提供五目标六个安装/便携包；升级前完整退出旧应用，替换原位置的应用，保留现有profile与指纹环境目录。macos包为ad-hoc签名，未做apple developer id公证。
 
 ### v0.27.0（正式版，2026-11-02）
 - **页面交互走原生输入**：`page_click`、`page_type`改走firefox原生输入通道（与webdriver同一条路）：鼠标沿曲线移到元素上再按下抬起，页面收到isTrusted的pointer/mouse/click序列；逐字按键，大写和符号按住shift，中文走输入法提交，`submit`发原生回车。只点元素露在最上层的位置，被盖住时返回`target_obscured`并写明遮挡物。旧的selector/text写法照常可用。（[说明](docs/page-interaction.md)）
