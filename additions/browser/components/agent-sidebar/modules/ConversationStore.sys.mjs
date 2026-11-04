@@ -20,6 +20,11 @@ const STORE_SCHEMA_VERSION = 3;
 const EXPORT_FORMAT = "firefox-reverse-conversation";
 const EXPORT_SCHEMA_VERSION = 1;
 const MAX_IMPORT_CHARS = 10 * 1024 * 1024;
+// 全部会话打成一个包（.frx-chats.json）：conversations 里每一项和单会话包的 conversation 同构。
+const BUNDLE_FORMAT = "firefox-reverse-conversations";
+const BUNDLE_SCHEMA_VERSION = 1;
+const MAX_BUNDLE_CHARS = 200 * 1024 * 1024;
+const MAX_BUNDLE_CONVERSATIONS = 5000;
 const MAX_IMPORT_MESSAGES = 5000;
 const MAX_MESSAGE_CHARS = 1024 * 1024;
 const TURN_STATUSES = new Set(["idle", "running", "completed", "cancelled", "failed"]);
@@ -94,6 +99,91 @@ function cleanMessage(msg, index) {
     content: msg.content,
     ...(steps.length ? { steps } : {}),
   };
+}
+
+/** 导出用的会话正文：不带工作目录、环境绑定、运行状态、投影和 Usage。 */
+function exportedConversation(t) {
+  return {
+    sourceThreadId: t.id,
+    title: cleanTitle(t.title),
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    mode: t.mode || null,
+    modelStrategy: t.modelStrategy === "premium" ? "premium" : "balanced",
+    messages: t.messages.map((m, i) => cleanMessage(m, i)),
+  };
+}
+
+function parsePayload(payload, maxChars) {
+  if (typeof payload !== "string") {
+    return payload;
+  }
+  if (payload.length > maxChars) {
+    throw new Error(`导入失败：文件超过 ${Math.round(maxChars / 1024 / 1024)}MB`);
+  }
+  try {
+    return JSON.parse(payload);
+  } catch {
+    throw new Error("导入失败：不是有效 JSON");
+  }
+}
+
+/** 校验并清洗一条要导入的会话；label 是包里的位置（如「第 3 个会话」），报错时带上。 */
+function prepareImport(src, label = "") {
+  const where = label ? `${label}：` : "";
+  if (!src || typeof src !== "object" || !Array.isArray(src.messages)) {
+    throw new Error(`导入失败：${where}缺少 conversation.messages`);
+  }
+  if (src.messages.length > MAX_IMPORT_MESSAGES) {
+    throw new Error(`导入失败：${where}消息数超过 ${MAX_IMPORT_MESSAGES}`);
+  }
+  try {
+    return { src, messages: src.messages.map((m, i) => cleanMessage(m, i)) };
+  } catch (e) {
+    throw new Error(String((e && e.message) || e).replace(/^导入失败：/, `导入失败：${where}`));
+  }
+}
+
+/** 导入为一条静止的新会话：不恢复 workspace/envId，不带投影和 Usage，也绝不自动执行历史内容。 */
+function importedThread({ src, messages }) {
+  const now = nextTs();
+  return {
+    id: newThreadId(),
+    title: cleanTitle(src.title),
+    createdAt: now,
+    updatedAt: now,
+    workspace: null,
+    mode: src.mode === "assist" || src.mode === "auto" ? src.mode : null,
+    envId: null,
+    modelStrategy: src.modelStrategy === "premium" ? "premium" : "balanced",
+    lastTurnStatus: "idle",
+    cancellationPending: false,
+    cancelledAt: null,
+    contextProjection: null,
+    usage: emptyUsage(),
+    importedFrom: {
+      sourceThreadId: String(src.sourceThreadId || "").slice(0, 200) || null,
+      sourceUpdatedAt: Number.isFinite(src.updatedAt) ? src.updatedAt : null,
+      importedAt: now,
+    },
+    messages,
+  };
+}
+
+/** 之前导入过的同一份会话：来源会话 id 和它导出时的 updatedAt 都相同（本机原会话没改过，
+ *  或已导入过、之后在本机接着聊也算）。来源里又更新过的不算，照常作为新会话导入。 */
+function findImported(threads, src) {
+  const id = String(src.sourceThreadId || "").slice(0, 200);
+  if (!id || !Number.isFinite(src.updatedAt)) {
+    return null;
+  }
+  return (
+    threads.find(
+      t =>
+        (t.id === id && t.updatedAt === src.updatedAt) ||
+        (t.importedFrom && t.importedFrom.sourceThreadId === id && t.importedFrom.sourceUpdatedAt === src.updatedAt)
+    ) || null
+  );
 }
 
 export class ConversationStore {
@@ -385,16 +475,53 @@ export class ConversationStore {
       schemaVersion: EXPORT_SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
       source: { app: "Firefox Reverse" },
-      conversation: {
-        sourceThreadId: t.id,
-        title: cleanTitle(t.title),
-        createdAt: t.createdAt,
-        updatedAt: t.updatedAt,
-        mode: t.mode || null,
-        modelStrategy: t.modelStrategy === "premium" ? "premium" : "balanced",
-        messages: t.messages.map((m, i) => cleanMessage(m, i)),
-      },
+      conversation: exportedConversation(t),
     };
+  }
+
+  /** 全部会话打成一个包（按最近更新排序）。没有消息的空会话不导出；个别会话数据异常导不出时跳过并记下，
+   *  不让整包失败。skipped: [{ title, reason: "empty" | 报错信息 }]。 */
+  async exportAllThreads() {
+    const d = await this._load();
+    const conversations = [];
+    const skipped = [];
+    for (const t of [...d.threads].sort((a, b) => b.updatedAt - a.updatedAt)) {
+      if (!t.messages.length) {
+        skipped.push({ title: cleanTitle(t.title), reason: "empty" });
+        continue;
+      }
+      try {
+        conversations.push(exportedConversation(t));
+      } catch (e) {
+        skipped.push({ title: cleanTitle(t.title), reason: String((e && e.message) || e) });
+      }
+    }
+    return {
+      bundle: {
+        format: BUNDLE_FORMAT,
+        schemaVersion: BUNDLE_SCHEMA_VERSION,
+        exportedAt: new Date().toISOString(),
+        source: { app: "Firefox Reverse" },
+        conversations,
+      },
+      skipped,
+    };
+  }
+
+  async exportAllThreadsToFile(path) {
+    if (!hasIO()) {
+      throw new Error("当前环境不支持写入会话文件");
+    }
+    const { bundle, skipped } = await this.exportAllThreads();
+    if (!bundle.conversations.length) {
+      throw new Error("没有可导出的会话：空会话不导出");
+    }
+    const json = JSON.stringify(bundle) + "\n";
+    if (json.length > MAX_BUNDLE_CHARS) {
+      throw new Error("导出失败：全部会话合计超过 200MB，请先删掉不需要的会话，或逐个导出");
+    }
+    await IOUtils.writeUTF8(path, json, { tmpPath: path + ".tmp" });
+    return { ok: true, path, conversations: bundle.conversations.length, skipped };
   }
 
   async exportThreadJSON(id) {
@@ -414,55 +541,81 @@ export class ConversationStore {
     return { ok: true, path, bytes: byteLength };
   }
 
-  /** 导入仅创建一条静止的新会话，不恢复 workspace/envId，也绝不自动执行历史内容。 */
+  /** 导入单会话包，创建一条静止的新会话，不恢复 workspace/envId，也绝不自动执行历史内容。 */
   async importThread(payload) {
-    let data = payload;
-    if (typeof payload === "string") {
-      if (payload.length > MAX_IMPORT_CHARS) {
-        throw new Error("导入失败：文件超过 10MB");
-      }
-      try {
-        data = JSON.parse(payload);
-      } catch {
-        throw new Error("导入失败：不是有效 JSON");
-      }
-    }
+    const data = parsePayload(payload, MAX_IMPORT_CHARS);
     if (!data || data.format !== EXPORT_FORMAT || data.schemaVersion !== EXPORT_SCHEMA_VERSION) {
       throw new Error("导入失败：不是受支持的 Firefox Reverse 会话文件");
     }
-    const src = data.conversation;
-    if (!src || !Array.isArray(src.messages)) {
-      throw new Error("导入失败：缺少 conversation.messages");
-    }
-    if (src.messages.length > MAX_IMPORT_MESSAGES) {
-      throw new Error(`导入失败：消息数超过 ${MAX_IMPORT_MESSAGES}`);
-    }
-    const messages = src.messages.map((m, i) => cleanMessage(m, i));
+    const t = importedThread(prepareImport(data.conversation));
     const d = await this._load();
-    const now = nextTs();
-    const t = {
-      id: newThreadId(),
-      title: cleanTitle(src.title),
-      createdAt: now,
-      updatedAt: now,
-      workspace: null,
-      mode: src.mode === "assist" || src.mode === "auto" ? src.mode : null,
-      envId: null,
-      modelStrategy: src.modelStrategy === "premium" ? "premium" : "balanced",
-      lastTurnStatus: "idle",
-      cancellationPending: false,
-      cancelledAt: null,
-      contextProjection: null,
-      usage: emptyUsage(),
-      importedFrom: {
-        sourceThreadId: String(src.sourceThreadId || "").slice(0, 200) || null,
-        importedAt: now,
-      },
-      messages,
-    };
     d.threads.push(t);
     await this._save();
     return t;
+  }
+
+  /** 导入会话文件：单会话包或全部会话包都认。先校验全部条目，有一条不合格就整个不导；之前导入过的
+   *  （见 findImported）跳过。导入后保持原来的先后顺序。返回 { imported, duplicates }，都按最近更新排序。 */
+  async importConversations(payload) {
+    const data = parsePayload(payload, MAX_BUNDLE_CHARS);
+    let entries;
+    let isBundle = false;
+    if (data && data.format === EXPORT_FORMAT && data.schemaVersion === EXPORT_SCHEMA_VERSION) {
+      if (typeof payload === "string" && payload.length > MAX_IMPORT_CHARS) {
+        throw new Error("导入失败：单会话文件超过 10MB");
+      }
+      entries = [data.conversation];
+    } else if (data && data.format === BUNDLE_FORMAT && data.schemaVersion === BUNDLE_SCHEMA_VERSION) {
+      if (!Array.isArray(data.conversations)) {
+        throw new Error("导入失败：缺少 conversations");
+      }
+      if (data.conversations.length > MAX_BUNDLE_CONVERSATIONS) {
+        throw new Error(`导入失败：会话数超过 ${MAX_BUNDLE_CONVERSATIONS}`);
+      }
+      entries = data.conversations;
+      isBundle = true;
+    } else {
+      throw new Error("导入失败：不是受支持的 Firefox Reverse 会话文件");
+    }
+    const prepared = entries.map((src, k) => prepareImport(src, isBundle ? `第 ${k + 1} 个会话` : ""));
+    // 包里是最近的在前；按来源时间从旧到新导入，新的拿到更晚的时间戳，列表里先后不变。
+    const time = item => (Number.isFinite(item.p.src.updatedAt) ? item.p.src.updatedAt : 0);
+    const order = prepared.map((p, k) => ({ p, k })).sort((a, b) => time(a) - time(b) || b.k - a.k);
+    const d = await this._load();
+    const imported = [];
+    const duplicates = [];
+    for (const { p } of order) {
+      const existing = findImported(d.threads, p.src);
+      if (existing) {
+        duplicates.push(existing);
+        continue;
+      }
+      const t = importedThread(p);
+      d.threads.push(t);
+      imported.push(t);
+    }
+    if (imported.length) {
+      try {
+        await this._save();
+      } catch (e) {
+        const added = new Set(imported);
+        d.threads = d.threads.filter(t => !added.has(t)); // 写盘失败：内存里也撤掉，不留半截
+        throw e;
+      }
+    }
+    const newest = (a, b) => b.updatedAt - a.updatedAt;
+    return { imported: imported.sort(newest), duplicates: duplicates.sort(newest) };
+  }
+
+  async importFromFile(path) {
+    if (!hasIO()) {
+      throw new Error("当前环境不支持读取会话文件");
+    }
+    const st = await IOUtils.stat(path);
+    if (st.size > MAX_BUNDLE_CHARS) {
+      throw new Error("导入失败：文件超过 200MB");
+    }
+    return this.importConversations(await IOUtils.readUTF8(path));
   }
 
   async importThreadFromFile(path) {

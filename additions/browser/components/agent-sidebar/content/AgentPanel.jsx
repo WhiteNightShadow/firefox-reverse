@@ -1100,7 +1100,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       const host = _SVC.wm.getMostRecentWindow("navigator:browser");
       const fp = _CC["@mozilla.org/filepicker;1"].createInstance(_CI.nsIFilePicker);
       fp.init(host.browsingContext, title, mode);
-      fp.appendFilter("Firefox Reverse 会话", "*.frx-chat.json");
+      fp.appendFilter("Firefox Reverse 会话", "*.frx-chat.json; *.frx-chats.json");
       fp.appendFilters(_CI.nsIFilePicker.filterAll);
       if (defaultName) {
         fp.defaultString = defaultName;
@@ -1135,13 +1135,46 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     );
   }
 
+  function exportAllThreads() {
+    if (busy || !_CI?.nsIFilePicker || !conversations.exportAllThreadsToFile) return;
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+    pickConversationFile(
+      _CI.nsIFilePicker.modeSave,
+      "导出全部会话",
+      `firefox-reverse-conversations-${stamp}.frx-chats.json`,
+      async path => {
+        const r = await conversations.exportAllThreadsToFile(path);
+        const empty = r.skipped.filter(x => x.reason === "empty").length;
+        const broken = r.skipped.length - empty;
+        setNotice(
+          `已导出 ${r.conversations} 个会话` +
+            (empty ? `，${empty} 个空会话没有导出` : "") +
+            (broken ? `，${broken} 个会话数据异常没有导出` : "") +
+            "。文件不包含模型配置中的 Key、工作目录、环境绑定或运行状态；对话正文会原样保留。在另一台电脑上用「导入」一次导回。"
+        );
+      }
+    );
+  }
+
   function importConversation() {
-    if (!_CI?.nsIFilePicker || !conversations.importThreadFromFile) return;
+    if (!_CI?.nsIFilePicker || !conversations.importFromFile) return;
     pickConversationFile(_CI.nsIFilePicker.modeOpen, "导入会话", "", async path => {
-      const t = await conversations.importThreadFromFile(path);
+      const { imported, duplicates } = await conversations.importFromFile(path);
       await refreshThreads();
-      await openThread(t.id);
-      setNotice("会话已作为新对话导入；不会自动执行历史内容，也未绑定本机目录或浏览器环境。");
+      // 只导入了一个就直接打开；全是导入过的、只有一个，就打开已有的那个。
+      const open = imported.length === 1 ? imported[0] : !imported.length && duplicates.length === 1 ? duplicates[0] : null;
+      if (open) {
+        await openThread(open.id);
+      }
+      const parts = [];
+      if (imported.length) {
+        parts.push(imported.length === 1 ? "会话已作为新对话导入" : `已导入 ${imported.length} 个会话`);
+      }
+      if (duplicates.length) {
+        parts.push(imported.length ? `${duplicates.length} 个之前已导入过，没有重复导入` : duplicates.length === 1 ? "这个会话之前已导入过，没有重复导入" : `这 ${duplicates.length} 个会话之前都已导入过，没有重复导入`);
+      }
+      setNotice(parts.join("，") + "。导入的会话不会自动执行历史内容，也未绑定本机目录或浏览器环境。");
     });
   }
 
@@ -1303,8 +1336,9 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           <div className="agent-history__head">
             <span>历史对话（{threads.length}）</span>
             <span className="agent-history__tools">
-              <button type="button" onClick={importConversation} title="从 JSON 文件导入为新会话">导入</button>
+              <button type="button" onClick={importConversation} title="从会话文件导入为新会话：单个会话或全部会话的文件都可以，导入过的不会重复导入">导入</button>
               <button type="button" onClick={exportCurrentThread} disabled={!currentId || busy} title={busy ? "当前任务结束或停止后再导出" : "导出当前会话为 JSON"}>导出</button>
+              <button type="button" onClick={exportAllThreads} disabled={busy || threads.length === 0} title={busy ? "当前任务结束或停止后再导出" : "把全部历史会话导出成一个文件，换电脑后用「导入」一次导回"}>全部导出</button>
               <button type="button" className="agent-history__close" onClick={() => setShowHistory(false)} title="关闭">×</button>
             </span>
           </div>

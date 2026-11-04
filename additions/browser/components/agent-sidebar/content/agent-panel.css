@@ -134,6 +134,8 @@ body {
 
 .agent-history__head {
   display: flex;
+  flex-wrap: wrap;
+  row-gap: 4px;
   justify-content: space-between;
   align-items: center;
   padding: 7px 12px 6px;

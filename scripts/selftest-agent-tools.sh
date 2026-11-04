@@ -34,6 +34,7 @@ SELFTESTS=(
   selftest-usage.mjs
   selftest-prompt-cache.mjs
   selftest-conversations.mjs
+  selftest-history-transfer.mjs
   selftest-ledger-sql.mjs
   selftest-context-projection.mjs
   selftest-context-runtime.mjs
