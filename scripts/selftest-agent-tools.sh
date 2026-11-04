@@ -71,6 +71,7 @@ run python3 "$REPO_ROOT/scripts/tests/test-global-system-prompt-verifier.py"
 run python3 "$REPO_ROOT/scripts/tests/test-sync-additions.py"
 run python3 "$REPO_ROOT/scripts/tests/test-windows-installer.py"
 run python3 "$REPO_ROOT/scripts/tests/test-release-build.py"
+run python3 "$REPO_ROOT/scripts/tests/test-release-summary.py"
 
 echo
 echo "agent tool selftests: all passed"
