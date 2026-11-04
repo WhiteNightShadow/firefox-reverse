@@ -81,6 +81,8 @@ v0.27.0起五个目标都在维护者的apple silicon mac上出，不再用远�
   - gkrust的rustc要18GB左右内存，24GB的虚拟机要加12GB swapfile，虚拟机重启后要重新`swapon`。首轮以8个并发编，失败再以两个并发增量续编；v0.27.0的三个目标首轮都一遍编过。
   - v0.27.0第一次编linux arm64时开的是10个并发，编到43分钟时宿主机被看门狗重启，原因没查明，虚拟机内存当时还宽裕。之后首轮改成8个并发，删掉objdir从头重编，没再出现。编译中途宿主机重启过，就不要接着增量编，直接删objdir重来。
   - 磁盘只够放一个objdir（12–14GB），每个目标出包、拷走后就删objdir。
+  - 虚拟机的磁盘镜像在宿主上是稀疏文件，虚拟机里删掉的文件不会自动还给宿主。删完objdir要在虚拟机里跑`fstrim /`（vz的virtio磁盘支持discard），镜像才会缩回去。swapfile用`fallocate`建，没写过的块不占宿主盘。
+  - 宿主盘也紧时（v0.27.1开编时宿主只剩20GB左右，mac的swap文件也在同一个卷上），mac目标和虚拟机不要同时编：五个目标依次编，mac的objdir一样是出包后就删。v0.27.1这样依次编，整个`build`（含打包和检查）用时：mac arm64约25分钟、mac x86_64约26分钟（`FRX_BUILD_JOBS=10`），windows x86_64约78分钟，linux x86_64约63分钟，linux arm64约62分钟。
   - 参考时长（`mach build`的wall time）：单独编、8个并发时，linux arm64约50分钟，windows x86_64约57分钟；linux x86_64是10个并发、mac上同时在编mac目标，约100分钟。打包、zh-CN重打包和检查另加几分钟。
 - `activate`会在容器里跑全部自测，自测挂一项就不写`.frx-release-applied`，`build`直接拒绝；换了提交必须重新`activate`。
 - 验收：mac在本机；linux arm64在虚拟机里原生跑；linux x86_64在容器里经rosetta跑一遍作冒烟，原生结果以ci的ubuntu-24.04为准，这三处都用`scripts/release-accept.sh`；windows用本机qemu里的两台windows 11（x64走tcg，没装vc++运行库；arm64走hvf），用`scripts/release-accept-windows-vm.sh`经计划任务在登录桌面会话里跑，见release-process.md第5、6步。

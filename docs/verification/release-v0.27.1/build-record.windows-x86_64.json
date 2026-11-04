@@ -1,0 +1,64 @@
+{
+  "target": "windows-x86_64",
+  "version": "0.27.1",
+  "buildId": "20261104091052",
+  "source": {
+    "commit": "15751d9644db2fd3f27561433222188a3181e124",
+    "baseline": "cebc55aab4d2661d1f6c2d1526362947ec4016c1",
+    "l10n": "53be390d96a531cf526f5db0fa83c02f12465abb"
+  },
+  "mozconfig": {
+    "file": "configs/mozconfig.windows-x64",
+    "sha256": "60b5e070d0c136e7b84a4d2eb8675e227d72b36a692dd66321c6360e578205b0",
+    "effectiveSha256": "4fe61f713c75d037b049ef4e6ad488997623f8267e20532c5a07c174b833fac2"
+  },
+  "configure": {
+    "target": "x86_64-pc-mingw32",
+    "host": "x86_64-pc-linux-gnu",
+    "options": [
+      "--enable-application=browser",
+      "--target=x86_64-pc-windows-msvc",
+      "MOZBUILD_STATE_PATH=<path>",
+      "--disable-tests",
+      "--enable-release",
+      "--enable-bootstrap=no-update",
+      "--with-redist",
+      "MOZ_SOURCE_REPO=https://github.com/WhiteNightShadow/firefox-reverse",
+      "MOZ_SOURCE_CHANGESET=15751d9644db2fd3f27561433222188a3181e124",
+      "RUSTC=<path>",
+      "CARGO=<path>",
+      "--with-l10n-base=<path>",
+      "--disable-backgroundtasks",
+      "--disable-updater",
+      "--disable-default-browser-agent",
+      "--with-branding=browser/branding/unofficial",
+      "--disable-crashreporter"
+    ]
+  },
+  "toolchain": {
+    "cc": "clang-cl",
+    "ccVersion": "20.1.8",
+    "rustcVersion": "1.95.0"
+  },
+  "host": {
+    "system": "Linux",
+    "release": "6.8.0-147-generic",
+    "machine": "x86_64",
+    "cpus": 10,
+    "memoryBytes": 25145835520,
+    "python": "3.12.3"
+  },
+  "outputs": [
+    {
+      "name": "firefox-reverse-v0.27.1-windows-x86_64.zip",
+      "size": 132678157,
+      "sha256": "ccfe1f11687548a191c41b7cf04a38514b5b715900140f9e74df7ada54e9c7a3"
+    },
+    {
+      "name": "firefox-reverse-v0.27.1-windows-x86_64-installer.exe",
+      "size": 86930252,
+      "sha256": "c21d3860bf3616c09ff6c9ad44a96fd15d584e3235d534d4f50f29435cc7895c"
+    }
+  ],
+  "recordedAt": "2026-11-04T11:21:11Z"
+}
