@@ -64,9 +64,11 @@ OUT=$(cd "$OUT" && pwd)
 
 OPTS=(-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 ${SSH_OPTIONS[@]+"${SSH_OPTIONS[@]}"})
 # Remote PowerShell through -EncodedCommand (UTF-16LE base64): no quoting trouble, whatever the ssh default shell is.
+# Progress records are switched off: over ssh they arrive as CLIXML on stderr and bury the real output.
 remote() {
   local encoded
-  encoded=$(printf '%s' "$1" | iconv -t UTF-16LE | base64 | tr -d '\n')
+  encoded=$(printf '%s' "\$ProgressPreference = 'SilentlyContinue'
+$1" | iconv -t UTF-16LE | base64 | tr -d '\n')
   ssh "${OPTS[@]}" -p "$PORT" "$SSH_TARGET" "powershell -NoProfile -NonInteractive -EncodedCommand $encoded"
 }
 SCP_ROOT=$(printf '%s' "$ROOT" | tr '\\' '/')
@@ -79,7 +81,8 @@ echo "=== payload"
 git init -q "$WORK/repo" && git -C "$WORK/repo" fetch -q --depth 1 "file://$REPO" "$COMMIT" && git -C "$WORK/repo" checkout -q FETCH_HEAD \
   || die "cannot check out $COMMIT from $REPO"
 cp "$BUNDLE" "$WORK/repo/additions/browser/components/agent-sidebar/content/agent-sidebar.bundle.js"
-tar -cf "$WORK/repo.tar" -C "$WORK" repo
+# COPYFILE_DISABLE: macOS tar would add ._* AppleDouble files for extended attributes, which git then trips over.
+COPYFILE_DISABLE=1 tar -cf "$WORK/repo.tar" -C "$WORK" repo
 mkdir -p "$WORK/mcp" && cp -R "$MCP_ROOT/dist" "$MCP_ROOT/package.json" "$WORK/mcp/"
 echo "repo $(git -C "$WORK/repo" rev-parse --short HEAD), $(du -h "$WORK/repo.tar" | cut -f1); package $NAME $SHA"
 
@@ -114,7 +117,7 @@ ARGS="-NoProfile -ExecutionPolicy Bypass -File \"$ROOT\\release-accept-windows.p
 [ -n "$NODE_DIR" ] && ARGS+=" -NodeDir \"$NODE_DIR\""
 remote "Unregister-ScheduledTask -TaskName FrxReleaseAccept -Confirm:\$false -ErrorAction SilentlyContinue
 \$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $(psq "$ARGS") -WorkingDirectory $(psq "$ROOT")
-\$principal = New-ScheduledTaskPrincipal -UserId (\$env:USERDOMAIN + '\\' + \$env:USERNAME) -LogonType Interactive -RunLevel Limited
+\$principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 \$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes $((TIMEOUT_MIN + 30))) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName FrxReleaseAccept -Action \$action -Principal \$principal -Settings \$settings -Force | Out-Null
 Start-ScheduledTask -TaskName FrxReleaseAccept" || die "cannot start the scheduled task"
