@@ -64,6 +64,25 @@ const { setTimeout: _setTimeout, clearTimeout: _clearTimeout } = (() => {
   return { setTimeout: () => 0, clearTimeout: () => {} }; // 兜底：无定时器 → 不超时
 })();
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * 请求体序列化。字符串里的孤立代理项（半个 emoji——按下标截断长文本时会留下）换成 U+FFFD：
+ * JSON.stringify 会把它写成 \udXXX 转义，JSON 校验严格的服务端会把整个请求拒掉（400），
+ * 而那段文本之后每次请求都还带着，这个会话就一直报错。
+ */
+export function bodyJson(body) {
+  return JSON.stringify(body, (key, value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    if (typeof value.isWellFormed === "function") {
+      return value.isWellFormed() ? value : value.toWellFormed();
+    }
+    return value.replace(LONE_SURROGATE, "\uFFFD");
+  });
+}
+
 /** 带 HTTP 状态与响应体的错误类型，便于 UI 区分网络错误 / 鉴权错误 / 解析错误。 */
 export class LlmError extends Error {
   constructor(message, { status, body, cause } = {}) {
@@ -279,7 +298,7 @@ export class LlmClient {
               requireSession: true,
             }),
           },
-          body: JSON.stringify(body),
+          body: bodyJson(body),
         },
       };
     }
@@ -341,7 +360,7 @@ export class LlmClient {
               requireSession: true,
             }),
           },
-          body: JSON.stringify(body),
+          body: bodyJson(body),
         },
       };
     }
@@ -391,7 +410,7 @@ export class LlmClient {
             "Content-Type": "application/json",
             "x-goog-api-key": this.apiKey,
           },
-          body: JSON.stringify(body),
+          body: bodyJson(body),
         },
       };
     }
@@ -444,7 +463,7 @@ export class LlmClient {
               requireSession: true,
             }),
           },
-          body: JSON.stringify(body),
+          body: bodyJson(body),
         },
       };
     }

@@ -68,6 +68,12 @@ function _similarSql() {
   return true;
 }
 
+// 压缩时的自动沉淀（mergeHandoff）：一份交接账本最多解析这么多条；一次沉淀每类最多新写入这么多条。
+// 交接账本是逐次累积的（旧结论照抄在前、新结论接在后），所以先去掉库里已有的再限量——按出现顺序取前若干条的话，
+// 账本一长，名额全被早就入库的旧条目占掉，新确认的事实和排在后面的「已否决假设」一条都进不了库。
+const MERGE_PARSE_MAX = 400;
+const MERGE_NEW_PER_KIND = 40;
+
 function agentWin(ctx) {
   try { const w = ctx && ctx.win; if (w && w.gBrowser && !w.closed) return w; } catch {}
   return Services.wm.getMostRecentWindow("navigator:browser");
@@ -201,8 +207,15 @@ export class LedgerBackend {
     }
   }
 
-  /** 内部：并入若干条（去重 + 每(站点,类型)封顶 + 渲染镜像）。返回 {added, dedup}。 */
-  async _addMany(items, ctx) {
+  /**
+   * 内部：并入若干条（去重 + 每(站点,类型)封顶 + 渲染镜像）。返回 {added, dedup, unchanged}。
+   * 默认（remember）：和库里某条相同、或互为子串的近重复 → 删旧留新，模型改了说法就以新的为准。
+   * additive（压缩时的自动沉淀）：只增不减——库里已有相同的、或更完整的一条就跳过，不删也不重插；
+   *   只有新的这条更完整（包含旧的）才替换。自动抽出来的条目可能不如库里的完整，不能拿它顶掉完整的结论；
+   *   原样重插还会把这些行的 id 刷成最新，库满时被淘汰的就成了 remember 记下的那些。
+   * maxNewPerKind：每类最多新写入多少条。
+   */
+  async _addMany(items, ctx, { additive = false, maxNewPerKind = Infinity } = {}) {
     const db = await this._db();
     const site = this.currentSite(ctx);
     const ws = (ctx && ctx.workspaceRoot) || "";   // 只记会话绑定目录（不退回全局 _root，避免把别的会话目录写进标签）
@@ -210,12 +223,17 @@ export class LedgerBackend {
     const ts = new Date().toISOString().slice(0, 10);
     let added = 0;
     let dedup = 0;
+    let unchanged = 0;
+    const written = { fact: 0, deadend: 0 };
     for (const it of items) {
       const t = String(it.text || "").trim();
       if (!t) {
         continue;
       }
       const kind = it.kind === "deadend" ? "deadend" : "fact";
+      if (written[kind] >= maxNewPerKind) {
+        continue;
+      }
       const text = t.slice(0, 500);
       const ev = String(it.evidence || it.ev || "").trim().slice(0, 300);
       const norm = _norm(text);
@@ -225,6 +243,7 @@ export class LedgerBackend {
         ? await db.execute(scopeSql.selectExisting, { k: kind, v: sc.val })
         : [];
       const dropIds = [];
+      let covered = false; // additive：库里已经有相同的，或包含这一条的更完整的一条
       for (const r of existing) {
         const en = r.getResultByName("norm") || "";
         if (!en) {
@@ -232,8 +251,16 @@ export class LedgerBackend {
         }
         const [a, b] = norm.length <= en.length ? [norm, en] : [en, norm];
         if (norm === en || (a.length >= 12 && b.includes(a))) {
+          if (additive && norm.length <= en.length) {
+            covered = true;
+            break;
+          }
           dropIds.push(r.getResultByName("id"));
         }
+      }
+      if (covered) {
+        unchanged++;
+        continue;
       }
       if (dropIds.length) {
         // SQL 只按可信数量生成问号；全部 ID 一次绑定，保留原有单语句原子性。
@@ -244,6 +271,7 @@ export class LedgerBackend {
         "INSERT INTO mem(site,workspace,kind,text,ev,ts,norm) VALUES(:s,:w,:k,:t,:e,:ts,:n)",
         { s: site, w: ws, k: kind, t: text, e: ev, ts, n: norm }
       );
+      written[kind]++;
       if (!dropIds.length) {
         added++;
       }
@@ -257,7 +285,7 @@ export class LedgerBackend {
       }
     }
     await this._renderMd(ctx);
-    return { added, dedup };
+    return { added, dedup, unchanged };
   }
 
   async _counts(ctx) {
@@ -371,6 +399,7 @@ export class LedgerBackend {
   /**
    * 压缩时的**自动捕获安全网**：从 LLM 交接摘要里抽"已确认事实/已否决假设"两节的 bullet，并入记忆库（去重）。
    * 即便 Agent 没主动 remember，每次压缩也把确认结论沉淀进库——把"压缩能力"沉淀下来不衰减。
+   * 只增不减（见 _addMany 的 additive）。调用方只应传模型这一次写出来的账本，不要传机械记录或引用的对话。
    */
   async mergeHandoff(handoffText, ctx) {
     const text = String(handoffText || "");
@@ -379,6 +408,7 @@ export class LedgerBackend {
     }
     let sec = null;
     const items = [];
+    const seen = new Set();
     for (const ln of text.split("\n")) {
       const h = ln.match(/^\s*#{1,4}\s*(.+?)\s*$/);
       if (h) {
@@ -393,11 +423,13 @@ export class LedgerBackend {
       const b = ln.match(/^\s*[-*]\s+(.+?)\s*$/);
       if (b && sec) {
         const t = b[1].trim();
-        if (t.length >= 4) {
+        const key = sec + "|" + _norm(t);
+        if (t.length >= 4 && !seen.has(key)) {
+          seen.add(key);
           items.push({ kind: sec, text: t });
         }
       }
-      if (items.length >= 40) {
+      if (items.length >= MERGE_PARSE_MAX) {
         break;
       }
     }
@@ -405,8 +437,8 @@ export class LedgerBackend {
       return { ok: true, added: 0 };
     }
     try {
-      const r = await this._addMany(items, ctx);
-      return { ok: true, added: r.added, dedup: r.dedup };
+      const r = await this._addMany(items, ctx, { additive: true, maxNewPerKind: MERGE_NEW_PER_KIND });
+      return { ok: true, added: r.added, dedup: r.dedup, unchanged: r.unchanged };
     } catch {
       return { ok: false };
     }

@@ -57,6 +57,10 @@ r2.register({ name: "big", handler: async () => "x".repeat(500) });
 ok((await r2.dispatch("boom", {})).error === "kaboom", "handler 抛错 → 兜成 ok:false error");
 const bigEnv = await r2.dispatch("big", {});
 ok(bigEnv.ok && bigEnv.data._truncated && bigEnv.meta.truncated, "超大结果 → 截断标记");
+ok(!("ok" in bigEnv.data), "成功的超大结果：截断后不带 ok 字段");
+r2.register({ name: "bigfail", handler: async () => ({ ok: false, exitCode: 1, output: "x".repeat(500) }) });
+const bigFail = await r2.dispatch("bigfail", {});
+ok(bigFail.data._truncated && bigFail.data.ok === false, "返回值里 ok:false 的超大结果：截断后仍然看得出是失败");
 
 console.log("[3] AgentLoop tool_use 闭环（mock LLM）");
 let sawTools = false;

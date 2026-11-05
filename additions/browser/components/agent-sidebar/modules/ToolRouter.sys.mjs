@@ -147,11 +147,13 @@ export class ToolRouter {
       return attach({ ok: true, data: String(data) });
     }
     if (str !== undefined && str.length > this.maxChars) {
-      return attach({
-        ok: true,
-        data: { _truncated: true, total_chars: str.length, preview: str.slice(0, this.maxChars) },
-        meta: { truncated: true },
-      });
+      const truncated = { _truncated: true, total_chars: str.length, preview: str.slice(0, this.maxChars) };
+      // 很多工具用返回值里的 ok:false 报失败（脚本退出码非 0 等）。截断后也要看得出来，
+      // 否则输出很大的失败会被当成成功（AgentLoop 的失败判定看的就是这个字段）。
+      if (data && typeof data === "object" && !Array.isArray(data) && data.ok === false) {
+        truncated.ok = false;
+      }
+      return attach({ ok: true, data: truncated, meta: { truncated: true } });
     }
     return attach({ ok: true, data });
   }
