@@ -38,6 +38,7 @@ SELFTESTS=(
   selftest-ledger-sql.mjs
   selftest-context-projection.mjs
   selftest-context-runtime.mjs
+  selftest-loop-guard.mjs
   selftest-skills.mjs
   selftest-stream.mjs
   selftest-retry.mjs

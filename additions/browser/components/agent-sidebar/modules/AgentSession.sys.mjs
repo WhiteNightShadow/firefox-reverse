@@ -6,7 +6,7 @@
  * done/error 时**自己**把最终/中断消息落 ConversationStore。UI 变薄：mount 时若本线程仍在跑就
  * 恢复 steps+busy 并订阅续看；不在场也不影响——引擎照跑、结果照存。
  */
-import { runAgentTurn } from "./AgentLoop.sys.mjs";
+import { createRunState, runAgentTurn } from "./AgentLoop.sys.mjs";
 import { ToolRouter } from "./ToolRouter.sys.mjs";
 import { createBuiltinTools } from "./Tools.sys.mjs";
 import { getBackends } from "./Backends.sys.mjs";
@@ -520,7 +520,8 @@ export const agentSession = {
       // aborted），或安全网触发。免去用户反复手按"继续"。
       const NON_TERMINAL = new Set(["max_rounds", "drift"]);
       const MAX_AUTO_RESTARTS = 24; // 8→24：长逆向任务的天花板别太低（24×120≈2880 轮）。只作防无限空转的最终兜底，
-      // 真正的空转由 A2 同参同结果熔断 + 连续失败护栏 + drift 拦；任务在做实事就让它一直跑。
+      // 真正的空转由 A2 同参同结果熔断 + 连续失败护栏 + drift 拦，从头重做已完成的分析由跨回合的循环检测拦
+      // （提醒后仍在重复就停，stopReason=loop）；任务在做实事就让它一直跑。
       let turnMsgs = Array.isArray(convo) ? convo : [];
       try {
         const thread = await conversationStore.getThread(threadId);
@@ -593,6 +594,10 @@ export const agentSession = {
       let autoRestarts = 0;
       let driftStreak = 0;
       let res;
+      // 本次执行的所有回合共用一份状态：自动续跑会重置每回合的计数，但「这一步之前做过、结果一样」、
+      // 最近一份进展存档、用户发的那条任务（任务锚点）都要跨回合记着——否则续跑后一压缩，上一回合的工作
+      // 和任务本身都会从上下文里消失，从头重做一遍分析也看不出来。
+      const runState = createRunState();
       for (;;) {
       res = await runAgentTurn({
         client,
@@ -600,6 +605,7 @@ export const agentSession = {
         messages: turnMsgs,
         systemPrompt,
         dynamicContext,
+        runState,
         autoApprove: !confirmMode,
         assist, // AI辅助模式：无工具纯文字回复=正常收尾（停下给方向），不 drift 逼它继续
         vision,
@@ -688,7 +694,7 @@ export const agentSession = {
           : undefined,
       });
       const _reason = (res && res.stopReason) || "stop";
-      // 真结束（final/aborted/error）或被手动停 → 跳出收尾，等用户。
+      // 真结束（final/loop/aborted/error）或被手动停 → 跳出收尾，等用户。loop=循环检测提醒后仍在重复，不自动续跑。
       // AI辅助模式：每个 turn 结束都交回用户（不跨回合自动续）——阶段做完就停、等用户选方向。
       if (ac.signal.aborted || assist || !NON_TERMINAL.has(_reason)) {
         break;

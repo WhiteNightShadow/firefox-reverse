@@ -16,6 +16,7 @@ const conversationStore = {
 };
 const imports = {
   "./AgentLoop.sys.mjs": {
+    createRunState: () => ({ calls: new Map() }),
     async runAgentTurn(options) {
       calls.push(options.systemPrompt);
       if (restart) {

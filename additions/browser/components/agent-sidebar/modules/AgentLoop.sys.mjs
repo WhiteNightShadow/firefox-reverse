@@ -61,10 +61,272 @@ const REASONING_FEEDBACK_CAP = 1200;
 // trace start/stop/clear 开关、page_eval 触发请求/取不同时刻的值、page_click 交互。误把它们当空转拦掉，
 // 会逼模型绕路（实测踩到）。真正该熔断的是**纯只读查询**（jsvmp_query/net_list/fs_list/code_search…）反复拿同一结果。
 
+/** 32 位 FNV-1a，返回 8 位十六进制。用于工具结果摘要和「完全相同的参数」判定，不做安全用途。 */
+function _hash(text) {
+  const s = String(text);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/** 键按字母序的 JSON：模型给参数时键的先后不固定，同样的参数要得到同一个串。 */
+function _stableJson(value) {
+  if (Array.isArray(value)) {
+    return "[" + value.map(_stableJson).join(",") + "]";
+  }
+  if (value && typeof value === "object") {
+    return (
+      "{" +
+      Object.keys(value)
+        .sort()
+        .map(k => JSON.stringify(k) + ":" + _stableJson(value[k]))
+        .join(",") +
+      "}"
+    );
+  }
+  const s = JSON.stringify(value);
+  return s === undefined ? "null" : s;
+}
+
+/** 超长文本留头和尾、中间标出省略了多少。headShare 是头部占比；最新进展通常在尾部，所以多数调用给尾部更多。
+ *  asHeading：省略标记写成 markdown 标题。存档里按标题分节的内容被截开后，尾部不能再算进截断前的那一节。 */
+function _clip(text, max, headShare = 0.3, asHeading = false) {
+  const s = String(text || "");
+  if (s.length <= max) {
+    return s;
+  }
+  const marker = `\n${asHeading ? "## " : ""}…（中间省略约 ${s.length - max} 字）…\n`;
+  const room = Math.max(0, max - marker.length);
+  const head = Math.floor(room * headShare);
+  return s.slice(0, head) + marker + s.slice(s.length - (room - head));
+}
+
+/** 给人看的一次调用：工具名 + 截短的参数，用在重复提示和循环提示里。 */
+function _callLabel(name, args) {
+  let a = "";
+  try {
+    a = JSON.stringify(args || {});
+  } catch {
+    a = String(args);
+  }
+  return `${name} ${a.length > 80 ? a.slice(0, 80) + "…" : a}`;
+}
+
+// 循环检测（跨压缩、跨自动续跑）：最近 LOOP_WINDOW 次计入的工具调用里，有 LOOP_REPEATS 次以上是
+// 「之前用完全相同的参数做过、结果也完全相同」的调用，就当作在从头重做已完成的分析。第一次注入提醒；
+// 提醒后的下一个窗口仍是这样就停下本轮，交给用户（不再自动续跑）。窗口里重复不超过 LOOP_RECOVERED 次算已恢复。
+const LOOP_WINDOW = 12;
+const LOOP_REPEATS = 8;
+const LOOP_RECOVERED = 3;
+// 记住的调用条数上限（按最近使用淘汰），只放摘要和计数，不放结果本身。
+const LOOP_CALLS_CAP = 600;
+
+/**
+ * 一次自主执行（含自动续跑的多个回合）共用的状态。AgentSession 每次 run 建一个，传给每个 runAgentTurn；
+ * 不传时 runAgentTurn 自己建一个，只在本回合内有效。
+ */
+export function createRunState() {
+  return {
+    calls: new Map(), // 工具名+参数摘要 → { fp, count, lastSeq, epoch }
+    seq: 0, // 计入循环检测的工具调用序号（跨回合累加）
+    epoch: 0, // 上下文压缩次数：用来告诉模型「这次调用在上次压缩之前就做过」
+    window: [], // 最近计入的调用：{ name, label, repeat }
+    level: 0, // 0=正常，1=已提醒过
+    lastCheckpoint: "", // 最近一份进展存档，下次压缩时并进交接账本，交接账本没生成出来时也带上
+    anchor: null, // 任务锚点（msgs 里的那个消息对象）：自动续跑的回合靠它认出用户发的任务，不把引擎加的续跑提示当任务
+    userNotes: [], // 锚点之前的用户消息原文，压缩后附在续跑说明里
+  };
+}
+
+function _isRunState(state) {
+  return (
+    !!state &&
+    typeof state === "object" &&
+    !!state.calls &&
+    typeof state.calls.get === "function" &&
+    Array.isArray(state.window) &&
+    Array.isArray(state.userNotes)
+  );
+}
+
+/** 记一次计入循环检测的调用。和之前参数完全相同、结果也完全相同时返回 { count, ago, beforeCompaction }，否则 null。
+ *  blocked=被 A2 拒绝执行（没有结果），直接算一次重复。 */
+function _trackCall(run, name, args, fp, blocked) {
+  run.seq++;
+  const label = _callLabel(name, args);
+  let repeat = null;
+  if (blocked) {
+    run.window.push({ name, label, repeat: true });
+  } else {
+    let argsText;
+    try {
+      argsText = _stableJson(args || {});
+    } catch {
+      argsText = String(args);
+    }
+    const key = name + "|" + argsText.length + ":" + _hash(argsText);
+    const seen = run.calls.get(key);
+    run.calls.delete(key); // 删了再放回去 = 移到最近使用的一端
+    if (seen && seen.fp === fp) {
+      repeat = { count: seen.count, ago: run.seq - seen.lastSeq, beforeCompaction: seen.epoch < run.epoch };
+      seen.count++;
+      seen.lastSeq = run.seq;
+      run.calls.set(key, seen);
+    } else {
+      run.calls.set(key, { fp, count: 1, lastSeq: run.seq, epoch: run.epoch });
+      if (run.calls.size > LOOP_CALLS_CAP) {
+        run.calls.delete(run.calls.keys().next().value);
+      }
+    }
+    run.window.push({ name, label, repeat: !!repeat });
+  }
+  if (run.window.length > LOOP_WINDOW) {
+    run.window.splice(0, run.window.length - LOOP_WINDOW);
+  }
+  return repeat;
+}
+
+/** 窗口满了才判断。返回 { action: "warn"|"stop", repeats, examples, tools } 或 null。
+ *  examples 带参数，只给模型看；tools 只有工具名，写进给用户看的停止说明。 */
+function _loopVerdict(run) {
+  if (run.window.length < LOOP_WINDOW) {
+    return null;
+  }
+  const repeated = run.window.filter(x => x.repeat);
+  if (repeated.length >= LOOP_REPEATS) {
+    const verdict = {
+      action: run.level >= 1 ? "stop" : "warn",
+      repeats: repeated.length,
+      examples: [...new Set(repeated.map(x => x.label))].slice(0, 6),
+      tools: [...new Set(repeated.map(x => x.name))].slice(0, 4),
+    };
+    run.level = verdict.action === "warn" ? 1 : 0;
+    run.window = [];
+    return verdict;
+  }
+  if (run.level >= 1 && repeated.length <= LOOP_RECOVERED) {
+    run.level = 0; // 提醒之后恢复了正常推进
+  }
+  return null;
+}
+
+// 压缩后放在进展存档后面的续跑说明。也用它在对话里找上一次压缩的位置（自动续跑后的回合里是上一回合留下的），
+// 所以正文固定，要附加的内容只往后接。
+const COMPACT_NOTE =
+  "（上面是你已完成的【进展存档】——已确认的事实 / 已做过的工具调用及结果 / 下一步都在里面，也已落盘 progress.md。" +
+  "**铁律：存档里已经做过的事一律不要重做——别重新调用任何已调用过的工具、别重测已测过的项、别重新 list/搜索/抓包去发现已确认的信息。" +
+  "若任务是清单且某些项已在存档里有结果，直接拿那些结果继续或汇总，绝不重跑。**" +
+  "只在需要某个具体旧细节时才 fs_read 对应文件。现在只做存档里「下一步」指向的、尚未完成的动作。）";
+
+// 压缩后保留的用户原话：每条和总量的上限（字符）。
+const USER_NOTE_CHARS = 1500;
+const USER_NOTES_CHARS = 6000;
+const USER_NOTES_LABEL = "【用户此前的消息（原话，按时间先后；最新的一条是最上面的任务消息，有冲突以最新的为准）】";
+
+function textOfContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter(b => b && b.type === "text" && typeof b.text === "string")
+      .map(b => b.text)
+      .join("\n");
+  }
+  return "";
+}
+
+/** 把锚点之前的用户消息原文记进 run.userNotes（去重、每条限长）。引擎自己加的提醒和续跑说明不算用户的话。
+ *  锚点是「继续」这类短消息时，真正的任务和中途给的限制条件都在这些消息里，压缩后不能只剩一句「继续」。 */
+function collectUserNotes(run, earlier) {
+  for (const m of earlier || []) {
+    if (!m || m.role !== "user") continue;
+    const text = textOfContent(m.content).trim();
+    if (!text || text.startsWith("（系统") || text.startsWith(COMPACT_NOTE)) continue;
+    const note = _clip(text, USER_NOTE_CHARS, 0.7);
+    if (!run.userNotes.includes(note)) {
+      run.userNotes.push(note);
+    }
+  }
+}
+
+/** 编号列出用户消息；超出总量时留第一条和最新的几条，中间标出略了几条。 */
+function formatUserNotes(notes, maxChars = USER_NOTES_CHARS) {
+  if (!notes.length) {
+    return "";
+  }
+  const picked = notes.map((_, i) => i === 0);
+  let used = notes[0].length;
+  for (let i = notes.length - 1; i > 0 && used + notes[i].length <= maxChars; i--) {
+    picked[i] = true;
+    used += notes[i].length;
+  }
+  const lines = [];
+  let skipped = 0;
+  notes.forEach((note, i) => {
+    if (!picked[i]) {
+      skipped++;
+      return;
+    }
+    if (skipped) {
+      lines.push(`…（中间 ${skipped} 条略）…`);
+      skipped = 0;
+    }
+    lines.push(`${i + 1}. ${note}`);
+  });
+  return lines.join("\n");
+}
+
+/** 把一段消息拍平成纯文本（避免把 tool_calls/tool 消息原样喂给无 tools 的摘要调用引发协议问题）。 */
+function transcriptOf(list) {
+  const lines = [];
+  for (const m of list || []) {
+    if (!m) continue;
+    if (m.role === "assistant") {
+      if (m.content && String(m.content).trim()) lines.push("[助手] " + String(m.content).trim());
+      if (Array.isArray(m.tool_calls)) {
+        for (const tc of m.tool_calls) {
+          const n = tc && tc.function && tc.function.name;
+          const a = tc && tc.function && tc.function.arguments;
+          if (n) lines.push("[调用] " + n + (a ? " " + String(a).slice(0, 160) : ""));
+        }
+      }
+    } else if (m.role === "tool") {
+      lines.push("[结果] " + String(m.content == null ? "" : m.content).slice(0, 700));
+    } else if (m.role === "user") {
+      lines.push("[用户] " + textOfContent(m.content));
+    }
+  }
+  return lines.join("\n");
+}
+
+/** 去掉存档里「当前阶段 + 下一步」那一节（交接账本骨架的最后一节）：那是当时的下一步，原样带进新存档
+ *  会让模型去重做之后已经做完的事。只认以「当前阶段」或「下一步」开头的标题，别的标题里提到这个词不算。 */
+function _withoutNextStep(text) {
+  const kept = [];
+  let skipping = false;
+  for (const line of String(text || "").split("\n")) {
+    const heading = /^\s*#{1,6}\s+(.*)$/.exec(line);
+    if (heading) {
+      skipping = /^(当前阶段|下一步)/.test(heading[1].trim());
+    }
+    if (!skipping) {
+      kept.push(line);
+    }
+  }
+  return kept.join("\n").trim();
+}
+
 /** 机械构建进展存档（零额外 LLM 调用、确定性、有界）：工具账本 + 最近的文字叙述 + 最近一步结果摘要。
  *  fromIdx 后扫描——把模型自己的"做了什么/下一步"叙述 + 工具调用清单折成一段，老的原始 trace/输出
- *  留在工作目录文件里（要细节 fs_read）。压缩后续跑只带这段，不带原始大堆历史。 */
-function buildCheckpointSummary(msgs, fromIdx) {
+ *  留在工作目录文件里（要细节 fs_read）。压缩后续跑只带这段，不带原始大堆历史。
+ *  previous 是上一份存档，earlier 是任务锚点之前的对话：交接账本没生成出来时要带上，否则之前确认过的结论
+ *  会在这次压缩里全部丢掉。各节用 markdown 标题分开——账本的自动沉淀（LedgerBackend.mergeHandoff）按标题
+ *  认「已确认事实 / 已否决假设」两节，机械记录里的叙述不能被算进上一节。 */
+function buildCheckpointSummary(msgs, fromIdx, { previous = "", earlier = [] } = {}) {
   const narration = [];
   const toolCounts = {};
   let lastToolResult = "";
@@ -83,16 +345,33 @@ function buildCheckpointSummary(msgs, fromIdx) {
       lastToolResult = typeof m.content === "string" ? m.content : "";
     }
   }
-  const ledger =
+  const ledger = _clip(
     Object.entries(toolCounts)
       .map(([n, c]) => (c > 1 ? `${n}×${c}` : n))
-      .join("、") || "（无）";
-  const recent = narration.slice(-4).join("\n").slice(0, 2600) || "（暂无文字记录）";
+      .join("、") || "（无）",
+    800,
+    1
+  );
+  // 最近的叙述在尾部，截断时保尾。
+  const recent = _clip(narration.slice(-4).join("\n"), 2600, 0.2) || "（暂无文字记录）";
   const tail = lastToolResult ? `\n\n最近一步工具结果(截断)：${lastToolResult.slice(0, 500)}` : "";
-  const body =
-    `【进展存档·自动压缩】\n已调用工具：${ledger}\n\n进展记录：\n${recent}${tail}\n\n` +
-    `（以上为已压缩的早前过程；完整 trace/脚本/产物都在工作目录文件里，需要细节用 fs_read 读对应文件。）`;
-  return body.slice(0, 4000);
+  const sections = [];
+  const carried = _withoutNextStep(previous);
+  if (carried) {
+    sections.push(
+      "## 之前的存档（当时记下的结论仍然有效；接下来做什么，以下面的最近进展为准）\n" + _clip(carried, 6000, 0.7, true)
+    );
+  }
+  const before = transcriptOf(earlier).trim();
+  if (before) {
+    sections.push("## 此前对话的结尾（节选）\n" + _clip(before, 3000, 0.1, true));
+  }
+  sections.push(`## 这一段的机械记录\n已调用工具：${ledger}\n\n进展记录：\n${recent}${tail}`);
+  return (
+    "【进展存档·自动压缩】\n" +
+    sections.join("\n\n") +
+    "\n\n（以上为已压缩的早前过程；完整 trace/脚本/产物都在工作目录文件里，需要细节用 fs_read 读对应文件。）"
+  );
 }
 
 // LLM 交接摘要的系统提示：要的是"让全新无记忆的自己能直接接手"，所以必须写死**已确认事实**，
@@ -111,52 +390,70 @@ const HANDOFF_PROMPT = `你在为"上下文压缩"写 **Findings Ledger（交接
 ## 当前阶段 + 下一步
 - 阶段(P0侦察/P1定位/P2验证锁定/P3判型/P4选策略/P5补环境/P6验证) + 该阶段退出标准
 - 下一步：**单条、具体、直接指向当前退出标准**（具体到工具名+参数）
+输入里可能有【上一份进展存档】和【本轮之前的对话】：其中的已确认事实、已否决假设只要仍然成立，就要原样并进新账本，别因为最新记录里没再提到就丢掉；目标定义要保留【用户的消息】里的要求和限制条件。「当前阶段 + 下一步」以执行记录**最后**的部分为准，那是最新进展。
 只输出这份账本本身，不要调用工具、不要寒暄、不要复述本提示。`;
 
-/** 把本回合的执行记录拍平成纯文本（避免把 tool_calls/tool 消息原样喂给无 tools 的摘要调用引发协议问题）。 */
-function segmentTranscript(msgs, fromIdx) {
-  const lines = [];
-  for (let i = Math.max(0, fromIdx); i < msgs.length; i++) {
-    const m = msgs[i];
-    if (!m) continue;
-    if (m.role === "assistant") {
-      if (m.content && String(m.content).trim()) lines.push("[助手] " + String(m.content).trim());
-      if (Array.isArray(m.tool_calls)) {
-        for (const tc of m.tool_calls) {
-          const n = tc && tc.function && tc.function.name;
-          const a = tc && tc.function && tc.function.arguments;
-          if (n) lines.push("[调用] " + n + (a ? " " + String(a).slice(0, 160) : ""));
-        }
-      }
-    } else if (m.role === "tool") {
-      lines.push("[结果] " + String(m.content == null ? "" : m.content).slice(0, 700));
-    } else if (m.role === "user") {
-      lines.push("[用户] " + (typeof m.content === "string" ? m.content : ""));
-    }
+// 交接摘要输入的各段上限（字符）。执行记录保尾：最新进展和真正的「下一步」都在最后。
+const HANDOFF_SEGMENT_CHARS = 60000;
+const HANDOFF_EARLIER_CHARS = 24000;
+const HANDOFF_PREVIOUS_CHARS = 16000;
+const HANDOFF_MAX_TOKENS = 4096;
+// 交接摘要被长度截断时，至少有这么长才拿来用（再补一段机械记录）；更短的当没生成出来。
+const HANDOFF_PARTIAL_MIN = 400;
+
+/**
+ * 交接摘要的输入：用户的消息原文 + 任务锚点之前的对话（历史投影、前几轮的结论）+ 上一份存档 + 之后的执行记录。
+ * 以前只取锚点之后执行记录的前 6 万字：记录一长，最新的那部分（真正的「下一步」）就没给摘要模型看；
+ * 锚点之前的内容和上一份存档也不在输入里，压缩后接手的模型只好从头再来。
+ */
+function buildHandoffSource({ userNotes = [], task = "", earlier = [], previous = "", segment = [] }) {
+  const parts = [];
+  const said = userNotes.slice();
+  const request = _clip(String(task || "").trim(), USER_NOTE_CHARS * 2, 0.7);
+  if (request) {
+    said.push(request);
   }
-  return lines.join("\n").slice(0, 60000);
+  if (said.length) {
+    parts.push(
+      "【用户的消息（原话，按时间先后；最后一条是当前任务）】\n" + formatUserNotes(said, USER_NOTES_CHARS + request.length)
+    );
+  }
+  const before = transcriptOf(earlier);
+  if (before.trim()) {
+    parts.push("【本轮之前的对话（节选）】\n" + _clip(before, HANDOFF_EARLIER_CHARS, 0.5));
+  }
+  if (String(previous || "").trim()) {
+    parts.push("【上一份进展存档】\n" + _clip(String(previous).trim(), HANDOFF_PREVIOUS_CHARS, 0.7));
+  }
+  const after = transcriptOf(segment);
+  if (after.trim()) {
+    parts.push("【之后的执行记录（最新的在最后）】\n" + _clip(after, HANDOFF_SEGMENT_CHARS, 0.25));
+  }
+  return parts.join("\n\n");
 }
 
-/** 让模型把本回合执行记录浓缩成结构化交接摘要（单次 chat、无 tools、输出短）。 */
-async function summarizeForHandoff(client, msgs, fromIdx, signal, onUsage, cacheKey) {
-  const transcript = segmentTranscript(msgs, fromIdx);
-  if (!transcript) return "";
+/** 让模型把执行记录浓缩成结构化交接摘要（单次 chat、无 tools、输出短）。返回 { text, truncated }。 */
+async function summarizeForHandoff(client, source, signal, onUsage, cacheKey) {
+  if (!source) {
+    return { text: "", truncated: false };
+  }
   const res = await client.chat(
     [
       { role: "system", content: HANDOFF_PROMPT },
-      { role: "user", content: "以下是迄今的执行记录，据此输出交接摘要：\n\n" + transcript },
+      { role: "user", content: "以下是迄今的执行记录，据此输出交接账本：\n\n" + source },
     ],
     // auxiliary：少思考、给输出留足余量（推理模型的思考 token 也算在 maxTokens 里）。
-    { signal, maxTokens: 2048, auxiliary: true, cacheKey: cacheKey ? cacheKey + ":handoff" : "" }
+    { signal, maxTokens: HANDOFF_MAX_TOKENS, auxiliary: true, cacheKey: cacheKey ? cacheKey + ":handoff" : "" }
   );
   try {
     onUsage && onUsage(res.usage, { phase: "handoff" });
   } catch {
     /* usage reporting never blocks the Agent */
   }
-  // 被长度截断的摘要是半截的，当没有摘要处理（调用方退回机械摘要），别把半截当交接。
-  if (res && (res.finishReason === "length" || res.finishReason === "max_tokens")) return "";
-  return (res && res.content ? String(res.content) : "").trim();
+  return {
+    text: (res && res.content ? String(res.content) : "").trim(),
+    truncated: !!res && (res.finishReason === "length" || res.finishReason === "max_tokens"),
+  };
 }
 
 // 反绕圈：同一(工具+错误签名)累计到这个次数 → 在结果里注入"换路线"提示。
@@ -251,51 +548,68 @@ function _callSig(name, args) {
     .slice(0, 200);
   return name + "|" + norm;
 }
-// A2：给一次工具结果算"结果指纹"——只取**信息量特征**（ok/错误签名/数量/大小/少量内容头），
-// 用于判断"重复调用是否带来了新信息"。两次 callSig 相同且 resultFp 相同 = 纯空转。
+/** 工具的返回值：ToolRouter 把它放在信封的 data 里（{ ok:true, data }）。只取对象形式的。 */
+function _payload(env) {
+  const data = env && env.data;
+  return data && typeof data === "object" && !Array.isArray(data) ? data : null;
+}
+
+/** 这次工具调用是否失败：抛错（信封 ok:false），或工具没抛错但返回了 { ok:false, … }——脚本退出码非 0、
+ *  要找的请求不存在、页面拿不到等，很多工具是这样报失败的。两种都要算，否则下面几道护栏对它们不起作用。 */
+function _failed(env) {
+  if (!env || env.ok === false) {
+    return true;
+  }
+  const payload = _payload(env);
+  return !!payload && payload.ok === false;
+}
+
+// A2 和循环检测共用的"结果指纹"，用于判断"重复调用是否带来了新信息"。
+// 成功：结果正文（ToolRouter 信封里的 data）的长度+摘要，内容完全一样才算同一结果；
+// 失败：归一化的错误文本，同一类错算同一结果。
+// （旧版只看信封顶层的 count/requests 等字段，可工具返回值都在 data 里，成功调用的指纹全是 "ok"：
+//   分页 fs_read 这种每次内容都不一样的调用也被当成"结果相同"，连续 10 次就被熔断。）
 function _resultFp(env) {
   if (!env || typeof env !== "object") {
-    return String(env);
+    return "v:" + _hash(String(env));
   }
-  const parts = [];
-  parts.push(env.ok === false ? "err" : "ok");
-  // 常见"数量/状态"字段：count/length/size/bytes/exitCode/cleared/capturing…
-  for (const k of ["count", "callCount", "watLines", "funcCount", "exitCode", "size", "bytes", "cleared", "capturing", "tracing", "hasTrace"]) {
-    if (env[k] !== undefined) {
-      parts.push(k + "=" + JSON.stringify(env[k]));
-    }
-  }
-  // 列表类：长度即可（内容不进指纹，避免大对象）
-  for (const k of ["requests", "entries", "hits", "records", "calls", "functions", "exports"]) {
-    if (Array.isArray(env[k])) {
-      parts.push(k + ".len=" + env[k].length);
-    }
-  }
-  // 错误文本头（归一）
   if (env.ok === false) {
-    const e = String(env.error || env.note || "").toLowerCase().replace(/\d+/g, "#").slice(0, 80);
-    parts.push("e:" + e);
+    return "err:" + String(env.error || env.note || "").toLowerCase().replace(/\d+/g, "#").slice(0, 80);
   }
-  return parts.join(",");
+  let body = "";
+  try {
+    body = JSON.stringify(env.data !== undefined ? env.data : env) || "";
+  } catch {
+    body = String(env.data);
+  }
+  return "ok:" + body.length + ":" + _hash(body);
 }
 
 // A1 无进展预算用：判定一次工具调用是否构成"真实前进"（机械、不靠模型自述）。
 // 真前进 = 产生了新的、有价值的状态变化：成功落盘脚本/文件、抓到带调用栈的请求、wasm_probe 出 calls、
-// trace 有非空记录、写了产物文件等。纯查询(失败/count=0/列表没变)不算前进。
+// trace 有非空记录、写了产物文件等。纯查询(失败/count=0/列表没变)不算前进；"列表没变"由调用方按
+// 重复调用判定（和之前完全相同的调用拿到完全相同的结果）。
 function _isProgress(name, env, progressOnSuccess = false) {
-  if (!env || env.ok === false) {
+  if (_failed(env)) {
     return false;
   }
   // 写盘/落盘类工具成功 = 前进（工具声明里标了 progress）
   if (progressOnSuccess) {
     return true;
   }
+  // 工具返回值在 ToolRouter 信封的 data 里；自测里的简化信封直接放在顶层：两处都看。
+  const data = env.data;
+  const nested = _payload(env);
+  const field = key => (env[key] !== undefined ? env[key] : nested ? nested[key] : undefined);
   // run_node/run_python：**只有脚本真的跑成功**才算前进。"进程跑起来了"(env.ok)≠"脚本逻辑成功"——
   // 很多脚本 catch 后照样 exit 0 却打印报错/"对不上"，那是在死胡同里换脚本兜圈子、不是前进。
   // 实测教训：WASM 复刻兔子洞里 100+ 次 run_node 每次跑个坏 loader 全被当"前进"→ A1 无进展预算永远清零、
   // 永不触发换路线提示。故要求 exitCode===0 且合并输出里**没有异常签名**。
-  if (/^run_(node|python)$/.test(name) && env.exitCode === 0 && !env.timedOut) {
-    const out = String(env.output || "");
+  if (/^run_(node|python)$/.test(name)) {
+    if (field("exitCode") !== 0 || field("timedOut")) {
+      return false;
+    }
+    const out = String(field("output") || "");
     const looksFailed =
       /Error:|Exception\b|Traceback|is not defined|is not a function|Cannot (read|find)|\babort(ed)?\b|ReferenceError|TypeError|SyntaxError|RangeError|ERR_[A-Z]|MODULE_NOT_FOUND|ENOENT|Unhandled|panicked|❌|不匹配|对不上|复刻失败|验证失败/i.test(
         out
@@ -303,25 +617,31 @@ function _isProgress(name, env, progressOnSuccess = false) {
     return !looksFailed;
   }
   // net_get 拿到带发起者栈的请求 = 关键前进
-  if (name === "net_get" && env.request && Array.isArray(env.request.initiatorStack) && env.request.initiatorStack.length) {
+  const request = field("request");
+  if (name === "net_get" && request && Array.isArray(request.initiatorStack) && request.initiatorStack.length) {
     return true;
   }
   // wasm_probe 抓到 wbg 调用 / webapi_query 有指纹 / 抓到非空列表 = 前进
-  if (Array.isArray(env.calls) && env.calls.length) return true;
-  if (typeof env.count === "number" && env.count > 0) return true;
+  if (Array.isArray(data) && data.length) return true;
+  const calls = field("calls");
+  if (Array.isArray(calls) && calls.length) return true;
+  const count = field("count");
+  if (typeof count === "number" && count > 0) return true;
   for (const k of ["requests", "hits", "entries", "records", "exports", "functions"]) {
-    if (Array.isArray(env[k]) && env[k].length > 0) return true;
+    const list = field(k);
+    if (Array.isArray(list) && list.length > 0) return true;
   }
   return false;
 }
 
 // 给失败的工具结果算一个"错误类别签名"：归一掉数字/hex/引号内容/路径 → 同类错误得同签名。
-// 失败判定：env.ok===false；错误文本取 env.error，或 run_node/python 失败时合并输出的尾部。
+// 失败判定见 _failed；错误文本取信封的 error，或工具返回值里的 error / 合并输出（run_node/python）/ log / note。
 function _errSig(name, env) {
-  if (!env || env.ok) {
+  if (!env || !_failed(env)) {
     return null;
   }
-  const raw = env.error ? String(env.error) : env.output ? String(env.output) : "";
+  const payload = _payload(env) || {};
+  const raw = String(env.error || env.output || payload.error || payload.output || payload.log || payload.note || "");
   if (!raw) {
     return null;
   }
@@ -526,7 +846,9 @@ export async function runAgentTurn(p) {
     vision = false, // 模型是否支持看图：true 时把截图等图像作为 user 图片消息回喂
     contextStrategy = "legacy", // projected=小上下文+大结果折叠；legacy=旧行为，可随时回退
     cacheKey = "",
+    runState, // createRunState()：一次自主执行的多个回合共用——循环检测、最近一份存档、任务锚点都跨压缩和自动续跑
   } = p || {};
+  const run = _isRunState(runState) ? runState : createRunState();
 
   if (!client || typeof client.chat !== "function") {
     throw new Error("runAgentTurn: client.chat required");
@@ -610,11 +932,13 @@ export async function runAgentTurn(p) {
     /* 账本可选，取不到不影响 */
   }
   const history = messages.map(sanitize);
-  let taskIndex = -1;
-  for (let i = history.length - 1; i >= 0; i--) {
+  // 任务锚点 = 用户发的那条任务。自动续跑的回合里，最后一条 user 消息是引擎加的续跑提示，上一回合的锚点
+  // 还在消息里（同一个对象）：接着用它。否则压缩时锚点之前的内容——整个上一回合的工作——会被当成历史丢掉，
+  // 压缩后的上下文里只剩一句「继续推进」。认不出来（调用方换了消息对象）就退回取最后一条 user 消息。
+  let taskIndex = run.anchor ? messages.indexOf(run.anchor) : -1;
+  for (let i = history.length - 1; taskIndex < 0 && i >= 0; i--) {
     if (history[i].role === "user") {
       taskIndex = i;
-      break;
     }
   }
   const rawTaskAnchor = taskIndex >= 0 ? history[taskIndex] : null;
@@ -625,6 +949,7 @@ export async function runAgentTurn(p) {
   if (taskIndex >= 0) {
     history[taskIndex] = taskAnchor;
   }
+  run.anchor = taskAnchor;
   let msgs = [
     ...(baseSystem ? [{ role: "system", content: baseSystem }] : []),
     ...history,
@@ -676,16 +1001,36 @@ export async function runAgentTurn(p) {
       }
       if (workSize > compactAt) {
         const anchorIdx = msgs.indexOf(taskAnchor);
-        const fromIdx = anchorIdx >= 0 ? anchorIdx + 1 : 0;
+        const firstIdx = baseSystem ? 1 : 0;
+        // 要总结的执行记录：上一次压缩的续跑说明之后（自动续跑后的回合里，它是上一回合留下的）；
+        // 还没压缩过就从任务锚点之后开始。
+        let noteIdx = -1;
+        for (let i = msgs.length - 1; noteIdx < 0 && i >= 0; i--) {
+          const m = msgs[i];
+          if (m && m.role === "user" && typeof m.content === "string" && m.content.startsWith(COMPACT_NOTE)) {
+            noteIdx = i;
+          }
+        }
+        const segStart = noteIdx >= 0 ? noteIdx + 1 : anchorIdx >= 0 ? anchorIdx + 1 : firstIdx;
+        // 锚点之前的对话：最初的任务、历史投影、前几轮的结论。锚点是「继续」这类短消息时，任务本身也在这里。
+        const earlierEnd = anchorIdx >= 0 ? Math.min(anchorIdx, segStart) : firstIdx;
+        const earlier = earlierEnd > firstIdx ? msgs.slice(firstIdx, earlierEnd) : [];
+        collectUserNotes(run, earlier);
+        const previous = run.lastCheckpoint || "";
         // 关键：用 **LLM 生成结构化交接摘要**（保留"已确认事实/文件清单/下一步"），而不是机械截取——
         // 机械摘要会丢掉已发现的结论，导致压缩后重新探索=循环失忆（这是把压缩做对的核心）。
         // LLM 摘要失败/超时再退回机械摘要，至少不丢压缩本身。
-        let summary = "";
+        let handoff = null;
         try {
-          summary = await summarizeForHandoff(
+          handoff = await summarizeForHandoff(
             client,
-            msgs,
-            fromIdx,
+            buildHandoffSource({
+              userNotes: run.userNotes,
+              task: textOfContent(rawTaskAnchor && rawTaskAnchor.content),
+              earlier,
+              previous,
+              segment: msgs.slice(segStart),
+            }),
             signal,
             onUsage,
             cacheKey
@@ -693,9 +1038,22 @@ export async function runAgentTurn(p) {
         } catch {
           /* 摘要调用失败 → 机械兜底 */
         }
-        if (!summary) {
-          summary = buildCheckpointSummary(msgs, fromIdx);
+        let summary;
+        if (handoff && handoff.text && !handoff.truncated) {
+          summary = handoff.text;
+        } else if (handoff && handoff.truncated && handoff.text.length >= HANDOFF_PARTIAL_MIN) {
+          // 被长度截断：目标和已确认事实在前面，多半已经写出来了，比整份换成机械记录强；
+          // 没写出来的部分（靠后的「已否决」「下一步」）用上一份存档和机械记录的最近进展补上。
+          // 补充部分以标题开头：账本自动沉淀按标题分节，不能把后面的内容算进被截断的那一节。
+          summary =
+            handoff.text +
+            "\n\n## 交接账本超出长度被截断，以下是补充\n" +
+            buildCheckpointSummary(msgs, segStart, { previous, earlier });
+        } else {
+          summary = buildCheckpointSummary(msgs, segStart, { previous, earlier });
         }
+        run.lastCheckpoint = summary;
+        run.epoch++;
         emit({ type: "checkpoint", round, summary });
         if (typeof onCheckpoint === "function") {
           try {
@@ -717,20 +1075,16 @@ export async function runAgentTurn(p) {
           rawTaskAnchor,
           _runtimeContext(dynamicContext, freshLedger)
         );
+        run.anchor = taskAnchor;
+        // 锚点之前的用户消息原文附在续跑说明后面：锚点是「继续」时，任务和中途给的限制条件都在那些消息里。
+        const userNotes = formatUserNotes(run.userNotes);
         // Rebuild a small context with the same stable system prefix. Dynamic
         // runtime data remains attached to the task anchor.
         msgs = [
           ...(baseSystem ? [{ role: "system", content: baseSystem }] : []),
           taskAnchor,
           { role: "assistant", content: summary },
-          {
-            role: "user",
-            content:
-              "（上面是你已完成的【进展存档】——已确认的事实 / 已做过的工具调用及结果 / 下一步都在里面，也已落盘 progress.md。" +
-              "**铁律：存档里已经做过的事一律不要重做——别重新调用任何已调用过的工具、别重测已测过的项、别重新 list/搜索/抓包去发现已确认的信息。" +
-              "若任务是清单且某些项已在存档里有结果，直接拿那些结果继续或汇总，绝不重跑。**" +
-              "只在需要某个具体旧细节时才 fs_read 对应文件。现在只做存档里「下一步」指向的、尚未完成的动作。）",
-          },
+          { role: "user", content: COMPACT_NOTE + (userNotes ? `\n\n${USER_NOTES_LABEL}\n${userNotes}` : "") },
         ];
         lastCompactRound = round;
       }
@@ -967,8 +1321,8 @@ export async function runAgentTurn(p) {
 
       // A2：更新重复跟踪。被熔断拒绝(repeatBlocked)的不计入；正常执行后比对结果指纹：
       // 与上次相同→n++（逼近阈值）；不同（有新信息）→重置为 0。换了参数=新 callSig=独立计数。
-      if (callSig && !repeatBlocked) {
-        const fp = _resultFp(env);
+      const fp = callSig && !repeatBlocked ? _resultFp(env) : null;
+      if (fp) {
         const prev = repeatTracker.get(callSig);
         if (prev && prev.fp === fp) {
           prev.n += 1;
@@ -977,8 +1331,13 @@ export async function runAgentTurn(p) {
         }
       }
 
-      // A1：真实前进则清零预算 + 清空强制决策态；否则累加。被熔断/被拒的不算前进。
-      if (!repeatBlocked && _isProgress(name, env, !!router.countsAsProgress?.(name))) {
+      // 循环检测：参数完全相同、结果也完全相同的调用之前做过 = 重复调用。跨压缩、跨自动续跑都记着
+      // （A2 只在本回合内、同一调用连续 10 次才拦，从头重做一遍分析时每个调用只重复一两次，A2 看不出来）。
+      // 范围和 A2 一样：不豁免的工具；参数解析失败的、被用户拒绝的不记；被 A2 拒绝执行的算一次重复。
+      const repeatOf = callSig && !env.denied ? _trackCall(run, name, args, fp, repeatBlocked) : null;
+
+      // A1：真实前进则清零预算 + 清空强制决策态；否则累加。被熔断/被拒的、重复调用拿到相同结果的不算前进。
+      if (!repeatBlocked && !repeatOf && _isProgress(name, env, !!router.countsAsProgress?.(name))) {
         noProgress = 0;
         forcedDecisionPending = false;
       } else {
@@ -1041,8 +1400,15 @@ export async function runAgentTurn(p) {
           `\n\n⟪提示：${name} 本回合已调用 ${toolCounts[name]} 次——长任务这很正常、继续无妨，只要每次有新进展即可。` +
           `（同参同结果会被自动熔断、连环失败会另有提示；都没触发就说明你在正常推进，放心干。）⟫`;
       }
+      // 重复调用提示：告诉模型这一步之前做过、结果一样，从第二次起就提示（A2 要到第 10 次才拦）。
+      if (repeatOf) {
+        contentStr +=
+          `\n\n⟪重复调用：本次任务里已经用完全相同的参数调用过 ${name} ${repeatOf.count} 次，结果和这次完全一样` +
+          `（上一次在 ${repeatOf.ago} 次工具调用之前${repeatOf.beforeCompaction ? "，第一次在上次上下文压缩之前" : ""}）。` +
+          `想找回当时的结论就看【进展存档】和账本；需要原文细节才重读。别从头重做已经做完的分析。⟫`;
+      }
       // 连续失败护栏（任意类型，不限同类）：连环失败=空转/退化 → 强提示停手。
-      if (env && env.ok === false) {
+      if (_failed(env)) {
         consecErr++;
         if (consecErr >= CONSEC_ERR_AT) {
           contentStr +=
@@ -1074,6 +1440,63 @@ export async function runAgentTurn(p) {
     }
     if (mediaBlocks.length) {
       msgs.push({ role: "user", content: mediaBlocks });
+    }
+
+    // 循环检测（只在一轮的工具结果全部回灌之后插消息，不能插在 tool 结果中间）：
+    // 最近的调用大多是之前做过、结果相同的重复 → 第一次提醒；提醒之后还这样就停下本轮，不再自动续跑。
+    const verdict = _loopVerdict(run);
+    if (verdict && verdict.action === "warn") {
+      forcedDecisionPending = true; // 这一轮不再叠一条 A1 提醒
+      emit({ type: "loop_warning", round, repeats: verdict.repeats });
+      msgs.push({
+        role: "user",
+        content:
+          `（系统·循环检测）最近 ${LOOP_WINDOW} 次工具调用里有 ${verdict.repeats} 次和之前做过的调用完全相同、结果也一样，例如：\n` +
+          verdict.examples.map(l => "- " + l).join("\n") +
+          `\n你很可能在从头重做已经完成的分析。先看【进展存档】和账本（工作目录里的 progress.md、ledger.md），从记下的「下一步」接着做；` +
+          `确实需要重新验证某一项，先用一句话说明为什么，再只做那一步。卡住了就停下汇报：已确认什么、卡在哪、还需要什么。` +
+          `如果接下来还是这样重复，本轮会停下，交给用户决定方向。`,
+      });
+    } else if (verdict && verdict.action === "stop") {
+      emit({ type: "loop_stop", round, repeats: verdict.repeats });
+      msgs.push({
+        role: "user",
+        content:
+          "（系统·循环检测）提醒之后你仍在重复之前做过、结果相同的调用，本轮到此停下。**不要再调用工具。**" +
+          "用几句话汇报：已经确认的结论、卡在哪一步、要继续需要什么（换哪条路，或需要用户提供什么）。",
+      });
+      // 请求里照样带工具声明，和主请求一致：对话里有工具调用和结果，不带声明的请求不保证每个服务端都接受。
+      // 模型要是仍然发了工具调用，不执行，只取文字。
+      let report = "";
+      try {
+        const fin = await client.chat(trimContext(msgs, maxChars), {
+          tools,
+          signal,
+          onDelta,
+          onReasoning,
+          cacheKey,
+        });
+        try {
+          onUsage && onUsage(fin.usage, { phase: "final" });
+        } catch {
+          /* usage reporting never blocks the Agent */
+        }
+        report = fin.content || "";
+      } catch {
+        /* 汇报失败也照样停下 */
+      }
+      const note =
+        `\n\n---\n（系统）⚠ 检测到循环：提醒之后，最近 ${LOOP_WINDOW} 次工具调用里仍有 ${verdict.repeats} 次是之前做过、结果完全相同的调用` +
+        `（如 ${verdict.tools.join("、")}）。为免无限循环，本轮已停下，不再自动续跑。` +
+        `进展已落盘；告诉我聚焦哪条路、或补一个我拿不到的输入，我再继续。`;
+      emit({ type: "final", content: report + note, round });
+      return {
+        content: report + note,
+        rounds: round,
+        toolCalls: allToolCalls,
+        messages: msgs,
+        stopReason: "loop",
+      };
     }
 
     // A1 无进展软提醒（轻量、不强制）：连续 NO_PROGRESS_BUDGET 次零真实前进 → 注入**一条温和提醒**，
