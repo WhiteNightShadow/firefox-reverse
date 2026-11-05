@@ -218,6 +218,8 @@ def prepare(package, root):
     app = root / "firefox"
     resources = {
         "modules/agentsidebar/AgentSession.sys.mjs": SIDEBAR / "modules/AgentSession.sys.mjs",
+        # AgentSession imports createRunState from AgentLoop: overlay the pair, or an older package fails to link.
+        "modules/agentsidebar/AgentLoop.sys.mjs": SIDEBAR / "modules/AgentLoop.sys.mjs",
         "modules/agentsidebar/ConfigStore.sys.mjs": SIDEBAR / "modules/ConfigStore.sys.mjs",
         "chrome/browser/content/browser/agent-sidebar/agent-sidebar.bundle.js": SIDEBAR / "content/agent-sidebar.bundle.js",
         "chrome/browser/content/browser/agent-sidebar/agent-panel.css": SIDEBAR / "content/agent-panel.css",

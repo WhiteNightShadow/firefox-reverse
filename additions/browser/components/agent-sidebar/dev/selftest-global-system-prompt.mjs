@@ -1,21 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { runInNewContext } from "node:vm";
-import { transformSync } from "esbuild";
 import { ConfigStore } from "../modules/ConfigStore.sys.mjs";
-import { emptyUsage, mergeUsage, normalizeUsage } from "../modules/Usage.sys.mjs";
+import { loadAgentSession } from "./agent-session-harness.mjs";
 
 const store = new ConfigStore();
 const calls = [];
 let restart = false;
-const conversationStore = {
-  consumeCancellationBoundary: async () => false,
-  setThreadTurnStatus: async () => {},
-  getThread: async () => null,
-  appendMessage: async () => {},
-};
-const imports = {
-  "./AgentLoop.sys.mjs": {
+const session = await loadAgentSession({
+  configStore: store,
+  agentLoop: {
     createRunState: () => ({ calls: new Map() }),
     async runAgentTurn(options) {
       calls.push(options.systemPrompt);
@@ -27,31 +19,7 @@ const imports = {
       return { content: "done", stopReason: "final", messages: [] };
     },
   },
-  "./ConfigStore.sys.mjs": { configStore: store },
-  "./ConversationStore.sys.mjs": { conversationStore },
-  "./ToolRouter.sys.mjs": { ToolRouter: class { registerAll() {} } },
-  "./Tools.sys.mjs": { createBuiltinTools: () => [] },
-  "./Backends.sys.mjs": { getBackends: () => ({}) },
-  "./providers.sys.mjs": { buildClientFromStore: () => ({}), isVisionModel: () => false },
-  "./ContextProjection.sys.mjs": {},
-  "./Usage.sys.mjs": { emptyUsage, mergeUsage, normalizeUsage },
-};
-const source = await readFile(new URL("../modules/AgentSession.sys.mjs", import.meta.url), "utf8");
-const { code } = transformSync(source, { format: "cjs", target: "es2022" });
-const module = { exports: {} };
-runInNewContext(code, {
-  module,
-  exports: module.exports,
-  require(name) {
-    assert.ok(Object.hasOwn(imports, name), `Unexpected import: ${name}`);
-    return imports[name];
-  },
-  ChromeUtils: { importESModule: () => ({ setTimeout, clearTimeout }) },
-  Services: { obs: { addObserver() {} } },
-  AbortController,
-  console,
 });
-const session = module.exports.agentSession;
 const run = async (systemPrompt = "built-in policy") => {
   await session.run("test-thread", { systemPrompt, convo: [{ role: "user", content: "task" }] });
   assert.equal(session.getState("test-thread").error, null);
