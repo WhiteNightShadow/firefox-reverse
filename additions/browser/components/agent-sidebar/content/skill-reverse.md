@@ -50,7 +50,7 @@
 1. **装 hook**（page_eval）：包裹**可达边界**，把 `{入参, 返回}` 推进 `window.__log`——
    - 出参（最常用）：`window.fetch` / `XMLHttpRequest.prototype.setRequestHeader`+`send` → 看到每次请求的 url/body/**签名 header**；
    - 入参/算法：`JSON.stringify` / `crypto.subtle.{digest,sign,importKey}` / `TextEncoder.prototype.encode` / **任何具名全局函数**。
-   例：`(()=>{const o=window.fetch;window.__log=[];window.fetch=function(u,i){try{window.__log.push({u:String(u),h:i&&i.headers&&JSON.stringify([...new Headers(i.headers)]),b:i&&String(i.body)})}catch(e){}return o.apply(this,arguments)};return'hooked@'+location.href})()`
+   例：`(()=>{const o=window.fetch;window.__log=[];window.fetch=function(u,i){try{window.__log.push({u:String(u),h:i&&i.headers&&JSON.stringify([...new Headers(i.headers)]),b:i&&String(i.body)})}catch(e){}return o.apply(window,arguments)};return'hooked@'+location.href})()`（包装里要用`o.apply(window,…)`调原函数，不能用`this`：页面裸调用`fetch(url)`时`this`落到你的沙箱全局，原生fetch会抛TypeError、请求发不出去）
 2. **触发一次**：`page_click`/`page_scroll`/`page_type`（**交互触发 > 整页刷新**——刷新会清掉 hook 和 `__log`）。
 3. **读回**（page_eval）：`window.__log` → 直接拿到 (url, body, 签名 header, ts) 一组组真值，逐字节比 / 反推拼接。
 - ⚠**别在装 hook 和读 __log 之间 `page_navigate`**——整页刷新会重建 window、清掉 hook 和 `__log`（读到 `window.__log is undefined` 就是这么来的）。读前用 `(window.__log||[])` 兜底。
