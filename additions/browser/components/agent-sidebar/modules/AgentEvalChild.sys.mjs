@@ -208,7 +208,9 @@ const FRX_HOOK_PRESET = `(function(){
         try{ var hs = new Headers((init&&init.headers) || (input&&input.headers) || {}); hs.forEach(function(v,k){ h[k]=v; }); }catch(e){}
         P({api:"fetch", url:url, method:m, headers:h, body:(init&&init.body!=null)?String(init.body):undefined, t:Date.now()});
       }catch(e){}
-      return of.apply(this, arguments);
+      // 页面裸调用 fetch(url) 时 this 是 undefined，会落到这段代码所在的注入沙箱的全局，不是页面 window：
+      // 原生 fetch 拿到这样的 this 直接抛 TypeError，页面的请求就发不出去了。一律用页面 window 调。
+      return of.apply(window, arguments);
     };
   }catch(e){}
   try{

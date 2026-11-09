@@ -36,6 +36,7 @@ SELFTESTS=(
   selftest-conversations.mjs
   selftest-history-transfer.mjs
   selftest-ledger-sql.mjs
+  selftest-ledger-shutdown.mjs
   selftest-context-projection.mjs
   selftest-context-runtime.mjs
   selftest-loop-guard.mjs
@@ -51,6 +52,7 @@ SELFTESTS=(
   selftest-network-replay.mjs
   selftest-page-determinism.mjs
   selftest-page-debugger.mjs
+  selftest-hook-preset.mjs
   selftest-thread-reservation.mjs
   selftest-workspace.mjs
   selftest-scripts.mjs

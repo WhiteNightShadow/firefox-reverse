@@ -326,6 +326,8 @@ cd upstream && ./mach build && ./mach package
 - **引擎停下的原因看得见**：检测到循环、模型连续只输出文字不调用工具、自动续跑到上限这些情况下，引擎加在回复后面的说明以前只存进了消息正文，侧栏有步骤记录时不显示；现在作为一段正文显示出来。
 - **自动续跑接得上缓存**：续跑的回合原样重发上一回合的消息，变了的动态上下文（比如账本多记了一条）只附在最后。以前每次续跑都有一大段对话要按未缓存重新计费。
 - **截断不再留下半个emoji**：截断长文本时不切开emoji这类字符，请求体里残留的半个字符发出前会替换掉。以前截断可能留下半个字符，请求体里是一个孤立的转义，校验严格的json解析器会拒收整个请求。
+- **用过agent之后退出浏览器要等一分钟**：agent跑过一轮之后（不管有没有绑定工作目录），记忆库`memory.sqlite`的连接一直开着，没有人关。退出浏览器时窗口关了，进程还要再留61秒，最后以AsyncShutdown超时崩溃结束。现在退出时关闭连接，0.3秒正常退出，已经记下的内容不受影响。
+- **`hook_inject`内置hook让页面的fetch失败**：装上内置hook之后，页面里裸调用的`fetch(url)`会抛TypeError（`'fetch' called on an object that does not implement interface Window`），请求发不出去，hook却记下了这次调用；`window.fetch(url)`和xhr不受影响。原因是包装函数用`this`调原生fetch，页面裸调用时`this`落到注入沙箱的全局。现在一律用页面window调。技能文档里“hook日志大法”的示例也是同样的写法，一并改了。
 
 ### v0.27.1（正式版，2026-11-04）
 - **cookie工具**（[#2](https://github.com/WhiteNightShadow/firefox-reverse/issues/2)）：`cookies`的设置和删除改为按每个cookie自己的`originAttributes`操作，容器标签页和第三方iframe的分区cookie也能改、能删，隐私窗口里的加`includePrivate:true`。列表用`originAttributes`标出每个cookie在哪个罐里，原样传回就只动那一个。删除后逐个核对，`removed`只算确实删掉的：以前单个删除不管删没删掉都报1，域cookie（host带前导点）传不带点的域名时其实没删。改已有cookie时只改给了的属性，httpOnly、secure、sameSite、过期方式和partitioned沿用原值。
