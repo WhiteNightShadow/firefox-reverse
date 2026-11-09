@@ -45,7 +45,8 @@ export class ToolRouter {
       parameters: spec.parameters || { type: "object", properties: {} },
       handler: spec.handler,
       needsConfirm: !!spec.needsConfirm, // 改动型工具（执行 JS/导航/改包/落盘）需用户批准（A3 要求）
-      repeatExempt: !!spec.repeatExempt, // 同参数重复调用不算空转（见 Tools.sys.mjs 的工具特性说明）
+      // 同参数重复调用不算空转（见 Tools.sys.mjs 的工具特性说明）：true=整个工具；数组=只有这些 action
+      repeatExempt: Array.isArray(spec.repeatExempt) ? spec.repeatExempt.map(String) : !!spec.repeatExempt,
       progress: !!spec.progress, // 调用成功即算前进
     });
     return this;
@@ -69,10 +70,18 @@ export class ToolRouter {
     return !!(t && t.needsConfirm);
   }
 
-  /** 同参数重复调用是否豁免空转熔断（滚动、导航、trace 开关等每次都可能产生新状态）。 */
-  isRepeatExempt(name) {
+  /** 这次调用是否豁免空转熔断（滚动、导航、trace 开关等每次都可能产生新状态）。
+   *  工具声明的是 action 列表时，只有 args.action 在列表里的调用豁免（开关型工具：start/stop 豁免，query 不豁免）。 */
+  isRepeatExempt(name, args) {
     const t = this._tools.get(name);
-    return !!(t && t.repeatExempt);
+    if (!t) {
+      return false;
+    }
+    if (Array.isArray(t.repeatExempt)) {
+      const action = args && args.action;
+      return action !== undefined && action !== null && t.repeatExempt.includes(String(action));
+    }
+    return !!t.repeatExempt;
   }
 
   /** 调用成功是否直接算「前进」（落盘类工具）。 */

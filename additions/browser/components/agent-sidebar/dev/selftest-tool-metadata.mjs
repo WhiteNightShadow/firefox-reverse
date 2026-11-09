@@ -34,6 +34,14 @@ ok(router.needsConfirm("run_node") && router.isRepeatExempt("run_node") && !rout
 ok(router.needsConfirm("scripts_save") && router.countsAsProgress("scripts_save") && !router.isRepeatExempt("scripts_save"), "scripts_save：需确认、落盘即前进");
 ok(!router.needsConfirm("fs_read") && !router.isRepeatExempt("fs_read") && !router.countsAsProgress("fs_read"), "fs_read：纯查询，三种特性都没有");
 ok(router.needsConfirm("js_trace") && router.needsConfirm("wasm_probe"), "js_trace / wasm_probe 会在宿主 Node 里执行页面代码，和 run_node 一样需确认");
+const switches = ["signer_trace", "closure_read", "debug_breakpoint", "hook_inject", "whitebox_diff"];
+ok(
+  switches.every(n => router.isRepeatExempt(n, { action: "start" }) && router.isRepeatExempt(n, { action: "stop" }) && !router.isRepeatExempt(n, { action: "query" }) && !router.isRepeatExempt(n, {})),
+  "开关型工具：start/stop 豁免重复熔断，query 不豁免"
+);
+ok(!router.isRepeatExempt("whitebox_diff", { action: "node" }) && !router.isRepeatExempt("whitebox_diff", { action: "diff" }), "whitebox_diff 的 node/diff 是查询，不豁免");
+ok(router.isRepeatExempt("clear_site_data", {}) && router.countsAsProgress("clear_site_data"), "clear_site_data：每组样本重置一次是正当的重复，仍算前进");
+ok(router.isRepeatExempt("cookies", { action: "set" }) && router.isRepeatExempt("cookies", { action: "remove" }) && !router.isRepeatExempt("cookies", { action: "list" }), "cookies：set/remove 豁免，list 不豁免");
 
 console.log("[2] 名字像改动型的工具必须需确认");
 const MUTATING = /(^|_)(write|copy|mkdir|delete|remove|create|update|install|run|save|inject|open|close|import|reset|manage|navigate|click|type|eval|capture|generate|trace|add|set|forget)(_|$)/;

@@ -1643,7 +1643,7 @@ export async function runAgentTurn(p) {
       // 拿到**相同结果指纹**（无新信息）→ 引擎直接拒绝执行，逼它换动作/换工具。掐死
       // jsvmp_query(count=0) 反复、fs_list 连发、net_capture→scroll→net_list 空转这类死循环。
       // 豁免有副作用的工具（滚动/导航/trace 开关/触发请求等）——它们同参重复是正当的，不算空转。
-      const exempt = !!router.isRepeatExempt?.(name);
+      const exempt = !!router.isRepeatExempt?.(name, args);
       const callSig = parseErr || exempt ? null : _callSig(name, args);
       const rep = callSig ? repeatTracker.get(callSig) : null;
       const repeatBlocked = !!(rep && rep.n >= REPEAT_BREAK_AT);

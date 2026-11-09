@@ -107,6 +107,7 @@ function makeRouter(world = {}) {
     {
       name: "tracer",
       needsConfirm: true,
+      repeatExempt: ["start", "stop"],
       handler: async ({ action }) =>
         action === "query"
           ? { ok: true, records: [{ sample: (world.samples = (world.samples || 0) + 1) }] }
@@ -360,6 +361,33 @@ console.log("循环检测：不把正常推进当成循环");
     "每组都开关一次 trace（回执相同）不算循环，9 组样本全部采完"
   );
   check(toolTexts(sampled).every(t => !t.includes("重复调用") && !t.includes("⛔")), "开关 trace 的结果里没有「别从头重做」的提示");
+
+  // 同一回合采 12 组：第 11、12 组的 start/stop 也照常执行（以前第 11 次 start 会被重复熔断拒绝）；
+  // 没触发就反复 query（结果一直是空的）照旧在第 11 次被拒绝。
+  const twelveWorld = {};
+  const twelve = await runAgentTurn({
+    client: scriptedClient({
+      main: r =>
+        r <= 48
+          ? toolCall("t" + r, ...steps[(r - 1) % 4])
+          : r <= 59
+            ? toolCall("q" + r, "tracer", { action: "status" })
+            : done("## 结论\n12 组样本采完"),
+    }),
+    router: makeRouter(twelveWorld),
+    messages: [{ role: "user", content: "采 12 组样本" }],
+    autoApprove: true,
+    maxRounds: 80,
+  });
+  const twelveTexts = toolTexts(twelve);
+  check(
+    twelveWorld.samples === 12 && twelveTexts.slice(0, 48).every(t => !t.includes("⛔")),
+    "12 组样本的 48 次调用全部执行，第 11、12 组的 start/stop 不再被重复熔断拒绝"
+  );
+  check(
+    twelveTexts[58].includes("⛔") && twelveTexts.slice(48, 58).every(t => !t.includes("⛔")),
+    "同一个查询动作反复拿同一个结果，照旧在第 11 次被拒绝（豁免只给开关动作）"
+  );
 
   // 每组先清站点数据再取新签名、跑新脚本。
   const resetting = [];
