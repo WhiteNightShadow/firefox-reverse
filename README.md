@@ -313,7 +313,7 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
-### main（尚未发布）
+### v0.27.2（正式版，2026-11-09）
 - **长任务忘了结论、从头重做**（[#5](https://github.com/WhiteNightShadow/firefox-reverse/issues/5)）：模型“失忆”主要出在上下文压缩上，这次改了四处。
   - 交接摘要以前只看执行记录的前6万字，记录一长就看不到最新进展；现在留开头和最新的部分，并带上当前任务、任务之前的对话和上一份存档。
   - 用户发「继续」之后一压缩，上下文里只剩这句「继续」；现在这条任务之前用户最近发的几条消息原文附在压缩后的续跑说明里，注明只作参考（其中被手动停止过的任务会标出来）。
@@ -328,6 +328,8 @@ cd upstream && ./mach build && ./mach package
 - **截断不再留下半个emoji**：截断长文本时不切开emoji这类字符，请求体里残留的半个字符发出前会替换掉。以前截断可能留下半个字符，请求体里是一个孤立的转义，校验严格的json解析器会拒收整个请求。
 - **用过agent之后退出浏览器要等一分钟**：agent跑过一轮之后（不管有没有绑定工作目录），记忆库`memory.sqlite`的连接一直开着，没有人关。退出浏览器时窗口关了，进程还要再留61秒，最后以AsyncShutdown超时崩溃结束。现在退出时关闭连接，0.3秒正常退出，已经记下的内容不受影响。
 - **`hook_inject`内置hook让页面的fetch失败**：装上内置hook之后，页面里裸调用的`fetch(url)`会抛TypeError（`'fetch' called on an object that does not implement interface Window`），请求发不出去，hook却记下了这次调用；`window.fetch(url)`和xhr不受影响。原因是包装函数用`this`调原生fetch，页面裸调用时`this`落到注入沙箱的全局。现在一律用页面window调。技能文档里“hook日志大法”的示例也是同样的写法，一并改了。
+- **最终包验收**：五目标六包统一SourceStamp `811e777fc65cf74ad931949a33a8b541ad21fda5`、BuildID `20261109042733`。mac arm64/intel、windows x86_64、linux x86_64/arm64原生指纹回归分别通过213/197/212/182/182项，各通过78项页面/agent检查、三个环境生命周期场景（12/9/6项）和8类提示词场景/11条合成请求（[原生ci](https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/42589381248)）；mac arm64另过15个数据目录场景，本版的循环检测、压缩交接、退出和`hook_inject`改动在最终包的真引擎里做了专项检查；windows在windows 11 x64（没装vc++运行库）和windows 11 arm64测试机上各过一遍完整验收，安装程序与zip的54个文件一致。（[验证摘要](docs/verification/release-v0.27.2/summary.json)）
+- **安装包**：[v0.27.2 Release](https://github.com/WhiteNightShadow/firefox-reverse/releases/tag/v0.27.2)提供五目标六个安装/便携包；升级前完整退出旧应用，替换原位置的应用，保留现有profile与指纹环境目录。macos包为ad-hoc签名，未做apple developer id公证。
 
 ### v0.27.1（正式版，2026-11-04）
 - **cookie工具**（[#2](https://github.com/WhiteNightShadow/firefox-reverse/issues/2)）：`cookies`的设置和删除改为按每个cookie自己的`originAttributes`操作，容器标签页和第三方iframe的分区cookie也能改、能删，隐私窗口里的加`includePrivate:true`。列表用`originAttributes`标出每个cookie在哪个罐里，原样传回就只动那一个。删除后逐个核对，`removed`只算确实删掉的：以前单个删除不管删没删掉都报1，域cookie（host带前导点）传不带点的域名时其实没删。改已有cookie时只改给了的属性，httpOnly、secure、sameSite、过期方式和partitioned沿用原值。

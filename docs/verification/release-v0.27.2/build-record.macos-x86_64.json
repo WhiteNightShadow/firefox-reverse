@@ -1,0 +1,55 @@
+{
+  "target": "macos-x86_64",
+  "version": "0.27.2",
+  "buildId": "20261109042733",
+  "source": {
+    "commit": "811e777fc65cf74ad931949a33a8b541ad21fda5",
+    "baseline": "cebc55aab4d2661d1f6c2d1526362947ec4016c1",
+    "l10n": "53be390d96a531cf526f5db0fa83c02f12465abb"
+  },
+  "mozconfig": {
+    "file": "configs/mozconfig.macos-x64",
+    "sha256": "634fed8d5a1155958a4ea665fc7b146e67557f13e7c810c1a9e7bd68c9b256cc",
+    "effectiveSha256": "25b11915cafe8896816dd30535f4b72684d75e7e854c1d51ceb37fc78100ce93"
+  },
+  "configure": {
+    "target": "x86_64-apple-darwin",
+    "host": "aarch64-apple-darwin25.6.0",
+    "options": [
+      "--enable-application=browser",
+      "--target=x86_64-apple-darwin",
+      "MOZBUILD_STATE_PATH=<path>",
+      "--disable-tests",
+      "--enable-release",
+      "--enable-bootstrap=no-update",
+      "MOZ_SOURCE_REPO=https://github.com/WhiteNightShadow/firefox-reverse",
+      "MOZ_SOURCE_CHANGESET=811e777fc65cf74ad931949a33a8b541ad21fda5",
+      "--with-l10n-base=<path>",
+      "--disable-backgroundtasks",
+      "--disable-updater",
+      "--with-branding=browser/branding/unofficial",
+      "--disable-crashreporter"
+    ]
+  },
+  "toolchain": {
+    "cc": "clang",
+    "ccVersion": "20.1.8",
+    "rustcVersion": "1.95.0"
+  },
+  "host": {
+    "system": "Darwin",
+    "release": "25.6.0",
+    "machine": "arm64",
+    "cpus": 14,
+    "memoryBytes": 51539607552,
+    "python": "3.12.14"
+  },
+  "outputs": [
+    {
+      "name": "firefox-reverse-v0.27.2-macos-x86_64.dmg",
+      "size": 118250631,
+      "sha256": "668eebf5ccab9244be0bc07bd7eb718687c6511c3ceb414c94572b798d3d50db"
+    }
+  ],
+  "recordedAt": "2026-11-09T05:43:04Z"
+}
