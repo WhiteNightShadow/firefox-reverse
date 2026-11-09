@@ -312,6 +312,9 @@ cd upstream && ./mach build && ./mach package
 
 ## 📝 版本更新记录
 
+### main（尚未发布）
+- **用过agent之后退出浏览器要等一分钟**：agent跑过一轮之后（不管有没有绑定工作目录），记忆库`memory.sqlite`的连接一直开着，没有人关。退出浏览器时窗口关了，进程还要再留61秒，最后以AsyncShutdown超时崩溃结束。现在退出时关闭连接，0.3秒正常退出，已经记下的内容不受影响。
+
 ### v0.27.1（正式版，2026-11-04）
 - **cookie工具**（[#2](https://github.com/WhiteNightShadow/firefox-reverse/issues/2)）：`cookies`的设置和删除改为按每个cookie自己的`originAttributes`操作，容器标签页和第三方iframe的分区cookie也能改、能删，隐私窗口里的加`includePrivate:true`。列表用`originAttributes`标出每个cookie在哪个罐里，原样传回就只动那一个。删除后逐个核对，`removed`只算确实删掉的：以前单个删除不管删没删掉都报1，域cookie（host带前导点）传不带点的域名时其实没删。改已有cookie时只改给了的属性，httpOnly、secure、sameSite、过期方式和partitioned沿用原值。
 - **全部会话导出导入**（[#7](https://github.com/WhiteNightShadow/firefox-reverse/issues/7)）：历史抽屉新增「全部导出」，把全部会话存成一个`.frx-chats.json`，空会话不导出；「导入」单会话文件和全部会话文件都认，导入后保持原来的先后顺序。同一份会话（来源会话和它导出时的更新时间都相同）不会重复导入，导入后在本机接着聊过的也认得出来；来源里又更新过的作为新会话导入，不覆盖本地的。文件里有一条不合格就整个不导入，并指出是第几个会话。

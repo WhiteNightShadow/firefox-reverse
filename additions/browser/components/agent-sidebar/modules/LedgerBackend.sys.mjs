@@ -17,6 +17,7 @@ const DB = "memory.sqlite";
 const MD = "ledger.md";
 const CAP_FACT = 120; // 每(站点,类型)封顶，防注入块无限膨胀（跨会话累积也要有界）
 const CAP_DEAD = 60;
+const CLOSED_MESSAGE = "浏览器正在退出，记忆库已关闭";
 
 // 作用域列只能来自这两个内部枚举。保留完整 SQL，而不是把列名拼入模板字符串：
 // 即使以后调用方误传外部值，也会在执行 SQL 前 fail-closed。
@@ -79,10 +80,14 @@ export class LedgerBackend {
     this._workspace = workspace || null;
     this._conn = null;
     this._opening = null;
+    this._closed = false; // 浏览器退出时已关闭连接，之后不再重开
   }
 
   /** 懒开全局 SQLite 连接（单例，跨会话/多窗口共享同一记忆库；写经同一连接串行、并发安全）。 */
   async _db() {
+    if (this._closed) {
+      throw new Error(CLOSED_MESSAGE);
+    }
     if (this._conn) {
       return this._conn;
     }
@@ -95,6 +100,17 @@ export class LedgerBackend {
       await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
       const path = PathUtils.join(dir, DB);
       const conn = await Sqlite.openConnection({ path });
+      // 退出浏览器时把连接关掉。Sqlite.sys.mjs 在 profile-before-change 阶段等所有连接关闭；没人关的话，
+      // 退出会一直等到 AsyncShutdown 超时（60 秒），然后以崩溃结束。
+      try {
+        Sqlite.shutdown.addBlocker("Firefox Reverse agent ledger: closing memory.sqlite", () => this._close(conn));
+      } catch {
+        // 已经在退出、登记不上了：现在就关
+        await this._close(conn);
+      }
+      if (this._closed) {
+        throw new Error(CLOSED_MESSAGE);
+      }
       await conn.execute(
         "CREATE TABLE IF NOT EXISTS mem(" +
           "id INTEGER PRIMARY KEY AUTOINCREMENT, site TEXT, workspace TEXT, kind TEXT, text TEXT, ev TEXT, ts TEXT, norm TEXT)"
@@ -102,11 +118,25 @@ export class LedgerBackend {
       await conn.execute("CREATE INDEX IF NOT EXISTS i_site ON mem(site)");
       await conn.execute("CREATE INDEX IF NOT EXISTS i_ws ON mem(workspace)");
       await conn.execute("CREATE INDEX IF NOT EXISTS i_norm ON mem(norm)");
+      if (this._closed) {
+        throw new Error(CLOSED_MESSAGE); // 建表期间浏览器开始退出，连接已经关了
+      }
       this._conn = conn;
       this._opening = null;
       return conn;
     })();
     return this._opening;
+  }
+
+  /** 关闭连接（浏览器退出时由 Sqlite 的 shutdown 屏障调用）。会等进行中的语句结束；之后 _db() 不再重开。 */
+  async _close(conn) {
+    this._closed = true;
+    this._conn = null;
+    try {
+      await conn.close();
+    } catch {
+      /* 已经关了 */
+    }
   }
 
   _wsRoot(ctx) {
