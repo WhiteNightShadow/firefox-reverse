@@ -6,7 +6,7 @@
  * done/error 时**自己**把最终/中断消息落 ConversationStore。UI 变薄：mount 时若本线程仍在跑就
  * 恢复 steps+busy 并订阅续看；不在场也不影响——引擎照跑、结果照存。
  */
-import { runAgentTurn } from "./AgentLoop.sys.mjs";
+import { createRunState, runAgentTurn } from "./AgentLoop.sys.mjs";
 import { ToolRouter } from "./ToolRouter.sys.mjs";
 import { createBuiltinTools } from "./Tools.sys.mjs";
 import { getBackends } from "./Backends.sys.mjs";
@@ -520,7 +520,8 @@ export const agentSession = {
       // aborted），或安全网触发。免去用户反复手按"继续"。
       const NON_TERMINAL = new Set(["max_rounds", "drift"]);
       const MAX_AUTO_RESTARTS = 24; // 8→24：长逆向任务的天花板别太低（24×120≈2880 轮）。只作防无限空转的最终兜底，
-      // 真正的空转由 A2 同参同结果熔断 + 连续失败护栏 + drift 拦；任务在做实事就让它一直跑。
+      // 真正的空转由 A2 同参同结果熔断 + 连续失败护栏 + drift 拦，从头重做已完成的分析由跨回合的循环检测拦
+      // （提醒后仍在重复就停，stopReason=loop）；任务在做实事就让它一直跑。
       let turnMsgs = Array.isArray(convo) ? convo : [];
       try {
         const thread = await conversationStore.getThread(threadId);
@@ -593,6 +594,11 @@ export const agentSession = {
       let autoRestarts = 0;
       let driftStreak = 0;
       let res;
+      let sessionNotice = ""; // 本模块自己加在最终回复后面的说明（为什么不再自动续跑）
+      // 本次执行的所有回合共用一份状态：自动续跑会重置每回合的计数，但「这一步之前做过、结果一样」、
+      // 最近一份进展存档、用户发的那条任务（任务锚点）都要跨回合记着——否则续跑后一压缩，上一回合的工作
+      // 和任务本身都会从上下文里消失，从头重做一遍分析也看不出来。
+      const runState = createRunState();
       for (;;) {
       res = await runAgentTurn({
         client,
@@ -600,6 +606,7 @@ export const agentSession = {
         messages: turnMsgs,
         systemPrompt,
         dynamicContext,
+        runState,
         autoApprove: !confirmMode,
         assist, // AI辅助模式：无工具纯文字回复=正常收尾（停下给方向），不 drift 逼它继续
         vision,
@@ -645,7 +652,7 @@ export const agentSession = {
         // 上下文压缩点：把本段进展作为一条 checkpoint 回复落盘 + 重置实时步骤 + 自增 seq，
         // UI 据 checkpointSeq 变化重载历史(新气泡)、清空 live 区，于是"一个长任务"在界面上
         // 表现为"多条阶段回复"，且每条都已持久化(任意后续步骤失败也不丢已完成进展)。
-        onCheckpoint: async summary => {
+        onCheckpoint: async (summary, info) => {
           await this._persist(threadId, summary, s.steps);
           // 同时把交接摘要落盘到工作目录 progress.md：① 用户能直接找到的"知识库"；
           // ② 接手段若需要也能 fs_read 回看；覆盖写=始终是最新累积状态。
@@ -660,10 +667,15 @@ export const agentSession = {
             }
             // 自动捕获安全网：把交接摘要里的"已确认事实/已否决假设"沉淀进结构化账本（去重）——
             // 即便 Agent 没主动 remember，每次压缩也把确认结论累积进账本、不衰减。这是"把压缩能力沉淀下来"。
-            try {
-              await getBackends().ledger.mergeHandoff(summary, { workspaceRoot, win: win || null });
-            } catch {
-              /* 自动沉淀失败不影响续跑 */
+            // 只沉淀模型这一次写出来的账本（info.ledger）：存档里还可能有机械记录、带过来的旧账本、引用的对话原文，
+            // 那些不是这一次确认的结论——对话里的列表会被记成事实，截过的旧账本会把库里完整的结论换成半句。
+            const written = info && typeof info.ledger === "string" ? info.ledger : summary;
+            if (written.trim()) {
+              try {
+                await getBackends().ledger.mergeHandoff(written, { workspaceRoot, win: win || null });
+              } catch {
+                /* 自动沉淀失败不影响续跑 */
+              }
             }
           }
           s.steps = [];
@@ -688,7 +700,7 @@ export const agentSession = {
           : undefined,
       });
       const _reason = (res && res.stopReason) || "stop";
-      // 真结束（final/aborted/error）或被手动停 → 跳出收尾，等用户。
+      // 真结束（final/loop/aborted/error）或被手动停 → 跳出收尾，等用户。loop=循环检测提醒后仍在重复，不自动续跑。
       // AI辅助模式：每个 turn 结束都交回用户（不跨回合自动续）——阶段做完就停、等用户选方向。
       if (ac.signal.aborted || assist || !NON_TERMINAL.has(_reason)) {
         break;
@@ -697,18 +709,18 @@ export const agentSession = {
       // 安全网①：连续两轮"漂移"（只描述/分析、没产生实质工具动作）= 真卡住 → 停下报告，别"顺畅地"空转烧 token。
       driftStreak = _reason === "drift" ? driftStreak + 1 : 0;
       if (driftStreak >= 2) {
-        res.content =
-          (res.content ? res.content + "\n\n" : "") +
+        sessionNotice =
           "（已停下）连续两轮只在描述/分析、没有产生实质工具动作——多半卡住了。进展已落盘（progress.md/工作目录）。" +
           "说一句你的判断、或补个我拿不到的输入（登录态/样本/方向），我再继续。";
+        res.content = (res.content ? res.content + "\n\n" : "") + sessionNotice;
         break;
       }
       // 安全网②：自动续跑硬上限（防极端 runaway）。
       if (autoRestarts >= MAX_AUTO_RESTARTS) {
-        res.content =
-          (res.content ? res.content + "\n\n" : "") +
+        sessionNotice =
           `（已停下）已自动续跑 ${autoRestarts} 轮仍未给出可独立实跑的最终产物。进展已落盘。` +
           "回看上面进展，告诉我聚焦哪条路、或补个输入，我再继续。";
+        res.content = (res.content ? res.content + "\n\n" : "") + sessionNotice;
         break;
       }
       // 续跑：把本段进展落盘成一条独立气泡（复用 checkpoint 的 UI 分段法）+ 清空 live 区 + 自增 seq。
@@ -736,6 +748,12 @@ export const agentSession = {
       });
       } // end for(;;) —— 全自动续跑
       s.aborted = ac.signal.aborted || (res && res.stopReason === "aborted");
+      // 引擎加在回复后面的说明（检测到循环、连续只输出文字、到了续跑上限……为什么停下、接下来怎么办）不是模型
+      // 流式输出的，steps 里没有；而侧栏只要有步骤记录就只渲染步骤。补成一段正文，否则任务停了用户却看不到原因。
+      const notice = [res && res.notice, sessionNotice].filter(Boolean).join("\n\n");
+      if (notice && !s.aborted) {
+        pushDelta(s, (s._curText >= 0 ? "\n\n---\n" : "") + notice);
+      }
       // res.content 为空时（工具结尾轮/被截断轮）从 steps 的 text 段兜底，
       // 保证落盘的 assistant 消息一定带正文 → 下一轮历史里这轮不会是空白＝不失忆。
       s.content = res.content || textFromSteps(s.steps) || "";

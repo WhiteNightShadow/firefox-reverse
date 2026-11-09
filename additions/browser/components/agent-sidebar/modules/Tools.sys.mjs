@@ -23,7 +23,9 @@
 /**
  * 每个工具声明时必须写明它在 Agent 回合里的特性，漏写会在加载时报错——新工具不会悄悄变成免确认：
  *   confirm       改动型（执行 JS / 导航 / 改包 / 落盘 / 起进程），执行前需用户批准（A3 要求）
- *   repeatExempt  同参数重复调用不算空转（滚动加载、trace 开关、页面交互每次都可能有新状态）
+ *   repeatExempt  同参数重复调用不算空转（滚动加载、trace 开关、页面交互每次都可能有新状态）。
+ *                 true = 整个工具豁免；["start", "stop"] 这样的数组 = 只有 action 是其中之一的调用豁免——
+ *                 开关型工具每组样本都要 start/stop 一次，回执相同不代表没有变化；query 照旧按空转熔断。
  *   progress      调用成功即算「前进」（落盘类），重置无进展计数
  * 三者都不具备的纯查询工具写 READ_ONLY；只读查询反复拿同一结果才是该熔断的空转。
  */
@@ -33,8 +35,18 @@ const T = (name, description, parameters, need, call, traits) => {
   if (!traits || typeof traits !== "object" || Object.keys(traits).some(key => !TRAIT_KEYS.has(key))) {
     throw new Error(`tool ${name}: declare its traits (READ_ONLY or { confirm, repeatExempt, progress })`);
   }
+  const exempt = traits.repeatExempt;
+  if (
+    exempt !== undefined &&
+    typeof exempt !== "boolean" &&
+    !(Array.isArray(exempt) && exempt.length && exempt.every(action => typeof action === "string" && action))
+  ) {
+    throw new Error(`tool ${name}: repeatExempt must be a boolean or a non-empty list of action names`);
+  }
   return { name, description, parameters, traits, _need: need, _call: call };
 };
+// 开关型工具（start → 触发 → query → stop）：开和关是正当的重复，查询不是。
+const SWITCH_ACTIONS = Object.freeze(["start", "stop"]);
 
 const PAGE_LOCATOR = {
   frameId: { type: "string", description: "page_frames 返回的 frameId；默认 top。查询可用 all，操作必须选一个 frame" },
@@ -473,7 +485,7 @@ function toolTable() {
       },
       b => b.page && b.page.signerTrace,
       (b, a, ctx) => b.page.signerTrace(a, ctx),
-      { confirm: true }
+      { confirm: true, repeatExempt: SWITCH_ACTIONS }
     ),
     T(
       "closure_read",
@@ -500,7 +512,7 @@ function toolTable() {
       },
       b => b.page && b.page.readClosure,
       (b, a, ctx) => b.page.readClosure(a, ctx),
-      { confirm: true }
+      { confirm: true, repeatExempt: SWITCH_ACTIONS }
     ),
     T(
       "debug_breakpoint",
@@ -532,7 +544,7 @@ function toolTable() {
       },
       b => b.page && b.page.debugBreakpoint,
       (b, a, ctx) => b.page.debugBreakpoint(a, ctx),
-      { confirm: true }
+      { confirm: true, repeatExempt: SWITCH_ACTIONS }
     ),
     T(
       "hook_inject",
@@ -548,7 +560,7 @@ function toolTable() {
       },
       b => b.page && b.page.hookInject,
       (b, a, ctx) => b.page.hookInject(a, ctx),
-      { confirm: true }
+      { confirm: true, repeatExempt: SWITCH_ACTIONS }
     ),
     T(
       "page_determinism",
@@ -618,7 +630,7 @@ function toolTable() {
         }
         return { ok: false, error: "action ∈ start / query / node / diff / stop" };
       },
-      { confirm: true }
+      { confirm: true, repeatExempt: SWITCH_ACTIONS }
     ),
     T(
       "jsvmp_split_dispatcher",
@@ -1074,7 +1086,7 @@ function toolTable() {
       },
       b => b.page && b.page.clearSiteData,
       (b, a, ctx) => b.page.clearSiteData(a, ctx),
-      { confirm: true, progress: true }
+      { confirm: true, repeatExempt: true, progress: true }
     ),
     T(
       "cookies",
@@ -1115,7 +1127,7 @@ function toolTable() {
       },
       b => b.cookies && b.cookies.run,
       (b, a) => b.cookies.run(a),
-      { confirm: true }
+      { confirm: true, repeatExempt: ["set", "remove"] }
     ),
 
     // ───────── 环境管理（backend: env；一个环境一个 profile + 独立进程）─────────
@@ -1434,7 +1446,7 @@ export function createBuiltinTools(backends = {}) {
       description: t.description,
       parameters: t.parameters,
       needsConfirm: !!t.traits.confirm,
-      repeatExempt: !!t.traits.repeatExempt,
+      repeatExempt: Array.isArray(t.traits.repeatExempt) ? t.traits.repeatExempt.slice() : !!t.traits.repeatExempt,
       progress: !!t.traits.progress,
       handler: (args, ctx) => t._call(backends, args, ctx),
     }));

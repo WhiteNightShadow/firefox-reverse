@@ -1,5 +1,6 @@
 /* dev/selftest-panel-live.mjs — 侧栏实时区的轮询：引擎状态版本（rev）没变时跳过这一拍；实时区被清空后
  * （比如在历史里点开正在运行的当前会话）要重新显示，等工具确认时确认条不能消失；版本变化时显示跟着更新。
+ * 另外：已结束的回复里，步骤记录中的停止说明要渲染出来。
  *
  *   node dev/selftest-panel-live.mjs
  */
@@ -93,7 +94,24 @@ try {
   state.rev++;
   await sleep(300);
   assert(shown().live.includes("新的进展"), "版本前进后显示更新");
-  console.log("panel live polling selftest: 5 passed");
+
+  // 已结束的回复带步骤记录时，侧栏只渲染步骤。引擎停下时补的说明（为什么停、接下来怎么办）由 AgentSession
+  // 追加成步骤里的一段正文：展开和「只看结论」两种状态下都要看得见。
+  const { AssistantBody } = await import(pathToFileURL(join(temp, "AgentPanel.mjs")));
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const notice = "（系统）⚠ 检测到循环：提醒之后仍在重复。为免无限循环，本轮已停下，不再自动续跑。";
+  const stopped = renderToStaticMarkup(
+    React.createElement(AssistantBody, {
+      content: "模型的汇报\n\n---\n" + notice,
+      steps: [
+        { kind: "text", text: "先读一下文件。" },
+        { kind: "tool", id: "t1", name: "fs_read", status: "ok" },
+        { kind: "text", text: "模型的汇报\n\n---\n" + notice },
+      ],
+    })
+  );
+  assert(stopped.includes("模型的汇报") && stopped.includes("检测到循环") && stopped.includes("不再自动续跑"), "步骤记录里的停止说明渲染出来了");
+  console.log("panel live polling selftest: 6 passed");
 } finally {
   root?.unmount();
   await rm(temp, { recursive: true, force: true });
