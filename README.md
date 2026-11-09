@@ -313,6 +313,7 @@ cd upstream && ./mach build && ./mach package
 ## 📝 版本更新记录
 
 ### main（尚未发布）
+- **用过agent之后退出浏览器要等一分钟**：agent跑过一轮之后（不管有没有绑定工作目录），记忆库`memory.sqlite`的连接一直开着，没有人关。退出浏览器时窗口关了，进程还要再留61秒，最后以AsyncShutdown超时崩溃结束。现在退出时关闭连接，0.3秒正常退出，已经记下的内容不受影响。
 - **`hook_inject`内置hook让页面的fetch失败**：装上内置hook之后，页面里裸调用的`fetch(url)`会抛TypeError（`'fetch' called on an object that does not implement interface Window`），请求发不出去，hook却记下了这次调用；`window.fetch(url)`和xhr不受影响。原因是包装函数用`this`调原生fetch，页面裸调用时`this`落到注入沙箱的全局。现在一律用页面window调。技能文档里“hook日志大法”的示例也是同样的写法，一并改了。
 
 ### v0.27.1（正式版，2026-11-04）

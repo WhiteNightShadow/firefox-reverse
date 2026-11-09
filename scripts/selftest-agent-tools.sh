@@ -36,6 +36,7 @@ SELFTESTS=(
   selftest-conversations.mjs
   selftest-history-transfer.mjs
   selftest-ledger-sql.mjs
+  selftest-ledger-shutdown.mjs
   selftest-context-projection.mjs
   selftest-context-runtime.mjs
   selftest-skills.mjs
