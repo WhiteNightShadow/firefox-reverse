@@ -1,0 +1,307 @@
+{
+ "schemaVersion": 1,
+ "status": "passed",
+ "release": "v0.27.2",
+ "releaseKind": "release",
+ "sourceCommit": "811e777fc65cf74ad931949a33a8b541ad21fda5",
+ "buildID": "20261109042733",
+ "packages": {
+  "firefox-reverse-v0.27.2-linux-arm64.tar.xz": "a5744691b22c2a19cc503cbd2392f9c8b6332fae786f50e72467bc5fdda09ac3",
+  "firefox-reverse-v0.27.2-linux-x86_64.tar.xz": "298cebf65875fe2d627dac12005475efc3f384c4b206a4b37780cae6c0d9f36e",
+  "firefox-reverse-v0.27.2-macos-arm64.dmg": "3afaf3a62bf486521f6ff50c62511983f7bb2bc459b31445ee0cf0d4a8486dce",
+  "firefox-reverse-v0.27.2-macos-x86_64.dmg": "579148c1fd103f45eaaf9f61b25c12412f5d3911b57fc0ccc298366bce98d101",
+  "firefox-reverse-v0.27.2-windows-x86_64-installer.exe": "1da098b19ca11cada73c4917ea97c2788df6dc7c923c98060145eb7ae06b69b8",
+  "firefox-reverse-v0.27.2-windows-x86_64.zip": "a75af8def1c7f64b305dc5c350aab64b23576ac3440f5169d5e386ec16438912"
+ },
+ "nativeCI": {
+  "run": "https://github.com/WhiteNightShadow/firefox-reverse/actions/runs/42589381248",
+  "mcpCommit": "e1e325271687c4cf1afa3d507e1022d59d187dc8",
+  "results": {
+   "windows-x86_64": {
+    "runner": "windows-latest",
+    "packageIdentity": "passed (44 sidebar modules, x86_64)",
+    "status": "passed",
+    "nativeFingerprintAssertions": 212,
+    "pageAndAgentAssertions": 78,
+    "environmentLifecycle": {
+     "quit-channel": 12,
+     "identity": 9,
+     "restart": 6
+    },
+    "globalSystemPromptScenarios": 8,
+    "syntheticModelRequests": 11,
+    "browserExitCodes": [
+     0,
+     0
+    ],
+    "packageUnchanged": true,
+    "windowsPackage": {
+     "screenshotRuns": 6,
+     "ledgerChecks": 5,
+     "msvcRuntimeInPackage": [
+      "vcruntime140.dll",
+      "vcruntime140_1.dll",
+      "msvcp140.dll"
+     ]
+    }
+   },
+   "linux-x86_64": {
+    "runner": "ubuntu-24.04",
+    "packageIdentity": "passed (44 sidebar modules, x86_64)",
+    "status": "passed",
+    "nativeFingerprintAssertions": 182,
+    "pageAndAgentAssertions": 78,
+    "environmentLifecycle": {
+     "quit-channel": 12,
+     "identity": 9,
+     "restart": 6
+    },
+    "globalSystemPromptScenarios": 8,
+    "syntheticModelRequests": 11,
+    "browserExitCodes": [
+     0,
+     0
+    ],
+    "packageUnchanged": true
+   },
+   "linux-arm64": {
+    "runner": "ubuntu-24.04-arm",
+    "packageIdentity": "passed (44 sidebar modules, arm64)",
+    "status": "passed",
+    "nativeFingerprintAssertions": 182,
+    "pageAndAgentAssertions": 78,
+    "environmentLifecycle": {
+     "quit-channel": 12,
+     "identity": 9,
+     "restart": 6
+    },
+    "globalSystemPromptScenarios": 8,
+    "syntheticModelRequests": 11,
+    "browserExitCodes": [
+     0,
+     0
+    ],
+    "packageUnchanged": true
+   },
+   "macos-x86_64": {
+    "runner": "macos-15-intel",
+    "packageIdentity": "passed (44 sidebar modules, x86_64)",
+    "status": "passed",
+    "nativeFingerprintAssertions": 197,
+    "pageAndAgentAssertions": 78,
+    "environmentLifecycle": {
+     "quit-channel": 12,
+     "identity": 9,
+     "restart": 6
+    },
+    "globalSystemPromptScenarios": 8,
+    "syntheticModelRequests": 11,
+    "browserExitCodes": [
+     0,
+     0
+    ],
+    "packageUnchanged": true
+   }
+  }
+ },
+ "local": {
+  "buildHost": "the maintainer's Apple silicon Mac (macOS 26.7.1): macOS targets built on the Mac itself (x86_64 cross-compiled from arm64), Linux and Windows targets cross-compiled in an x86_64 Ubuntu 24.04 container inside a Lima VM (Virtualization.framework, Rosetta)",
+  "macos-arm64": {
+   "host": {
+    "system": "macOS",
+    "version": "26.7.1",
+    "architecture": "arm64"
+   },
+   "signature": "ad-hoc verified, not Developer ID notarized",
+   "packageIdentity": "passed (44 sidebar modules, arm64)",
+   "macOSAppDataNativeScenarios": 15,
+   "packageAfterRun": {
+    "xulUnchanged": true,
+    "leftoverBrowserProcesses": 0,
+    "codesign": "passed"
+   },
+   "checks": {
+    "status": "passed",
+    "nativeFingerprintAssertions": 213,
+    "pageAndAgentAssertions": 78,
+    "environmentLifecycle": {
+     "quit-channel": 12,
+     "identity": 9,
+     "restart": 6
+    },
+    "globalSystemPromptScenarios": 8,
+    "syntheticModelRequests": 11,
+    "browserExitCodes": [
+     0,
+     0
+    ],
+    "packageUnchanged": true
+   }
+  },
+  "macos-x86_64": {
+   "host": "the same Mac under Rosetta 2 (native Intel results come from CI)",
+   "packageIdentity": "passed (44 sidebar modules, x86_64)",
+   "macOSAppDataNativeScenarios": 15,
+   "packageAfterRun": {
+    "xulUnchanged": true,
+    "leftoverBrowserProcesses": 0,
+    "codesign": "passed"
+   },
+   "checks": {
+    "status": "passed",
+    "nativeFingerprintAssertions": 213,
+    "pageAndAgentAssertions": 78,
+    "environmentLifecycle": {
+     "quit-channel": 12,
+     "identity": 9,
+     "restart": 6
+    },
+    "globalSystemPromptScenarios": 8,
+    "syntheticModelRequests": 11,
+    "browserExitCodes": [
+     0,
+     0
+    ],
+    "packageUnchanged": true
+   }
+  },
+  "linux-arm64": {
+   "host": "Ubuntu 24.04 arm64 VM (native)",
+   "packageIdentity": "passed (44 sidebar modules, arm64)",
+   "packageAfterRun": {
+    "xulUnchanged": true,
+    "leftoverBrowserProcesses": 0
+   },
+   "checks": {
+    "status": "passed",
+    "nativeFingerprintAssertions": 182,
+    "pageAndAgentAssertions": 78,
+    "environmentLifecycle": {
+     "quit-channel": 12,
+     "identity": 9,
+     "restart": 6
+    },
+    "globalSystemPromptScenarios": 8,
+    "syntheticModelRequests": 11,
+    "browserExitCodes": [
+     0,
+     0
+    ],
+    "packageUnchanged": true
+   }
+  },
+  "linux-x86_64": {
+   "host": "x86_64 Ubuntu 24.04 container under Rosetta (smoke run; native results come from CI)",
+   "packageIdentity": "passed (44 sidebar modules, x86_64)",
+   "packageAfterRun": {
+    "xulUnchanged": true,
+    "leftoverBrowserProcesses": 0
+   },
+   "checks": {
+    "status": "passed",
+    "nativeFingerprintAssertions": 182,
+    "pageAndAgentAssertions": 78,
+    "environmentLifecycle": {
+     "quit-channel": 12,
+     "identity": 9,
+     "restart": 6
+    },
+    "globalSystemPromptScenarios": 8,
+    "syntheticModelRequests": 11,
+    "browserExitCodes": [
+     0,
+     0
+    ],
+    "packageUnchanged": true
+   }
+  },
+  "windows-x86_64": [
+   {
+    "host": "Windows 11 IoT Enterprise LTSC 2024 (evaluation, build 26100) x64 in QEMU (TCG), no Visual C++ runtime installed",
+    "packageIdentity": "passed (44 sidebar modules, x86_64)",
+    "windowsPackage": {
+     "screenshotRuns": 6,
+     "ledgerChecks": 5,
+     "msvcRuntimeInPackage": [
+      "vcruntime140.dll",
+      "vcruntime140_1.dll",
+      "msvcp140.dll"
+     ]
+    },
+    "packageAfterRun": {
+     "xulUnchanged": true,
+     "leftoverBrowserProcesses": 0
+    },
+    "checks": {
+     "status": "passed",
+     "nativeFingerprintAssertions": 212,
+     "pageAndAgentAssertions": 78,
+     "environmentLifecycle": {
+      "quit-channel": 12,
+      "identity": 9,
+      "restart": 6
+     },
+     "globalSystemPromptScenarios": 8,
+     "syntheticModelRequests": 11,
+     "browserExitCodes": [
+      0,
+      0
+     ],
+     "packageUnchanged": true
+    }
+   },
+   {
+    "host": "Windows 11 IoT Enterprise LTSC 2024 (evaluation, build 26100) ARM64 in QEMU (HVF), Visual C++ runtime installed, x64 package through the system's x64 emulation",
+    "packageIdentity": "passed (44 sidebar modules, x86_64)",
+    "windowsPackage": {
+     "screenshotRuns": 6,
+     "ledgerChecks": 5,
+     "msvcRuntimeInPackage": [
+      "vcruntime140.dll",
+      "vcruntime140_1.dll",
+      "msvcp140.dll"
+     ]
+    },
+    "packageAfterRun": {
+     "xulUnchanged": true,
+     "leftoverBrowserProcesses": 0
+    },
+    "checks": {
+     "status": "passed",
+     "nativeFingerprintAssertions": 212,
+     "pageAndAgentAssertions": 78,
+     "environmentLifecycle": {
+      "quit-channel": 12,
+      "identity": 9,
+      "restart": 6
+     },
+     "globalSystemPromptScenarios": 8,
+     "syntheticModelRequests": 11,
+     "browserExitCodes": [
+      0,
+      0
+     ],
+     "packageUnchanged": true
+    }
+   }
+  ],
+  "windows-installer": "static payload comparison passed: 54 files identical between the installer's core/ and the zip"
+ },
+ "buildRecords": [
+  "build-record.macos-arm64.json",
+  "build-record.macos-x86_64.json",
+  "build-record.windows-x86_64.json",
+  "build-record.linux-x86_64.json",
+  "build-record.linux-arm64.json"
+ ],
+ "buildRecordsNote": "The macOS build records list the dmg as it came out of the build; the released macOS dmgs are the ad-hoc re-signed repacks of those (scripts/macos-repack-adhoc-dmg.sh), whose SHA-256 values are under packages.",
+ "limitations": [
+  "The loop-detection window and thresholds were tuned on scripted fake-model scenarios; no long task was run against a real model, and whether models follow the new handoff-prompt instructions (ledger length, earlier user messages) is unverified.",
+  "The repeat breaker still matches on digit-normalised arguments: after ten identical results in one turn, variants that differ only in digits are refused for the rest of the turn (pre-existing).",
+  "macOS app-data scenarios use a temporary FSFindFolder redirect and sandbox faults, not a macOS 27 TCC reproduction.",
+  "Headless Intel Mac and Linux runners do not exercise GPU/MSAA; the Windows test VMs have no GPU acceleration.",
+  "Linux x86_64 ran locally only as a smoke test under Rosetta; its native results are the CI ubuntu-24.04 job.",
+  "On networks that cannot reach Mozilla services, environment browsers on Windows may take 15-60 s or more to exit; the backend force-closes them after 15 s. v0.26.1 behaves the same.",
+  "Windows trace output was not exercised on real hardware."
+ ]
+}
