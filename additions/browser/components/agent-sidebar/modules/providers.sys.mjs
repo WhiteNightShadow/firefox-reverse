@@ -234,24 +234,74 @@ export async function fetchModels(baseUrl, token, protocol = "openai") {
   );
 }
 
-/** 已知支持看图（多模态）的模型集合。 */
-const VISION_MODELS = new Set(["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini"]);
+/** 模型配置里「图片输入」的取值：auto=按模型名判断，on=支持看图，off=不支持（图片不发给模型）。 */
+export const IMAGE_INPUT_SETTINGS = Object.freeze(["auto", "on", "off"]);
+
+// 按模型名判断能不能看图。各家新模型出得快，这里只认有把握的：认不出返回 null（不知道），由设置里的
+// 「图片输入」兜底。先认多模态标记，再认整个系列。
+const IMAGE_MARKER = /(^|[-_.:])(vl\d*|vlm|vision|omni|ocr)([-_.:]|$)|vision/;
+const IMAGE_RULES = [
+  // [正则, 结果]，按顺序第一条匹配的算数
+  [/(^|[./:_-])claude-(2|instant)/, false], // Bedrock 的 id 是 us.anthropic.claude-…
+  [/(^|[./:_-])claude/, true],
+  [/^gemini-(1\.0-pro|pro)$/, false],
+  [/^gemini|^gemma-?3|^learnlm/, true],
+  [/^(gpt-3\.5|gpt-4(-\d{4})?$|gpt-4-32k|gpt-oss)/, false],
+  [/^(chatgpt-4o|gpt-4o|gpt-4\.1|gpt-4\.5|gpt-4-turbo|gpt-[5-9]|codex-mini|computer-use)/, true],
+  [/^(o[13]-mini|o1-preview)/, false],
+  [/^(o1|o3|o4-mini)([-.]|$)/, true],
+  [/^grok-(4|[2-9]-vision|vision)/, true],
+  [/^grok/, false],
+  [/^(llama-?4|pixtral|mistral-(medium|small)-3|qvq|cogvlm|internvl|minicpm-v|llava)/, true],
+  [/^qwen3\.\d+/, true], // qwen3.5 起原生多模态
+  [/^(qwen3?-max|qwen-plus|qwen-turbo|qwen-long|qwen[\d.]*-coder|qwq|qwen[\d.]*-\d+b)/, false],
+  [/^glm-[\d.]+v/, true],
+  [/^glm-/, false],
+  [/^(kimi-k2\.\d|kimi-latest|kimi-thinking-preview)/, true], // K2.5 起原生多模态
+  [/^(kimi-k2|moonshot-v1-(8k|32k|128k|auto)$)/, false],
+  [/^deepseek/, false], // 只有带 vision/vl 标记的（如 deepseek-v4-flash-vision-exp）能看图，前面已经认过
+  [/^(minimax-m[12]|abab)/, false],
+  [/^(doubao-seed-(1\.[6-9]|[2-9])|doubao-1\.5-(vision|thinking-vision))/, true],
+];
 
 /**
- * 该模型是否支持「看图」（决定 AgentLoop 要不要把截图回喂给模型）。
- * DeepSeek 系列均为纯文本 → false（截图自动操作只能走 DOM 路线）。
+ * 按模型名判断能不能看图：true 支持，false 不支持（图片发过去会被拒），null 认不出。
+ * 名字可以带网关前缀（openai/gpt-4o、models/gemini-2.5-pro）和 [1m] 这类标记。
  * @param {string} model
- * @returns {boolean}
+ * @returns {boolean|null}
  */
-export function isVisionModel(model) {
-  if (!model) {
-    return false;
+export function imageInputSupport(model) {
+  const full = String(model || "").trim().toLowerCase().replace(/\s*\[\d+[a-z]?\]\s*$/, "");
+  if (!full) {
+    return null;
   }
-  const m = String(model).toLowerCase();
-  if (VISION_MODELS.has(m)) {
+  const name = full.split("/").pop();
+  if (IMAGE_MARKER.test(name)) {
     return true;
   }
-  return /(^|[-_/])(vl|vision)([-_/]|$)|gpt-4o|gpt-4\.1|qwen.*vl|claude-3|gemini-(1\.5|2)|kimi-k2/.test(m);
+  for (const [pattern, result] of IMAGE_RULES) {
+    if (pattern.test(name)) {
+      return result;
+    }
+  }
+  return null;
+}
+
+/**
+ * 当前配置能不能把图片发给模型。setting 是模型配置里的「图片输入」（auto/on/off），auto 时按模型名判断。
+ * 返回 { supported: true|false|null, auto: 按名字判断的结果, setting }。
+ * supported=false：粘贴的图片不能发，历史里的图片换成文字说明；null：不确定，允许发，发不过去会报错；
+ * 截图回喂给模型只在 supported=true 时做。
+ */
+export function resolveImageInput(setting, model) {
+  const s = IMAGE_INPUT_SETTINGS.includes(setting) ? setting : "auto";
+  const auto = imageInputSupport(model);
+  return { supported: s === "on" ? true : s === "off" ? false : auto, auto, setting: s };
+}
+
+/** 兼容旧调用：确定能看图才算。 */
+export function isVisionModel(model) {
+  return imageInputSupport(model) === true;
 }
 
 /** 给 SettingsPane 下拉用。baseUrl 供「获取模型列表」对内置 provider 动态拉取。 */
