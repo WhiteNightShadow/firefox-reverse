@@ -1120,12 +1120,8 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       setError("这个会话正在另一个浏览器窗口打开，本窗口只能查看。先点上方「在此窗口接管」，再在这里发送。");
       return;
     }
-    if (pendingImages.length) {
-      const support = imageSupportNow();
-      if (support.supported === false) {
-        setError(unsupportedImageText(support.model));
-        return;
-      }
+    if (pendingImages.length && imageSupportNow().supported === false) {
+      return; // 输入区已经提示当前模型不能看图、发送按钮是灰的；按回车也不发
     }
     setError(null);
     setNotice(null);
@@ -1486,6 +1482,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     }
   }
 
+  // 有待发送的图片时才读模型配置（每次渲染都读 prefs 没必要）
+  const imageSupport = attachments.length ? imageSupportNow() : null;
+  const imageBlocked = !!imageSupport && imageSupport.supported === false;
+
   function onKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -1761,11 +1761,9 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
             {preparing > 0 && <div className="agent-attach__item is-loading">处理中…</div>}
           </div>
         )}
-        {attachments.length > 0 && (() => {
-          const support = imageSupportNow();
-          if (support.supported === false) {
-            return <div className="agent-attach__warn">⚠ {unsupportedImageText(support.model)}</div>;
-          }
+        {imageBlocked && <div className="agent-attach__warn">⚠ {unsupportedImageText(imageSupport.model)}</div>}
+        {attachments.length > 0 && !imageBlocked && (() => {
+          const support = imageSupport;
           if (support.supported == null) {
             return (
               <div className="agent-attach__note">
@@ -1790,7 +1788,12 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
               停止
             </button>
           ) : (
-            <button type="button" onClick={send} disabled={(!input.trim() && !attachments.length) || preparing > 0}>
+            <button
+              type="button"
+              onClick={send}
+              disabled={(!input.trim() && !attachments.length) || preparing > 0 || imageBlocked}
+              title={imageBlocked ? "当前模型不支持看图：去掉图片，或换一个能看图的模型" : undefined}
+            >
               发送
             </button>
           )}

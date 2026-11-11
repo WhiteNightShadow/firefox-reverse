@@ -172,13 +172,18 @@ try {
   console.log("[4] 模型不能看图时拦下");
   profile.model = "deepseek-v4-flash";
   await type("看看这张图");
-  ok(/当前模型（deepseek-v4-flash）不支持看图/.test(noteText()), "不能看图的模型：输入区直接提示");
+  ok(/当前模型（deepseek-v4-flash）不支持看图，带图片发不出去。换一个能看图的模型，或者在设置/.test(noteText()), "不能看图的模型：输入区提示原因和怎么改");
+  ok(sendButton().disabled && /去掉图片/.test(sendButton().getAttribute("title") || ""), "发送按钮变灰，悬停说明原因");
   await click(sendButton());
-  ok(!runs.length && thumbs().length === 1 && textarea().value === "看看这张图", "发送被拦下，图片和文字都留着");
-  ok(/不支持看图/.test(document.querySelector(".agent-panel__error")?.textContent || ""), "报错说明原因和怎么改");
+  textarea().dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  await sleep(100);
+  ok(!runs.length && thumbs().length === 1 && textarea().value === "看看这张图" && !document.querySelector(".agent-panel__error"), "点按钮、按回车都不发，图片和文字留着，不另外弹报错");
+  await click(document.querySelector(".agent-attach__remove"));
+  ok(!sendButton().disabled && !/不支持看图/.test(noteText()), "去掉图片后可以只发文字");
+  await paste({ files: [file("shot.png")] });
   profile.imageInput = "on";
   await type("看看这张图 ");
-  ok(!/不支持看图/.test(noteText()), "设置里改成「支持」后不再提示");
+  ok(!/不支持看图/.test(noteText()) && !sendButton().disabled, "设置里改成「支持」后不再提示，可以发送");
 
   console.log("[5] 发送");
   await type("这张截图里的签名参数是什么");
