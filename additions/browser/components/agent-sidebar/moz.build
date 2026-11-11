@@ -11,6 +11,7 @@ EXTRA_JS_MODULES.agentsidebar += [
     "modules/AgentLoop.sys.mjs",
     "modules/AgentSession.sys.mjs",
     "modules/Backends.sys.mjs",
+    "modules/ChatImages.sys.mjs",
     "modules/CodeBackend.sys.mjs",
     "modules/ConfigStore.sys.mjs",
     "modules/ContextProjection.sys.mjs",

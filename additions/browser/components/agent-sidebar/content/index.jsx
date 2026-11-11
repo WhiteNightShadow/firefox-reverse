@@ -17,7 +17,7 @@ function loadModules() {
   const { configStore } = ChromeUtils.importESModule(
     "resource:///modules/agentsidebar/ConfigStore.sys.mjs"
   );
-  const { buildClientFromStore, listProviders, isVisionModel, fetchModels, CUSTOM_PROTOCOL_OPTIONS } = ChromeUtils.importESModule(
+  const { buildClientFromStore, listProviders, resolveImageInput, fetchModels, CUSTOM_PROTOCOL_OPTIONS } = ChromeUtils.importESModule(
     "resource:///modules/agentsidebar/providers.sys.mjs"
   );
   const { conversationStore } = ChromeUtils.importESModule(
@@ -52,7 +52,7 @@ function loadModules() {
     router,
     runAgentTurn,
     session: agentSession,
-    isVisionModel,
+    resolveImageInput,
     fetchModels,
     workspace: backends.workspace, // 工作目录后端（侧边栏据此 setRoot/列文件）
     notes: backends.notes, // 逆向进展笔记后端（每轮把当前站点笔记摘要注入系统提示）
@@ -76,7 +76,7 @@ function App({ mods }) {
         router={mods.router}
         runAgentTurn={mods.runAgentTurn}
         session={mods.session}
-        isVisionModel={mods.isVisionModel}
+        resolveImageInput={mods.resolveImageInput}
         workspace={mods.workspace}
         notes={mods.notes}
         skill={mods.skill}
@@ -97,6 +97,7 @@ function App({ mods }) {
           providers={mods.providers}
           protocolOptions={mods.protocolOptions}
           fetchModels={mods.fetchModels}
+          resolveImageInput={mods.resolveImageInput}
           onClose={() => setView("chat")}
         />
       )}

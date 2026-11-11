@@ -35,6 +35,12 @@ const PROVIDER_NAMES = {
   custom: "自定义模型",
 };
 
+/** 模型配置里的「图片输入」：auto=按模型名判断，on=支持看图，off=不支持。取值和 providers.sys.mjs 的
+ *  IMAGE_INPUT_SETTINGS 一致，怎么判断在那边。 */
+function normalizeImageInput(value) {
+  return value === "on" || value === "off" ? value : "auto";
+}
+
 function profileId() {
   return "mp_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
 }
@@ -54,6 +60,7 @@ function normalizeProfile(raw = {}) {
     baseUrl: String(raw.baseUrl || "").trim(),
     protocol: normalizeCustomProtocol(raw.protocol),
     reasoningEffort: normalizeReasoningEffort(raw.reasoningEffort || "auto"),
+    imageInput: normalizeImageInput(raw.imageInput),
     createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now(),
     updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
   };
@@ -378,6 +385,12 @@ export class ConfigStore {
     if (p && p.provider === "custom" && p.reasoningEffort !== normalized) {
       this.updateModelProfile(p.id, { reasoningEffort: normalized });
     }
+  }
+
+  /** 当前模型配置的「图片输入」设置（auto/on/off）。 */
+  getImageInput() {
+    const p = this.getActiveModelProfile();
+    return normalizeImageInput(p && p.imageInput);
   }
 
   /** 改动型工具（page_eval/导航/网络/存JS/jsvmp）执行前是否需用户确认。

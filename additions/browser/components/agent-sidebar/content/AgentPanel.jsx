@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import MarkdownContent from "./MarkdownContent.jsx";
+import { dragHasFiles, imageFilesOf, prepareImage as prepareImageFile, textWinsOverImage } from "./imageInput.js";
+import { MAX_IMAGES_PER_MESSAGE, MAX_MESSAGE_IMAGE_BYTES, describeImage } from "../modules/ChatImages.sys.mjs";
 
 /**
  * Agent 对话面板（A1+：多轮消息 + 多线程历史持久化）。
@@ -144,6 +146,99 @@ function ToolStep({ step }) {
         : step.shot
         ? <span className="msg__step-sum">［截图 ×{step.shot}］</span>
         : null}
+    </div>
+  );
+}
+
+function unsupportedImageText(model) {
+  return `当前模型${model ? `（${model}）` : ""}不支持看图，带图片发不出去。换一个能看图的模型，或者在设置 → 模型配置里把「图片输入」改成「支持」。`;
+}
+
+// 图片字节 → blob: URL（侧栏 CSP 允许 blob: 图片）。失败返回 ""。
+function blobUrl(bytes, mime) {
+  try {
+    return URL.createObjectURL(new Blob([bytes], { type: mime || "image/png" }));
+  } catch {
+    return "";
+  }
+}
+
+// 会话里图片的 blob: URL 缓存（按图片 id）：切会话、重渲染不用重新读文件。只留最近的 200 张。
+const storedImageUrls = new Map();
+const storedImageLoads = new Map();
+function storedImageUrl(store, ref) {
+  if (storedImageUrls.has(ref.id)) {
+    return Promise.resolve(storedImageUrls.get(ref.id));
+  }
+  if (storedImageLoads.has(ref.id)) {
+    return storedImageLoads.get(ref.id);
+  }
+  const load = Promise.resolve()
+    .then(() => store.readImage(ref))
+    .then(bytes => (bytes && bytes.length ? blobUrl(bytes, ref.mime) : ""))
+    .catch(() => "")
+    .then(url => {
+      storedImageLoads.delete(ref.id);
+      if (url) {
+        storedImageUrls.set(ref.id, url);
+        if (storedImageUrls.size > 200) {
+          const [oldId, oldUrl] = storedImageUrls.entries().next().value;
+          storedImageUrls.delete(oldId);
+          try {
+            URL.revokeObjectURL(oldUrl);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      return url;
+    });
+  storedImageLoads.set(ref.id, load);
+  return load;
+}
+
+// 用户消息里附带的一张图：从会话存储读出来显示，点一下放大/缩小。
+function StoredImage({ image, store }) {
+  const [url, setUrl] = useState(() => storedImageUrls.get(image.id) || "");
+  const [missing, setMissing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (url || !store || typeof store.readImage !== "function") {
+      return undefined;
+    }
+    let live = true;
+    storedImageUrl(store, image).then(u => {
+      if (live) {
+        if (u) setUrl(u);
+        else setMissing(true);
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, [image.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const label = describeImage(image);
+  if (missing) {
+    return <span className="msg__image msg__image--missing">［图片已不在：{label}］</span>;
+  }
+  if (!url) {
+    return <span className="msg__image msg__image--loading" title={label} />;
+  }
+  return (
+    <img
+      className={`msg__image${expanded ? " is-expanded" : ""}`}
+      src={url}
+      alt={label}
+      title={`${label}（点击${expanded ? "缩小" : "放大"}）`}
+      onClick={() => setExpanded(v => !v)}
+    />
+  );
+}
+
+function MessageImages({ images, store }) {
+  return (
+    <div className="msg__images">
+      {images.map((image, k) => <StoredImage key={image.id + ":" + k} image={image} store={store} />)}
     </div>
   );
 }
@@ -294,12 +389,21 @@ function isFrontWindow() {
   }
 }
 
-export default function AgentPanel({ buildClient, conversations, store, router, runAgentTurn, session, isVisionModel, workspace, notes, skill, toolNames = [], onOpenEnvironment, onOpenSettings, hidden = false }) {
+export default function AgentPanel({ buildClient, conversations, store, router, runAgentTurn, session, resolveImageInput, prepareImage = prepareImageFile, workspace, notes, skill, toolNames = [], onOpenEnvironment, onOpenSettings, hidden = false }) {
   const [messages, setMessages] = useState([]); // 仅 user/assistant
   const [threads, setThreads] = useState([]); // 摘要列表
   const [currentId, setCurrentId] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState("");
+  // 输入框里待发送的图片：[{ key, url, bytes, mime, width, height, sourceWidth, sourceHeight, name }]，和文字一样算草稿
+  const [attachments, setAttachments] = useState([]);
+  const attachmentsRef = useRef([]); // 连续粘贴时读最新的待发送图片（避免闭包拿到旧值）
+  const attachKeyRef = useRef(0);
+  const [preparing, setPreparing] = useState(0); // 正在处理（解码/缩小/压缩）的图片张数
+  const preparingRef = useRef(0);
+  const [attachNotice, setAttachNotice] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const savingImagesRef = useRef(false); // 发送时正在存图片：这段时间再点发送不重复发
   const [busy, setBusy] = useState(false);
   const [activeTool, setActiveTool] = useState(null);
   const [pendingConfirm, setPendingConfirm] = useState(null);
@@ -327,7 +431,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const openThreadRef = useRef(null); // 最新 openThread 闭包，供 listRunning 定时器自动跟随（避免 effect deps 抖动）
   const followingRef = useRef(false); // 自动跟随进行中（防重入，避免一轮没切完下一轮又发起）
   const triedFollowRef = useRef(null); // 上次尝试跟随的会话 id（切不成=被别窗口占用时不再每 1.5s 刷错横幅）
-  const uiStateRef = useRef({ msgs: 0, input: "" }); // 给自动跟随读最新 UI 状态（不进 effect deps，防每次按键重建定时器）
+  const uiStateRef = useRef({ msgs: 0, input: "", attachments: 0 }); // 给自动跟随读最新 UI 状态（不进 effect deps，防每次按键重建定时器）
 
   // 多窗口预留的 owner token：同一 chrome 窗口内复用（切到别的侧栏再切回=文档重建，但宿主窗口不变）→
   // 重挂载传同一 token → 立即重认领自己那条会话，不受心跳 TTL 影响。取不到宿主窗口则退化为 per-mount 随机
@@ -623,6 +727,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           const eligible =
             !busy &&
             !String(ui.input || "").trim() &&
+            !ui.attachments &&
             !!openThreadRef.current &&
             !followingRef.current &&
             isFrontWindow();
@@ -860,20 +965,185 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     }
   }
 
+  // 当前模型配置能不能看图：设置里「图片输入」选的，自动时按模型名判断。{ supported: true|false|null, model }
+  function imageSupportNow() {
+    try {
+      const profile = store && store.getActiveModelProfile ? store.getActiveModelProfile() : null;
+      const model = (profile && profile.model) || "";
+      const resolved = typeof resolveImageInput === "function"
+        ? resolveImageInput(profile && profile.imageInput, model)
+        : { supported: null };
+      return { ...resolved, model };
+    } catch {
+      return { supported: null, model: "" };
+    }
+  }
+
+  function setAttachmentList(next) {
+    attachmentsRef.current = next;
+    setAttachments(next);
+  }
+
+  function removeAttachment(key) {
+    const a = attachmentsRef.current.find(x => x.key === key);
+    if (a && a.url) {
+      try {
+        URL.revokeObjectURL(a.url);
+      } catch {
+        /* ignore */
+      }
+    }
+    setAttachmentList(attachmentsRef.current.filter(x => x.key !== key));
+    setAttachNotice(null);
+  }
+
+  function clearAttachments() {
+    for (const a of attachmentsRef.current) {
+      try {
+        if (a.url) URL.revokeObjectURL(a.url);
+      } catch {
+        /* ignore */
+      }
+    }
+    setAttachmentList([]);
+    setAttachNotice(null);
+  }
+
+  // 粘贴/拖入的图片：一张张解码、缩小、压缩后放进待发送列表。超过张数或合计大小的不加，说明原因。
+  async function addImageFiles(files) {
+    const list = Array.from(files || []);
+    if (!list.length) {
+      return;
+    }
+    const notes = [];
+    const room = MAX_IMAGES_PER_MESSAGE - attachmentsRef.current.length - preparingRef.current;
+    if (room <= 0) {
+      setAttachNotice(`一条消息最多带 ${MAX_IMAGES_PER_MESSAGE} 张图片`);
+      return;
+    }
+    const take = list.slice(0, room);
+    if (list.length > take.length) {
+      notes.push(`一条消息最多带 ${MAX_IMAGES_PER_MESSAGE} 张图片，多出的 ${list.length - take.length} 张没加上`);
+    }
+    preparingRef.current += take.length;
+    setPreparing(preparingRef.current);
+    setAttachNotice(null);
+    for (const file of take) {
+      try {
+        const img = await prepareImage(file);
+        const total = attachmentsRef.current.reduce((sum, a) => sum + a.bytes.length, 0) + img.bytes.length;
+        if (total > MAX_MESSAGE_IMAGE_BYTES) {
+          notes.push(`这条消息的图片合计超过 ${MAX_MESSAGE_IMAGE_BYTES / 1024 / 1024}MB，${img.name || "这张图"}没加上`);
+          continue;
+        }
+        const key = ++attachKeyRef.current;
+        setAttachmentList([...attachmentsRef.current, { ...img, key, url: blobUrl(img.bytes, img.mime) }]);
+      } catch (e) {
+        notes.push(`${(file && file.name) || "图片"}：${(e && e.message) || e}`);
+      } finally {
+        preparingRef.current -= 1;
+        setPreparing(preparingRef.current);
+      }
+    }
+    if (notes.length) {
+      setAttachNotice(notes.join("；"));
+    }
+  }
+
+  function onPaste(e) {
+    const dt = e.clipboardData;
+    const files = imageFilesOf(dt);
+    if (!files.length) {
+      return; // 没有图片：照常粘贴文字
+    }
+    let text = "";
+    try {
+      text = dt.getData("text/plain") || "";
+    } catch {
+      /* 读不到文字就当没有 */
+    }
+    if (textWinsOverImage(text)) {
+      return; // Excel/Word 这类同时带文字和渲染图的复制：贴文字
+    }
+    e.preventDefault();
+    void addImageFiles(files);
+  }
+
+  function onDragOver(e) {
+    if (!dragHasFiles(e.dataTransfer)) {
+      return;
+    }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    if (!dragOver) setDragOver(true);
+  }
+
+  function onDragLeave(e) {
+    if (e.currentTarget && e.relatedTarget && e.currentTarget.contains(e.relatedTarget)) {
+      return;
+    }
+    setDragOver(false);
+  }
+
+  function onDrop(e) {
+    setDragOver(false);
+    if (!dragHasFiles(e.dataTransfer)) {
+      return; // 拖进来的是文字/链接：照常插进输入框
+    }
+    e.preventDefault();
+    const files = imageFilesOf(e.dataTransfer);
+    if (!files.length) {
+      setAttachNotice("只能拖入图片文件");
+      return;
+    }
+    void addImageFiles(files);
+  }
+
+  // 卸载时释放待发送图片的 blob: URL
+  useEffect(() => () => {
+    for (const a of attachmentsRef.current) {
+      try {
+        if (a.url) URL.revokeObjectURL(a.url);
+      } catch {
+        /* ignore */
+      }
+    }
+  }, []);
+
   async function send() {
     const text = input.trim();
-    if (!text || busy) {
+    const pendingImages = attachmentsRef.current;
+    if ((!text && !pendingImages.length) || busy || preparingRef.current > 0 || savingImagesRef.current) {
       return;
     }
     if (spectating) {
       setError("这个会话正在另一个浏览器窗口打开，本窗口只能查看。先点上方「在此窗口接管」，再在这里发送。");
       return;
     }
+    if (pendingImages.length && imageSupportNow().supported === false) {
+      return; // 输入区已经提示当前模型不能看图、发送按钮是灰的；按回车也不发
+    }
     setError(null);
     setNotice(null);
-    const userMsg = { role: "user", content: text };
+    // 图片先存进会话存储（存不下就不发，草稿留着），消息上只记引用。
+    let images = [];
+    if (pendingImages.length) {
+      savingImagesRef.current = true;
+      try {
+        for (const a of pendingImages) {
+          images.push(await conversations.saveImage(a.bytes, { width: a.width, height: a.height }));
+        }
+      } catch (e) {
+        savingImagesRef.current = false;
+        setError("图片保存失败，没有发送：" + ((e && e.message) || e));
+        return;
+      }
+    }
+    const userMsg = { role: "user", content: text, ...(images.length ? { images } : {}) };
     setMessages([...messages, userMsg]); // 乐观显示；发给模型的权威历史下面从持久化 store 读
     setInput("");
+    clearAttachments();
+    savingImagesRef.current = false;
     resetSteps();
     atBottomRef.current = true; // 发送即贴底，跟随本次回复
     autoApproveRef.current = false;
@@ -963,13 +1233,27 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         if (cancelledBoundary) {
           dynamicParts.push("【手动取消边界】上一项任务已被用户明确取消。不要自动恢复旧任务；只有最新消息明确要求继续时才可继续。");
         }
-        const fallbackConvo = convo.map(m => ({ role: m.role, content: m.content }));
+        let fallbackConvo = convo.map(m => ({
+          role: m.role,
+          content: m.content,
+          ...(Array.isArray(m.images) && m.images.length ? { images: m.images } : {}),
+        }));
+        if (typeof conversations.materializeImages === "function") {
+          fallbackConvo = await conversations.materializeImages(fallbackConvo, {
+            allowImages: imageSupportNow().supported !== false,
+          });
+        } else {
+          fallbackConvo = fallbackConvo.map(({ images, ...m }) => m); // eslint-disable-line no-unused-vars
+        }
+        const contextText = "\n\n【本轮动态上下文】\n" + dynamicParts.join("\n\n");
         for (let i = fallbackConvo.length - 1; i >= 0; i--) {
           if (fallbackConvo[i].role === "user") {
+            const content = fallbackConvo[i].content;
             fallbackConvo[i] = {
               ...fallbackConvo[i],
-              content: String(fallbackConvo[i].content || "") +
-                "\n\n【本轮动态上下文】\n" + dynamicParts.join("\n\n"),
+              content: Array.isArray(content)
+                ? [...content, { type: "text", text: contextText }]
+                : String(content || "") + contextText,
             };
             break;
           }
@@ -1090,7 +1374,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   }
 
   openThreadRef.current = openThread; // 每渲染更新，供「自动跟随」定时器调用最新闭包
-  uiStateRef.current = { msgs: messages.length, input }; // 每渲染更新，供自动跟随判定"面板是否真正空闲中性"
+  uiStateRef.current = { msgs: messages.length, input, attachments: attachments.length }; // 每渲染更新，供自动跟随判定"面板是否真正空闲中性"
 
   function pickConversationFile(mode, title, defaultName, callback) {
     try {
@@ -1197,6 +1481,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       }
     }
   }
+
+  // 有待发送的图片时才读模型配置（每次渲染都读 prefs 没必要）
+  const imageSupport = attachments.length ? imageSupportNow() : null;
+  const imageBlocked = !!imageSupport && imageSupport.supported === false;
 
   function onKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1393,7 +1681,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
             {m.role === "assistant" ? (
               <AssistantBody steps={m.steps} content={m.content} />
             ) : (
-              <div className="msg__content">{m.content}</div>
+              <div className="msg__content">
+                {Array.isArray(m.images) && m.images.length ? <MessageImages images={m.images} store={conversations} /> : null}
+                {m.content}
+              </div>
             )}
           </div>
         ))}
@@ -1441,23 +1732,72 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
 
       {error && <div className="agent-panel__error">⚠ {error}</div>}
 
-      <div className="agent-panel__input">
-        <textarea
-          value={input}
-          placeholder={busy ? "执行中…可继续输入，停止后或本轮结束再发送" : "输入消息，Enter 发送，Shift+Enter 换行"}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          rows={2}
-        />
-        {busy ? (
-          <button type="button" className="agent-panel__stop" onClick={stopRun} title="停止自主执行">
-            停止
-          </button>
-        ) : (
-          <button type="button" onClick={send} disabled={!input.trim()}>
-            发送
-          </button>
+      <div
+        className={`agent-panel__composer${dragOver ? " is-dragover" : ""}`}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
+        {(attachments.length > 0 || preparing > 0) && (
+          <div className="agent-attach">
+            {attachments.map(a => {
+              const label = describeImage({ mime: a.mime, width: a.width, height: a.height, size: a.bytes.length });
+              const scaled = a.sourceWidth && a.sourceWidth !== a.width ? `，原图 ${a.sourceWidth}×${a.sourceHeight} 已缩小` : "";
+              return (
+                <div key={a.key} className="agent-attach__item" title={label + scaled}>
+                  {a.url ? <img src={a.url} alt={label} /> : <span className="agent-attach__label">{label}</span>}
+                  <button
+                    type="button"
+                    className="agent-attach__remove"
+                    onClick={() => removeAttachment(a.key)}
+                    title="移除这张图片"
+                    aria-label="移除这张图片"
+                  >
+                    {ICONS.close}
+                  </button>
+                </div>
+              );
+            })}
+            {preparing > 0 && <div className="agent-attach__item is-loading">处理中…</div>}
+          </div>
         )}
+        {imageBlocked && <div className="agent-attach__warn">⚠ {unsupportedImageText(imageSupport.model)}</div>}
+        {attachments.length > 0 && !imageBlocked && (() => {
+          const support = imageSupport;
+          if (support.supported == null) {
+            return (
+              <div className="agent-attach__note">
+                没认出当前模型{support.model ? `（${support.model}）` : ""}能不能看图，会照常发送；发送报错的话，在设置 → 模型配置里把「图片输入」改成「不支持」，或换一个能看图的模型。
+              </div>
+            );
+          }
+          return null;
+        })()}
+        {attachNotice && <div className="agent-attach__note">{attachNotice}</div>}
+        <div className="agent-panel__input">
+          <textarea
+            value={input}
+            placeholder={busy ? "执行中…可继续输入，停止后或本轮结束再发送" : "输入消息，Enter 发送，Shift+Enter 换行，可粘贴图片"}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onKeyDown}
+            onPaste={onPaste}
+            rows={2}
+          />
+          {busy ? (
+            <button type="button" className="agent-panel__stop" onClick={stopRun} title="停止自主执行">
+              停止
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={send}
+              disabled={(!input.trim() && !attachments.length) || preparing > 0 || imageBlocked}
+              title={imageBlocked ? "当前模型不支持看图：去掉图片，或换一个能看图的模型" : undefined}
+            >
+              发送
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

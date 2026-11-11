@@ -7,6 +7,8 @@
  * 零 Firefox 依赖：client / router 注入，可 Node 自测。
  */
 
+import { contentChars, countImageParts, imagesNote, limitImageParts } from "./ChatImages.sys.mjs";
+
 // 单条工具结果回灌进对话上下文的字符上限。超出只截头部+提示分段读，避免长会话上下文无界膨胀→TTFT 超时。
 const TOOL_RESULT_CAP = 6000;
 
@@ -384,8 +386,9 @@ function collectUserNotes(run, earlier) {
     }
     if (m.role !== "user") continue;
     const text = String(_stripRuntimeContext(textOfContent(m.content)) || "").trim();
-    if (!text || text.startsWith("（系统") || text.startsWith(COMPACT_NOTE)) continue;
-    const note = _clip(text, USER_NOTE_CHARS, 0.7);
+    const images = countImageParts(m.content);
+    if ((!text && !images) || text.startsWith("（系统") || text.startsWith(COMPACT_NOTE)) continue;
+    const note = _clip(text, USER_NOTE_CHARS, 0.7) + imagesNote(images);
     const at = run.userNotes.indexOf(note);
     if (at >= 0) {
       run.userNotes.splice(at, 1);
@@ -429,7 +432,7 @@ function transcriptOf(list) {
       lines.push("[结果] " + _headOf(String(m.content == null ? "" : m.content), 700));
     } else if (m.role === "user") {
       // 自动续跑后的回合里，之前几条 user 消息还带着当时的动态上下文块，那不是对话内容。
-      lines.push("[用户] " + _stripRuntimeContext(textOfContent(m.content)));
+      lines.push("[用户] " + _stripRuntimeContext(textOfContent(m.content)) + imagesNote(countImageParts(m.content)));
     }
   }
   return lines.join("\n");
@@ -903,7 +906,8 @@ function _errSig(name, env) {
 function _msgSize(m) {
   let n = 0;
   if (m.content != null) {
-    n += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
+    // 图片按估算算，不按 base64 长度：一张截图的 data URL 动辄上百万字符，按长度算会让上下文一开始就「超了」。
+    n += contentChars(m.content);
   }
   if (m.reasoning_content) {
     n += String(m.reasoning_content).length;
@@ -1014,6 +1018,11 @@ function _withRuntimeContext(message, block) {
  * 中间被裁处插一条省略提示。未超预算则原样返回。
  */
 function trimContext(msgs, maxChars = MAX_CONTEXT_CHARS) {
+  // 一次请求的图片有张数和大小上限（用户贴的图 + 工具截图）：超出的从最早的开始换成文字说明。没超时原样返回。
+  return limitImageParts(_trimContext(msgs, maxChars));
+}
+
+function _trimContext(msgs, maxChars) {
   let total = 0;
   for (const m of msgs) {
     total += _msgSize(m);
@@ -1331,7 +1340,9 @@ export async function runAgentTurn(p) {
             client,
             buildHandoffSource({
               userNotes: run.userNotes,
-              task: textOfContent(rawTaskAnchor && rawTaskAnchor.content),
+              task:
+                textOfContent(rawTaskAnchor && rawTaskAnchor.content) +
+                imagesNote(countImageParts(rawTaskAnchor && rawTaskAnchor.content)),
               earlier,
               previous: run.lastCheckpoint,
               segment: msgs.slice(segStart),

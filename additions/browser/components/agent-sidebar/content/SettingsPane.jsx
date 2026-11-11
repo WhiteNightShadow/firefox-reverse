@@ -13,11 +13,24 @@ function legacyProfile(store, providers) {
     baseUrl: store.getCustomBaseUrl ? store.getCustomBaseUrl() : "",
     protocol: store.getCustomProtocol ? store.getCustomProtocol() : "openai",
     reasoningEffort: store.getCustomReasoningEffort ? store.getCustomReasoningEffort() : "auto",
+    imageInput: "auto",
   };
 }
 
+// 「图片输入」下面的说明：自动时按模型名判断出的结果。
+function imageInputHint(resolveImageInput, model) {
+  const name = String(model || "").trim();
+  if (!name) {
+    return "选好模型后，这里会显示按模型名判断的结果。";
+  }
+  const auto = typeof resolveImageInput === "function" ? resolveImageInput("auto", name).auto : null;
+  if (auto === true) return `按模型名判断：${name} 能看图。`;
+  if (auto === false) return `按模型名判断：${name} 不能看图，输入框里的图片发不出去，历史里的图片换成文字说明。`;
+  return `没认出 ${name} 能不能看图：自动时照常发送图片，发送报错就改成「不支持」。`;
+}
+
 /** 模型配置管理：同一 provider 可保存多组账号/端点，选择历史配置即可切换。 */
-export default function SettingsPane({ store, providers, protocolOptions = [], fetchModels, onClose }) {
+export default function SettingsPane({ store, providers, protocolOptions = [], fetchModels, resolveImageInput, onClose }) {
   const initialProfiles = store.listModelProfiles
     ? store.listModelProfiles()
     : [legacyProfile(store, providers)];
@@ -35,6 +48,7 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
   const [customUrl, setCustomUrl] = useState(initial.baseUrl || "");
   const [customProtocol, setCustomProtocol] = useState(initial.protocol || "openai");
   const [customReasoningEffort, setCustomReasoningEffort] = useState(initial.reasoningEffort || "auto");
+  const [imageInput, setImageInput] = useState(initial.imageInput || "auto");
   const [confirmTools, setConfirmTools] = useState(store.getConfirmTools ? store.getConfirmTools() : false);
   const [globalSystemPrompt, setGlobalSystemPrompt] = useState(() => store.getGlobalSystemPrompt?.() || "");
   const [promptCacheMode, setPromptCacheMode] = useState(store.getPromptCacheMode ? store.getPromptCacheMode() : "auto");
@@ -78,6 +92,7 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
     setCustomUrl(p.baseUrl || "");
     setCustomProtocol(p.protocol || "openai");
     setCustomReasoningEffort(p.reasoningEffort || "auto");
+    setImageInput(p.imageInput || "auto");
     setFetchedModels([]);
     setFetchMsg("");
     setManual(false);
@@ -162,6 +177,7 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
         baseUrl: isCustom ? customUrl : "",
         protocol: isCustom ? customProtocol : "openai",
         reasoningEffort: isCustom ? customReasoningEffort : "auto",
+        imageInput,
       };
       if (store.updateModelProfile) {
         p = store.updateModelProfile(profileId, values);
@@ -320,6 +336,18 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
           <button type="button" className="settings-pane__btn-ghost" onClick={doFetchModels}>获取模型</button>
         </div>
         {fetchMsg && <span className="settings-pane__hint">{fetchMsg}</span>}
+      </label>
+
+      <label className="settings-pane__field">
+        图片输入
+        <select value={imageInput} onChange={e => { setImageInput(e.target.value); setStatus(""); }}>
+          <option value="auto">自动（按模型名判断）</option>
+          <option value="on">支持（模型能看图）</option>
+          <option value="off">不支持（图片不发给模型）</option>
+        </select>
+        <span className="settings-pane__hint">
+          {imageInputHint(resolveImageInput, model)}输入框可以粘贴或拖入图片；确定能看图时（含选了「支持」），截图类工具的结果也会给模型看。
+        </span>
       </label>
 
       <label className="settings-pane__field settings-pane__field--check">

@@ -1,5 +1,7 @@
 /* ContextProjection.sys.mjs - bounded model context while preserving full UI history. */
 
+import { IMAGE_CONTEXT_CHARS, contentChars, countImageParts, imagesNote } from "./ChatImages.sys.mjs";
+
 export const CONTEXT_PROJECTION_VERSION = 1;
 export const DEFAULT_PROJECTION_TRIGGER_CHARS = 120000;
 export const DEFAULT_PROJECTION_TAIL_CHARS = 40000;
@@ -21,12 +23,14 @@ export function messageSize(message) {
   }
   let size = 16;
   try {
-    size +=
-      typeof message.content === "string"
-        ? message.content.length
-        : JSON.stringify(message.content ?? "").length;
+    // Images count as an estimate, not by their base64 length (a pasted screenshot would otherwise look like
+    // a million characters and force a projection on every turn).
+    size += contentChars(message.content);
   } catch {
     size += String(message.content || "").length;
+  }
+  if (Array.isArray(message.images)) {
+    size += message.images.length * IMAGE_CONTEXT_CHARS;
   }
   return size;
 }
@@ -142,11 +146,20 @@ function transcriptLine(message) {
     return "";
   }
   const role = message.role === "user" ? "User" : "Assistant";
-  const content =
-    typeof message.content === "string"
-      ? message.content
-      : JSON.stringify(message.content ?? "");
-  return `[${role}] ${content}`;
+  let content;
+  if (typeof message.content === "string") {
+    content = message.content;
+  } else if (Array.isArray(message.content)) {
+    content = message.content
+      .filter(part => part && typeof part.text === "string")
+      .map(part => part.text)
+      .join("\n");
+  } else {
+    content = JSON.stringify(message.content ?? "");
+  }
+  const images =
+    (Array.isArray(message.images) ? message.images.length : 0) + countImageParts(message.content);
+  return `[${role}] ${content}${imagesNote(images)}`;
 }
 
 /** Build bounded source material for a projection update. */

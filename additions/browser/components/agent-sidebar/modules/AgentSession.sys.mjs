@@ -17,7 +17,7 @@ import {
   CONTEXT_PROJECTION_VERSION,
   planContextProjection,
 } from "./ContextProjection.sys.mjs";
-import { buildClientFromStore, isVisionModel } from "./providers.sys.mjs";
+import { buildClientFromStore, resolveImageInput } from "./providers.sys.mjs";
 import { conversationStore } from "./ConversationStore.sys.mjs";
 import { emptyUsage, mergeUsage, normalizeUsage } from "./Usage.sys.mjs";
 
@@ -506,11 +506,19 @@ export const agentSession = {
         s.usage = mergeUsage(s.usage, normalized);
         notifyThrottled(s);
       };
+      // 图片：模型配置里「图片输入」选了支持/不支持就按选的，自动时按模型名判断（providers.sys.mjs）。
+      // 确定能看图才把工具截图回喂给模型；确定不能看图时，用户贴过的图片换成文字说明，免得请求被拒；
+      // 认不出的模型照发用户贴的图（发不过去会报错，用户再到设置里改成「不支持」）。
+      let imageSupport = null;
       try {
         const active = configStore.getActiveModelProfile && configStore.getActiveModelProfile();
         const pid = (active && active.provider) || (configStore.getActiveProvider && configStore.getActiveProvider());
         const model = (active && active.model) || (pid && configStore.getModel && configStore.getModel(pid));
-        vision = !!(isVisionModel && isVisionModel(model));
+        imageSupport =
+          typeof resolveImageInput === "function"
+            ? resolveImageInput(active && active.imageInput, model).supported
+            : null;
+        vision = imageSupport === true;
       } catch {
         /* 取不到当不支持视觉 */
       }
@@ -529,6 +537,7 @@ export const agentSession = {
           const fullMessages = thread.messages.map(message => ({
             role: message.role,
             content: message.content,
+            ...(Array.isArray(message.images) && message.images.length ? { images: message.images } : {}),
           }));
           if (s.contextStrategy === "projected") {
             const plan = planContextProjection(fullMessages, thread.contextProjection);
@@ -590,6 +599,10 @@ export const agentSession = {
         } catch {
           turnMsgs = Array.isArray(convo) ? convo : [];
         }
+      }
+      // 消息上的图片引用换成发给模型的图片内容块（读图片文件、按一次请求的图片预算取舍）。
+      if (typeof conversationStore.materializeImages === "function") {
+        turnMsgs = await conversationStore.materializeImages(turnMsgs, { allowImages: imageSupport !== false });
       }
       let autoRestarts = 0;
       let driftStreak = 0;

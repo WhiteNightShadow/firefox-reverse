@@ -12,9 +12,10 @@ import { emptyUsage, mergeUsage, normalizeUsage } from "../modules/Usage.sys.mjs
  * @param {object} deps.configStore                 ConfigStore 实例或替身
  * @param {object} [deps.conversationStore]         覆盖默认的空实现
  * @param {object} [deps.backends]                  getBackends() 的返回值
+ * @param {object} [deps.providers]                 覆盖 providers.sys.mjs 的替身（默认按不支持看图）
  * @returns {Promise<object>} agentSession 单例
  */
-export async function loadAgentSession({ agentLoop, configStore, conversationStore = {}, backends = {} }) {
+export async function loadAgentSession({ agentLoop, configStore, conversationStore = {}, backends = {}, providers = null }) {
   const imports = {
     "./AgentLoop.sys.mjs": agentLoop,
     "./ConfigStore.sys.mjs": { configStore },
@@ -30,7 +31,7 @@ export async function loadAgentSession({ agentLoop, configStore, conversationSto
     "./ToolRouter.sys.mjs": { ToolRouter: class { registerAll() {} } },
     "./Tools.sys.mjs": { createBuiltinTools: () => [] },
     "./Backends.sys.mjs": { getBackends: () => backends },
-    "./providers.sys.mjs": { buildClientFromStore: () => ({}), isVisionModel: () => false },
+    "./providers.sys.mjs": providers || { buildClientFromStore: () => ({}), resolveImageInput: () => ({ supported: false }) },
     "./ContextProjection.sys.mjs": {},
     "./Usage.sys.mjs": { emptyUsage, mergeUsage, normalizeUsage },
   };

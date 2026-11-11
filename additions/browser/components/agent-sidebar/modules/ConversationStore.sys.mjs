@@ -4,12 +4,29 @@
  *   （用 IOUtils/PathUtils，system ESM 全局可用）。比 prefs 更适合大体量历史。
  * - Node 自测：无 IOUtils → 退化为内存，仍可 import 验证。
  * 全部 API 异步。数据结构：{ schemaVersion, threads: [{ id, title, createdAt, updatedAt,
- * workspace, envId, modelStrategy, contextProjection, usage, messages:[{role,content}] }] }
+ * workspace, envId, modelStrategy, contextProjection, usage, messages:[{role,content,images?}] }] }
+ *   images = 用户消息附带的图片引用 [{ id, mime, width, height, size }]；图片本身按内容的 sha256 存在
+ *   <profile>/firefox-reverse-agent/images/<id>.<扩展名>，不进 conversations.json（每次保存都整份重写）。
  *   workspace = 该会话绑定的本地工作目录绝对路径（null=未设；**新会话默认为空/不绑定**，需用户手动打开目录）。
  *   envId = 该会话准备使用的 Firefox-Reverse 环境 id（null=未选）。
  *   modelStrategy = "balanced" | "premium"，先作为 Agent 调度上下文，后续可映射到具体 provider/model。
  */
 
+import {
+  IMAGE_EXT,
+  IMAGE_NOTE_MISSING,
+  IMAGE_NOTE_OLD,
+  IMAGE_NOTE_UNSUPPORTED,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES_PER_MESSAGE,
+  MAX_REQUEST_IMAGE_CHARS,
+  MAX_REQUEST_IMAGES,
+  base64Length,
+  base64ToBytes,
+  bytesToBase64,
+  cleanImageRefs,
+  sniffImageMime,
+} from "./ChatImages.sys.mjs";
 import { normalizeContextProjection, projectMessages } from "./ContextProjection.sys.mjs";
 import { emptyUsage, mergeUsage } from "./Usage.sys.mjs";
 
@@ -19,7 +36,8 @@ const NEW_TITLE = "新对话";
 const STORE_SCHEMA_VERSION = 3;
 const EXPORT_FORMAT = "firefox-reverse-conversation";
 const EXPORT_SCHEMA_VERSION = 1;
-const MAX_IMPORT_CHARS = 10 * 1024 * 1024;
+// 单会话文件上限：带图的会话图片按 base64 嵌在文件里，10MB 放不下几张截图。
+const MAX_IMPORT_CHARS = 64 * 1024 * 1024;
 // 全部会话打成一个包（.frx-chats.json）：conversations 里每一项和单会话包的 conversation 同构。
 const BUNDLE_FORMAT = "firefox-reverse-conversations";
 const BUNDLE_SCHEMA_VERSION = 1;
@@ -28,6 +46,10 @@ const MAX_BUNDLE_CONVERSATIONS = 5000;
 const MAX_IMPORT_MESSAGES = 5000;
 const MAX_MESSAGE_CHARS = 1024 * 1024;
 const TURN_STATUSES = new Set(["idle", "running", "completed", "cancelled", "failed"]);
+const IMAGES_DIR = "images";
+// 没被任何消息引用的图片文件，放了这么久才删：刚存下、消息还没写进去的图片不能被别的窗口删会话时顺手清掉。
+const IMAGE_GC_GRACE_MS = 60 * 60 * 1000;
+const IMAGE_FILE = /^([0-9a-f]{64})\.(png|jpg|webp|gif)$/;
 
 function hasIO() {
   return typeof IOUtils !== "undefined" && typeof PathUtils !== "undefined";
@@ -101,8 +123,42 @@ function cleanMessage(msg, index) {
   };
 }
 
-/** 导出用的会话正文：不带工作目录、环境绑定、运行状态、投影和 Usage。 */
-function exportedConversation(t) {
+/** 导入文件里一条消息带的图片：[{ mime, width, height, data: base64 }]。校验后返回解码好的
+ *  [{ bytes, width, height }]，格式按文件头认，不信声明的 mime。 */
+function cleanImportedImages(list, index) {
+  if (list == null) {
+    return [];
+  }
+  const where = `第 ${index + 1} 条消息的图片`;
+  if (!Array.isArray(list)) {
+    throw new Error(`导入失败：${where}格式不对`);
+  }
+  if (list.length > MAX_IMAGES_PER_MESSAGE) {
+    throw new Error(`导入失败：${where}超过 ${MAX_IMAGES_PER_MESSAGE} 张`);
+  }
+  return list.map((img, k) => {
+    if (!img || typeof img !== "object" || typeof img.data !== "string") {
+      throw new Error(`导入失败：${where}第 ${k + 1} 张缺少数据`);
+    }
+    if (img.data.length > base64Length(MAX_IMAGE_BYTES) + 4) {
+      throw new Error(`导入失败：${where}第 ${k + 1} 张超过 ${MAX_IMAGE_BYTES / 1024 / 1024}MB`);
+    }
+    let bytes;
+    try {
+      bytes = base64ToBytes(img.data);
+    } catch {
+      throw new Error(`导入失败：${where}第 ${k + 1} 张不是有效的 base64`);
+    }
+    if (!sniffImageMime(bytes) || bytes.length > MAX_IMAGE_BYTES) {
+      throw new Error(`导入失败：${where}第 ${k + 1} 张不是支持的图片（PNG/JPEG/WebP/GIF）`);
+    }
+    return { bytes, width: img.width, height: img.height };
+  });
+}
+
+/** 导出用的会话正文：不带工作目录、环境绑定、运行状态、投影和 Usage。图片从 embedded（id → 嵌入数据）里取，
+ *  图片文件已经不在的不导出。 */
+function exportedConversation(t, embedded = null) {
   return {
     sourceThreadId: t.id,
     title: cleanTitle(t.title),
@@ -110,8 +166,19 @@ function exportedConversation(t) {
     updatedAt: t.updatedAt,
     mode: t.mode || null,
     modelStrategy: t.modelStrategy === "premium" ? "premium" : "balanced",
-    messages: t.messages.map((m, i) => cleanMessage(m, i)),
+    messages: t.messages.map((m, i) => {
+      const out = cleanMessage(m, i);
+      const images = cleanImageRefs(m.images)
+        .map(ref => embedded && embedded.get(ref.id))
+        .filter(Boolean);
+      return images.length ? { ...out, images } : out;
+    }),
   };
+}
+
+async function sha256Hex(bytes) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, b => b.toString(16).padStart(2, "0")).join("");
 }
 
 function parsePayload(payload, maxChars) {
@@ -138,7 +205,15 @@ function prepareImport(src, label = "") {
     throw new Error(`导入失败：${where}消息数超过 ${MAX_IMPORT_MESSAGES}`);
   }
   try {
-    return { src, messages: src.messages.map((m, i) => cleanMessage(m, i)) };
+    return {
+      src,
+      messages: src.messages.map((m, i) => {
+        const msg = cleanMessage(m, i);
+        const images = cleanImportedImages(m.images, i);
+        // 解码好的图片先挂在消息上，写进会话前由 _storeImportedImages 存成文件、换成引用。
+        return images.length ? { ...msg, pendingImages: images } : msg;
+      }),
+    };
   } catch (e) {
     throw new Error(String((e && e.message) || e).replace(/^导入失败：/, `导入失败：${where}`));
   }
@@ -191,6 +266,7 @@ export class ConversationStore {
     this._mem = null; // { threads: [...] }
     this._path = opts.path || null;
     this._memoryOnly = opts.memoryOnly ?? !hasIO();
+    this._images = new Map(); // 内存模式下的图片：id → Uint8Array
   }
 
   get isPersistent() {
@@ -270,6 +346,7 @@ export class ConversationStore {
     const messages = t.messages.map(message => ({
       role: message.role,
       content: message.content,
+      ...(Array.isArray(message.images) && message.images.length ? { images: message.images } : {}),
     }));
     return strategy === "legacy"
       ? messages
@@ -391,10 +468,18 @@ export class ConversationStore {
     if (!t) {
       throw new Error("conversation thread not found: " + id);
     }
-    t.messages.push({ role: msg.role, content: msg.content, ...(msg.steps ? { steps: msg.steps } : {}) });
+    const images = cleanImageRefs(msg.images);
+    t.messages.push({
+      role: msg.role,
+      content: msg.content,
+      ...(images.length ? { images } : {}),
+      ...(msg.steps ? { steps: msg.steps } : {}),
+    });
     t.updatedAt = nextTs();
     if (t.title === NEW_TITLE && msg.role === "user" && msg.content) {
       t.title = msg.content.replace(/\s+/g, " ").trim().slice(0, 30) || NEW_TITLE;
+    } else if (t.title === NEW_TITLE && msg.role === "user" && images.length) {
+      t.title = "图片";
     }
     await this._save();
     return t;
@@ -461,6 +546,11 @@ export class ConversationStore {
     d.threads = d.threads.filter(t => t.id !== id);
     if (d.threads.length !== before) {
       await this._save();
+      try {
+        await this._gcImages();
+      } catch {
+        /* 清理图片失败不影响删除会话，下次再清 */
+      }
     }
   }
 
@@ -475,7 +565,7 @@ export class ConversationStore {
       schemaVersion: EXPORT_SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
       source: { app: "Firefox Reverse" },
-      conversation: exportedConversation(t),
+      conversation: exportedConversation(t, await this._embeddedImages([t])),
     };
   }
 
@@ -485,13 +575,14 @@ export class ConversationStore {
     const d = await this._load();
     const conversations = [];
     const skipped = [];
+    const embedded = await this._embeddedImages(d.threads);
     for (const t of [...d.threads].sort((a, b) => b.updatedAt - a.updatedAt)) {
       if (!t.messages.length) {
         skipped.push({ title: cleanTitle(t.title), reason: "empty" });
         continue;
       }
       try {
-        conversations.push(exportedConversation(t));
+        conversations.push(exportedConversation(t, embedded));
       } catch (e) {
         skipped.push({ title: cleanTitle(t.title), reason: String((e && e.message) || e) });
       }
@@ -535,7 +626,7 @@ export class ConversationStore {
     const json = await this.exportThreadJSON(id);
     const byteLength = typeof TextEncoder !== "undefined" ? new TextEncoder().encode(json).byteLength : json.length;
     if (byteLength > MAX_IMPORT_CHARS) {
-      throw new Error("导出失败：当前单会话超过 10MB，请先精简超长消息");
+      throw new Error("导出失败：当前单会话超过 64MB，请先精简超长消息或删掉不需要的图片");
     }
     await IOUtils.writeUTF8(path, json, { tmpPath: path + ".tmp" });
     return { ok: true, path, bytes: byteLength };
@@ -548,6 +639,7 @@ export class ConversationStore {
       throw new Error("导入失败：不是受支持的 Firefox Reverse 会话文件");
     }
     const t = importedThread(prepareImport(data.conversation));
+    await this._storeImportedImages(t);
     const d = await this._load();
     d.threads.push(t);
     await this._save();
@@ -562,7 +654,7 @@ export class ConversationStore {
     let isBundle = false;
     if (data && data.format === EXPORT_FORMAT && data.schemaVersion === EXPORT_SCHEMA_VERSION) {
       if (typeof payload === "string" && payload.length > MAX_IMPORT_CHARS) {
-        throw new Error("导入失败：单会话文件超过 10MB");
+        throw new Error("导入失败：单会话文件超过 64MB");
       }
       entries = [data.conversation];
     } else if (data && data.format === BUNDLE_FORMAT && data.schemaVersion === BUNDLE_SCHEMA_VERSION) {
@@ -591,6 +683,7 @@ export class ConversationStore {
         continue;
       }
       const t = importedThread(p);
+      await this._storeImportedImages(t);
       d.threads.push(t);
       imported.push(t);
     }
@@ -605,6 +698,214 @@ export class ConversationStore {
     }
     const newest = (a, b) => b.updatedAt - a.updatedAt;
     return { imported: imported.sort(newest), duplicates: duplicates.sort(newest) };
+  }
+
+  /* ── 图片 ────────────────────────────────────────────────────────────── */
+
+  async _imagesDir() {
+    const dir = PathUtils.join(PathUtils.parent(await this._filePath()), IMAGES_DIR);
+    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+    return dir;
+  }
+
+  async _imagePath(id, mime) {
+    return PathUtils.join(await this._imagesDir(), `${id}.${IMAGE_EXT[mime] || "png"}`);
+  }
+
+  /**
+   * 存一张用户附带的图片（侧栏已经压缩好的字节），返回消息上要记的引用 { id, mime, width, height, size }。
+   * id 是内容的 sha256：同一张图存两次只有一个文件。格式按文件头认。
+   */
+  async saveImage(bytes, { width, height } = {}) {
+    const data = new Uint8Array(bytes || []);
+    if (!data.length) {
+      throw new Error("图片是空的");
+    }
+    if (data.length > MAX_IMAGE_BYTES) {
+      throw new Error(`图片超过 ${MAX_IMAGE_BYTES / 1024 / 1024}MB`);
+    }
+    const mime = sniffImageMime(data);
+    if (!mime) {
+      throw new Error("不是支持的图片格式（PNG/JPEG/WebP/GIF）");
+    }
+    const id = await sha256Hex(data);
+    const [ref] = cleanImageRefs([{ id, mime, width, height, size: data.length }]);
+    if (this._memoryOnly) {
+      if (!this._images.has(id)) {
+        this._images.set(id, data);
+      }
+      return ref;
+    }
+    const path = await this._imagePath(id, mime);
+    if (await IOUtils.exists(path)) {
+      // 已有同一张图：刷新修改时间，免得它在消息写进去之前被当成没人用的旧文件清掉。
+      await IOUtils.setModificationTime(path).catch(() => {});
+    } else {
+      await IOUtils.write(path, data, { tmpPath: path + ".tmp" });
+    }
+    return ref;
+  }
+
+  /** 读一张图片的字节；文件不在返回 null。ref 是消息上的图片引用。 */
+  async readImage(ref) {
+    const [clean] = cleanImageRefs([ref]);
+    if (!clean) {
+      return null;
+    }
+    if (this._memoryOnly) {
+      return this._images.get(clean.id) || null;
+    }
+    try {
+      return await IOUtils.read(await this._imagePath(clean.id, clean.mime));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 发给模型之前，把消息上的图片引用换成内容块：图在前、文字在后（Anthropic 建议的顺序），
+   * 形如 [{ type:"image_url", image_url:{ url:"data:image/png;base64,..." } }, { type:"text", text }]。
+   * - allowImages=false（当前模型不支持看图）：图片不发，文字后面注明有几张图没发；
+   * - 一次请求的图片张数和大小有预算：从最新的消息往前留，放不下的换成文字说明；
+   * - 图片文件已经不在的也换成文字说明，不让整个请求失败。
+   * 返回新数组，消息上的 images 字段去掉（发给 API 的消息不能带不认识的字段）。
+   */
+  async materializeImages(messages, { allowImages = true, maxImages = MAX_REQUEST_IMAGES, maxChars = MAX_REQUEST_IMAGE_CHARS } = {}) {
+    const list = Array.isArray(messages) ? messages : [];
+    const out = new Array(list.length);
+    let count = 0;
+    let chars = 0;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (!m || typeof m !== "object" || !("images" in m)) {
+        out[i] = m;
+        continue;
+      }
+      const { images: rawImages, ...rest } = m;
+      const refs = m.role === "user" ? cleanImageRefs(rawImages) : [];
+      if (!refs.length) {
+        out[i] = rest;
+        continue;
+      }
+      const text = typeof m.content === "string" ? m.content : "";
+      const notes = [];
+      const parts = [];
+      if (!allowImages) {
+        notes.push(IMAGE_NOTE_UNSUPPORTED(refs.length));
+      } else {
+        const chosen = [];
+        for (let j = refs.length - 1; j >= 0; j--) {
+          const size = base64Length(refs[j].size || MAX_IMAGE_BYTES) + 32;
+          if (count < maxImages && chars + size <= maxChars) {
+            chosen.unshift(refs[j]);
+            count++;
+            chars += size;
+          }
+        }
+        let missing = 0;
+        for (const ref of chosen) {
+          const bytes = await this.readImage(ref);
+          if (bytes && bytes.length) {
+            parts.push({ type: "image_url", image_url: { url: `data:${ref.mime};base64,${bytesToBase64(bytes)}` } });
+          } else {
+            missing++;
+          }
+        }
+        if (refs.length > chosen.length) {
+          notes.push(IMAGE_NOTE_OLD(refs.length - chosen.length));
+        }
+        if (missing) {
+          notes.push(IMAGE_NOTE_MISSING(missing));
+        }
+      }
+      const body = [...notes, text].filter(Boolean).join("\n");
+      if (!parts.length) {
+        out[i] = { ...rest, content: body };
+      } else {
+        out[i] = { ...rest, content: body ? [...parts, { type: "text", text: body }] : parts };
+      }
+    }
+    return out;
+  }
+
+  /** 导出时要嵌进文件的图片：id → { mime, width, height, data(base64) }。读不到的跳过。 */
+  async _embeddedImages(threads) {
+    const embedded = new Map();
+    for (const t of threads || []) {
+      for (const m of t.messages || []) {
+        for (const ref of cleanImageRefs(m.images)) {
+          if (embedded.has(ref.id)) {
+            continue;
+          }
+          const bytes = await this.readImage(ref);
+          if (bytes && bytes.length) {
+            embedded.set(ref.id, { mime: ref.mime, width: ref.width, height: ref.height, data: bytesToBase64(bytes) });
+          }
+        }
+      }
+    }
+    return embedded;
+  }
+
+  /** 导入的会话：消息上解码好的图片存成文件、换成引用。 */
+  async _storeImportedImages(thread) {
+    for (const m of thread.messages) {
+      if (!m.pendingImages) {
+        continue;
+      }
+      const images = [];
+      for (const img of m.pendingImages) {
+        images.push(await this.saveImage(img.bytes, img));
+      }
+      delete m.pendingImages;
+      if (images.length) {
+        m.images = images;
+      }
+    }
+  }
+
+  /** 删掉没有任何消息引用的图片文件（放了不到 IMAGE_GC_GRACE_MS 的留着）。 */
+  async _gcImages() {
+    const d = await this._load();
+    const used = new Set();
+    for (const t of d.threads) {
+      for (const m of t.messages) {
+        for (const ref of Array.isArray(m.images) ? m.images : []) {
+          if (ref && ref.id) {
+            used.add(ref.id);
+          }
+        }
+      }
+    }
+    if (this._memoryOnly) {
+      for (const id of [...this._images.keys()]) {
+        if (!used.has(id)) {
+          this._images.delete(id);
+        }
+      }
+      return;
+    }
+    let children = [];
+    try {
+      children = await IOUtils.getChildren(await this._imagesDir());
+    } catch {
+      return;
+    }
+    const now = Date.now();
+    for (const path of children) {
+      const match = IMAGE_FILE.exec(PathUtils.filename(path));
+      if (!match || used.has(match[1])) {
+        continue;
+      }
+      try {
+        const st = await IOUtils.stat(path);
+        if (now - st.lastModified >= IMAGE_GC_GRACE_MS) {
+          await IOUtils.remove(path);
+        }
+      } catch {
+        /* 单个文件删不掉不影响别的 */
+      }
+    }
   }
 
   async importFromFile(path) {
@@ -624,7 +925,7 @@ export class ConversationStore {
     }
     const st = await IOUtils.stat(path);
     if (st.size > MAX_IMPORT_CHARS) {
-      throw new Error("导入失败：文件超过 10MB");
+      throw new Error("导入失败：文件超过 64MB");
     }
     return this.importThread(await IOUtils.readUTF8(path));
   }
