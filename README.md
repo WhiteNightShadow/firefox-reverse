@@ -17,7 +17,7 @@
 
 ![AI](https://img.shields.io/badge/AI-DeepSeek_·_GLM_·_Kimi_·_MiniMax_·_Qwen_·_Claude_·_OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white)
 ![Engine](https://img.shields.io/badge/hooks-SpiderMonkey_C++-8957E5?style=for-the-badge)
-![License](https://img.shields.io/badge/license-MPL_2.0-2EA043?style=for-the-badge)
+![License](https://img.shields.io/badge/license-AGPL_3.0-2EA043?style=for-the-badge)
 
 <br>
 
@@ -509,4 +509,8 @@ Firefox‑Reverse Key 直连你选的模型，**Key 只存本地、不经第三�
 
 ## License
 
-[MPL‑2.0](https://www.mozilla.org/MPL/2.0/) —— 与上游 Firefox 一致。本项目为 Firefox 的衍生作品，相关商标归 Mozilla 所有。
+本项目以 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0）发布。Copyright © 2026 WhiteNightShadow 与贡献者。
+
+- 对 Mozilla Firefox 源码的修改（`patches/` 里的补丁，以及带 MPL 声明的文件）仍按 [Mozilla Public License 2.0](LICENSE-MPL-2.0) 提供；MPL-2.0 允许它们作为更大作品的一部分以 AGPL-3.0 分发。
+- 2026-11-12 之前的版本按 MPL-2.0 发布，那些版本连同其中社区贡献的代码仍可按 MPL-2.0 使用。
+- 本项目为 Firefox 的衍生作品，相关商标归 Mozilla 所有。
