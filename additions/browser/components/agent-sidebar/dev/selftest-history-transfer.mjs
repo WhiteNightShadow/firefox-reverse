@@ -17,6 +17,16 @@ const dom = new JSDOM("<!doctype html><html><body><div id=root></div></body></ht
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
 dom.window.HTMLElement.prototype.scrollIntoView = function () {};
+// jsdom 没有实现 dialog 的顶层显示/关闭；真实键盘和焦点行为另在 Firefox 验证。
+dom.window.HTMLDialogElement.prototype.showModal = function () {
+  this.open = true;
+  this.querySelector("button").focus();
+};
+dom.window.HTMLDialogElement.prototype.close = function (value = "") {
+  this.returnValue = value;
+  this.open = false;
+  this.dispatchEvent(new window.Event("close"));
+};
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // 文件读写走 node；ConversationStore 本身用内存模式，只有导出/导入文件时才碰 IOUtils。
@@ -101,12 +111,12 @@ try {
     return button(title);
   };
   const notice = () => [...document.querySelectorAll("span")].map(s => s.textContent).find(t => /会话/.test(t) && /导/.test(t)) || "";
-  const mount = async conversations => {
+  const mount = async (conversations, panelProps = {}) => {
     if (root) {
       root.unmount();
     }
     root = createRoot(document.getElementById("root"));
-    root.render(React.createElement(AgentPanel, { conversations, session, store: {}, router: {}, buildClient: () => ({}) }));
+    root.render(React.createElement(AgentPanel, { conversations, session, store: {}, router: {}, buildClient: () => ({}), ...panelProps }));
     await sleep(300);
     await click(button("历史对话"));
   };
@@ -180,6 +190,92 @@ try {
   nextPath = join(files, "nothing.frx-chats.json");
   await click(await historyButton("全部导出"));
   assert.match(document.querySelector(".agent-panel__error")?.textContent || "", /没有可导出的会话/, "全是空会话时提示没有可导出的");
+
+  // 从中间一条回复分支后实际发送，再从历史抽屉分别打开两条会话。
+  const chats = new ConversationStore({ memoryOnly: true });
+  const source = await chats.createThread("周末安排", null, "assist");
+  await chats.appendMessage(source.id, { role: "user", content: "周末做什么？" });
+  await chats.appendMessage(source.id, { role: "assistant", content: "看展，或者爬山。" });
+  await chats.appendMessage(source.id, { role: "user", content: "先聊爬山。" });
+  const requests = [];
+  await mount(chats, { session: null, buildClient: () => ({
+    chat: async messages => { requests.push(messages); return { content: "聊聊看展。" }; },
+  }) });
+  await click(document.querySelector(".agent-history__item.is-current"));
+  const forkButtons = document.querySelectorAll(".msg__fork");
+  assert.equal(forkButtons.length, 3, "每条历史消息都有分支入口");
+  for (const [i, fork] of forkButtons.entries()) {
+    assert(fork.previousElementSibling.matches(".msg__content"), "分支按钮紧跟在消息气泡下方");
+    assert(fork.querySelector("svg") && !fork.textContent.trim(), "按钮显示分支图标");
+    assert.match(fork.title, /从这里分支/);
+    assert.equal(fork.getAttribute("aria-label"), `从这里分支（第 ${i + 1} 条消息）`);
+  }
+  const transcript = () => [...document.querySelectorAll(".msg__content")].map(el => el.textContent);
+  const chooseBranchAction = async (label, workspace = null) => {
+    const threadCount = (await chats.listThreads()).length;
+    const trigger = document.querySelectorAll(".msg__fork")[1];
+    await click(trigger);
+    const dialog = document.querySelector(".agent-panel dialog[open]");
+    assert(dialog, "点击分支先在侧栏内弹出确认框");
+    assert.equal((await chats.listThreads()).length, threadCount, "确认前不创建分支");
+    const buttons = [...dialog.querySelectorAll("button")];
+    if (workspace) {
+      assert(dialog.textContent.includes(workspace), "提示中显示将要共用的原目录");
+      assert.deepEqual(buttons.map(b => b.textContent), ["取消", "暂不设置", "共用工作目录"]);
+    } else {
+      assert.match(dialog.textContent, /原会话未设置工作目录/);
+      assert.deepEqual(buttons.map(b => b.textContent), ["取消", "创建分支"]);
+    }
+    if (label === "Escape") {
+      dialog.close();
+      await sleep(50);
+    } else {
+      await click(buttons.find(b => b.textContent === label));
+    }
+    assert(!document.querySelector(".agent-panel dialog"));
+    if (label === "取消" || label === "Escape") assert.equal(document.activeElement, trigger);
+  };
+  await chooseBranchAction("Escape");
+  await chooseBranchAction("取消");
+  assert.equal((await chats.listThreads()).length, 1);
+  assert.deepEqual(transcript(), source.messages.map(m => m.content));
+  await chooseBranchAction("创建分支");
+  const [branch] = await chats.listThreads();
+  assert.equal(branch.workspace, null);
+  assert.deepEqual(transcript(), ["周末做什么？", "看展，或者爬山。"], "打开的新会话止于选中的消息");
+  assert.equal(requests.length, 0, "分支操作本身不会请求模型");
+  const textarea = document.querySelector(".agent-panel__input textarea");
+  assert.equal(document.activeElement, textarea, "打开分支后可以直接输入");
+  Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set.call(textarea, "聊聊看展。");
+  textarea.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await sleep(30);
+  await click(button("发送"));
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].slice(1, 3).map(m => m.content), ["周末做什么？", "看展，或者爬山。"]);
+  assert.equal(requests[0].length, 4, "模型收到系统提示、两条历史消息和新的追问");
+  assert.match(requests[0][3].content, /^聊聊看展。/);
+  assert.equal((await chats.getThread(branch.id)).messages.length, 4);
+  assert.equal((await chats.getThread(source.id)).messages.length, 3);
+  await historyButton("历史对话");
+  assert.equal(document.querySelector(".agent-history__item.is-current").title, branch.title);
+  await click([...document.querySelectorAll(".agent-history__item")].find(el => el.title === source.title));
+  assert.deepEqual(transcript(), ["周末做什么？", "看展，或者爬山。", "先聊爬山。"], "从历史返回原会话还能沿原话题续聊");
+
+  nextPath = files;
+  await click(document.querySelector(".agent-ws__open"));
+  assert.equal((await chats.getThread(source.id)).workspace, files);
+  await chooseBranchAction("取消", files);
+  assert.equal((await chats.listThreads()).length, 2);
+  assert.deepEqual(transcript(), source.messages.map(m => m.content), "取消后留在原会话");
+  await chooseBranchAction("共用工作目录", files);
+  const [shared] = await chats.listThreads();
+  assert.equal(shared.workspace, files);
+  assert.deepEqual(transcript(), source.messages.slice(0, 2).map(m => m.content));
+  assert(document.querySelector(".agent-ws__open.is-set").title.includes(files), "打开分支即绑定共用路径");
+  await chooseBranchAction("暂不设置", files);
+  assert.equal((await chats.listThreads())[0].workspace, null);
+  assert.equal(document.querySelector(".agent-ws__path").textContent, "打开目录");
+  assert.equal((await chats.getThread(shared.id)).workspace, files, "分支留空不影响来源目录");
 
   console.log("history transfer selftest: all passed");
 } finally {

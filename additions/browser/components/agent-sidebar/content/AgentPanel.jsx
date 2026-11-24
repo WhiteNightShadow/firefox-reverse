@@ -90,6 +90,14 @@ const ICONS = {
       <path d="M12 5v14M5 12h14" />
     </svg>
   ),
+  fork: (
+    <svg {...svgProps} aria-hidden="true">
+      <path d="M2 12h6a6 6 0 0 0 4.25-1.76L21 2M15 2h6v6M14.5 15.5 21 22M15 22h6v-6" />
+    </svg>
+  ),
+  queued: <svg {...svgProps} aria-hidden="true"><path d="M4 4v9a3 3 0 0 0 3 3h13m-4-4 4 4-4 4M9 5h7M9 9h4" /></svg>,
+  steer: <svg {...svgProps} aria-hidden="true"><path d="M4 6v3a4 4 0 0 0 4 4h12m-5-5 5 5-5 5" /></svg>,
+  trash: <svg {...svgProps} aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M6 6l1 14h10l1-14M10 10v6m4-6v6" /></svg>,
   gear: (
     <svg {...svgProps}>
       <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
@@ -310,6 +318,41 @@ export function AssistantBody({ steps, content }) {
   );
 }
 
+function ForkDialog({ messageIndex, workspace, onClose }) {
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    dialogRef.current.showModal();
+  }, []);
+
+  function choose(event) {
+    dialogRef.current.close(event.currentTarget.value);
+  }
+
+  return (
+    <dialog
+      className="agent-fork-dialog"
+      ref={dialogRef}
+      aria-labelledby="fork-title"
+      aria-describedby="fork-description"
+      onClose={event => onClose(event.currentTarget.returnValue)}
+    >
+      <h2 id="fork-title">从第 {messageIndex + 1} 条消息分支</h2>
+      <p id="fork-description">
+        {workspace ? (
+          <>要共用原会话的工作目录吗？两个会话都可以修改这里的文件。<code dir="auto">{workspace}</code></>
+        ) : "原会话未设置工作目录。创建分支后可以在新会话中选择目录。"}
+      </p>
+      <div className="agent-fork-dialog__actions">
+        <button type="button" value="cancel" onClick={choose}>取消</button>
+        {workspace && <button type="button" value="create" onClick={choose}>暂不设置</button>}
+        <button type="button" className="agent-fork-dialog__primary" value={workspace ? "share" : "create"} onClick={choose}>
+          {workspace ? "共用工作目录" : "创建分支"}
+        </button>
+      </div>
+    </dialog>
+  );
+}
+
 // 持久化前给 steps 瘦身：剥掉截图 dataURL（体积大，只留张数）、截断超长思考段，
 // 避免 conversations.json 膨胀。成功/报错/手动停止三条路径共用，保证历史一致保留。
 function slimifySteps(steps) {
@@ -403,7 +446,12 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const preparingRef = useRef(0);
   const [attachNotice, setAttachNotice] = useState(null);
   const [dragOver, setDragOver] = useState(false);
-  const savingImagesRef = useRef(false); // 发送时正在存图片：这段时间再点发送不重复发
+  const [savingHistory, setSavingHistory] = useState(false); // 写入消息或分支期间，发送和分支要互斥
+  const sendingRef = useRef(false);
+  const [pendingFork, setPendingFork] = useState(null);
+  const [pendingMessages, setPendingMessages] = useState([]);
+  const [modelProfiles, setModelProfiles] = useState([]);
+  const [activeProfileId, setActiveProfileId] = useState("");
   const [busy, setBusy] = useState(false);
   const [activeTool, setActiveTool] = useState(null);
   const [pendingConfirm, setPendingConfirm] = useState(null);
@@ -417,6 +465,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const [files, setFiles] = useState([]); // 工作目录文件列表（展开时填充）
   const [filesOpen, setFilesOpen] = useState(false);
   const listRef = useRef(null);
+  const inputRef = useRef(null);
   const atBottomRef = useRef(true); // 用户是否贴在底部（贴底才自动跟随最新回复；手动上滑则不打扰）
   const autoApproveRef = useRef(false); // 本回合内「总是允许」后续工具调用
   const abortRef = useRef(null); // 本回合 AbortController（「停止」按钮中断自主执行）
@@ -431,7 +480,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const openThreadRef = useRef(null); // 最新 openThread 闭包，供 listRunning 定时器自动跟随（避免 effect deps 抖动）
   const followingRef = useRef(false); // 自动跟随进行中（防重入，避免一轮没切完下一轮又发起）
   const triedFollowRef = useRef(null); // 上次尝试跟随的会话 id（切不成=被别窗口占用时不再每 1.5s 刷错横幅）
-  const uiStateRef = useRef({ msgs: 0, input: "", attachments: 0 }); // 给自动跟随读最新 UI 状态（不进 effect deps，防每次按键重建定时器）
+  const uiStateRef = useRef({ currentId: null, input: "", attachments: 0, historyPending: false }); // 异步切换会话时读取最新选择和草稿
 
   // 多窗口预留的 owner token：同一 chrome 窗口内复用（切到别的侧栏再切回=文档重建，但宿主窗口不变）→
   // 重挂载传同一 token → 立即重认领自己那条会话，不受心跳 TTL 影响。取不到宿主窗口则退化为 per-mount 随机
@@ -467,6 +516,29 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     return list;
   }, [conversations]);
 
+  const refreshModels = useCallback(() => {
+    if (!store?.listModelProfiles) return;
+    setModelProfiles(store.listModelProfiles().map(({ id, name, model }) => ({ id, name, model })));
+    setActiveProfileId(store.getActiveModelProfileId());
+  }, [store]);
+  useEffect(() => {
+    if (!hidden) {
+      refreshModels();
+      window.addEventListener("focus", refreshModels);
+      return () => window.removeEventListener("focus", refreshModels);
+    }
+  }, [hidden, refreshModels]);
+
+  function switchModel(id) {
+    try {
+      store.setActiveModelProfileId(id);
+      setActiveProfileId(id);
+    } catch (e) {
+      setError("切换模型失败：" + (e?.message || e));
+      refreshModels();
+    }
+  }
+
   // 初始化：载入线程列表，打开最近一个（无则建新）
   useEffect(() => {
     let cancelled = false;
@@ -494,6 +566,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         if (!cancelled && t) {
           setCurrentId(t.id);
           setMessages(t.messages || []);
+          setPendingMessages(session?.getState(t.id)?.pendingMessages || []);
           setCancellationPending(t.cancellationPending === true);
           setUsage(t.usage || null);
           bindWorkspace(effectiveWorkspace(t));
@@ -599,9 +672,9 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     }
     let stopped = false;
     let timer = null;
-    let lastCkpt = 0; // 已处理到的 checkpoint 序号（本轮起始为 0）
+    let lastHistoryRev = -1;
     liveRevRef.current = -1;
-    const tick = () => {
+    const tick = async () => {
       if (stopped) {
         return;
       }
@@ -610,22 +683,22 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         timer = setTimeout(tick, 80);
         return;
       }
+      if (snap) {
+        setPendingMessages(snap.pendingMessages || []);
+        const historyRev = snap.historyRev ?? snap.checkpointSeq;
+        if (historyRev !== lastHistoryRev || snap.settled) {
+          const thread = await conversations.getThread(currentId).catch(() => null);
+          if (stopped || uiStateRef.current.currentId !== currentId) return;
+          if (thread) {
+            lastHistoryRev = historyRev;
+            setMessages(thread.messages.slice());
+            setCancellationPending(thread.cancellationPending === true);
+            setUsage(thread.usage || null);
+          }
+        }
+      }
       if (snap && snap.running) {
         liveRevRef.current = snap.rev;
-        // 上下文压缩落盘了一条 checkpoint 回复 → 从 store 重载历史(新气泡出现)，live 区随即显示新段。
-        if ((snap.checkpointSeq || 0) > lastCkpt) {
-          lastCkpt = snap.checkpointSeq;
-          conversations
-            .getThread(currentId)
-            .then(t => {
-              if (t) {
-                setMessages(t.messages);
-                setCancellationPending(t.cancellationPending === true);
-                setUsage(t.usage || null);
-              }
-            })
-            .catch(() => {});
-        }
         setLiveSteps(snap.steps);
         setUsage(snap.usage || null);
         stepsRef.current = snap.steps;
@@ -643,20 +716,13 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         }
       } else if (snap && snap.settled) {
         // 回合结束：引擎已把最终/中断消息落盘 → 重载历史 + 收尾。
-        stopped = true;
+        if (session.isRunning(currentId)) {
+          timer = setTimeout(tick, 0);
+          return;
+        }
         if (snap.error) {
           setError(snap.error);
         }
-        conversations
-          .getThread(currentId)
-          .then(t => {
-            if (t) {
-              setMessages(t.messages);
-              setCancellationPending(t.cancellationPending === true);
-              setUsage(t.usage || null);
-            }
-          })
-          .catch(() => {});
         setLiveSteps([]);
         stepsRef.current = [];
         curTextRef.current = -1;
@@ -728,6 +794,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
             !busy &&
             !String(ui.input || "").trim() &&
             !ui.attachments &&
+            !ui.historyPending &&
             !!openThreadRef.current &&
             !followingRef.current &&
             isFrontWindow();
@@ -997,15 +1064,15 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     setAttachNotice(null);
   }
 
-  function clearAttachments() {
-    for (const a of attachmentsRef.current) {
+  function clearSentAttachments(sent) {
+    for (const a of sent) {
       try {
         if (a.url) URL.revokeObjectURL(a.url);
       } catch {
         /* ignore */
       }
     }
-    setAttachmentList([]);
+    setAttachmentList(attachmentsRef.current.filter(a => !sent.includes(a)));
     setAttachNotice(null);
   }
 
@@ -1113,7 +1180,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   async function send() {
     const text = input.trim();
     const pendingImages = attachmentsRef.current;
-    if ((!text && !pendingImages.length) || busy || preparingRef.current > 0 || savingImagesRef.current) {
+    if ((!text && !pendingImages.length) || (busy && !session?.queueMessage) || preparingRef.current > 0 || savingHistory || sendingRef.current) {
       return;
     }
     if (spectating) {
@@ -1123,33 +1190,44 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     if (pendingImages.length && imageSupportNow().supported === false) {
       return; // 输入区已经提示当前模型不能看图、发送按钮是灰的；按回车也不发
     }
+    sendingRef.current = true;
+    setSavingHistory(true);
     setError(null);
     setNotice(null);
     // 图片先存进会话存储（存不下就不发，草稿留着），消息上只记引用。
     let images = [];
     if (pendingImages.length) {
-      savingImagesRef.current = true;
       try {
         for (const a of pendingImages) {
           images.push(await conversations.saveImage(a.bytes, { width: a.width, height: a.height }));
         }
       } catch (e) {
-        savingImagesRef.current = false;
+        sendingRef.current = false;
+        setSavingHistory(false);
         setError("图片保存失败，没有发送：" + ((e && e.message) || e));
         return;
       }
     }
     const userMsg = { role: "user", content: text, ...(images.length ? { images } : {}) };
-    setMessages([...messages, userMsg]); // 乐观显示；发给模型的权威历史下面从持久化 store 读
-    setInput("");
-    clearAttachments();
-    savingImagesRef.current = false;
-    resetSteps();
-    atBottomRef.current = true; // 发送即贴底，跟随本次回复
-    autoApproveRef.current = false;
     try {
       const tid = await ensureThread();
-      await conversations.appendMessage(tid, userMsg);
+      const queue = session?.queueMessage && (busy || pendingMessages.length || session.isRunning(tid));
+      if (queue) {
+        session.queueMessage(tid, userMsg);
+        if (uiStateRef.current.currentId === tid) {
+          setPendingMessages(session.getState(tid).pendingMessages);
+          setBusy(true);
+        }
+      } else {
+        await conversations.appendMessage(tid, userMsg);
+      }
+      setInput(draft => draft.trim() === text ? "" : draft);
+      clearSentAttachments(pendingImages);
+      if (queue) return;
+      setMessages([...messages, userMsg]);
+      resetSteps();
+      atBottomRef.current = true;
+      autoApproveRef.current = false;
       // 发给模型的会话历史从**持久化 store** 读（不靠 React messages state——settle 重载有竞态、
       // 切栏重挂载也会让它陈旧 → 之前"同一会话里回一轮就失忆"的根因）。store 是权威、含全部已落盘轮次。
       let convo = [...messages, userMsg];
@@ -1273,7 +1351,22 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     } catch (e) {
       setError((e?.message || String(e)) + (e?.body ? "\n— " + String(e.body).slice(0, 600) : ""));
       setBusy(false);
+    } finally {
+      sendingRef.current = false;
+      setSavingHistory(false);
     }
+  }
+
+  function actOnQueuedMessage(id, steer) {
+    if (steer) {
+      session.steerQueuedMessage(currentId, id);
+      setError(null);
+    } else {
+      session.removeQueuedMessage(currentId, id);
+    }
+    const snap = session.getState(currentId);
+    setPendingMessages(snap.pendingMessages);
+    setBusy(snap.running);
   }
 
   // 「停止」按钮：让常驻引擎中断本回合（轮次边界 + 进行中的 LLM 请求都会停）。
@@ -1292,6 +1385,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   }
 
   async function newChat() {
+    if (session?.isRunning(currentId)) triedFollowRef.current = currentId;
     const t = await conversations.createThread(); // 新会话不绑定目录（默认为空，需用户手动「打开目录」）
     if (session && session.acquireThread) {
       session.acquireThread([t.id], ownerRef.current); // 认领新线程（预留）→ 别的窗口认领不到，不会串对话
@@ -1299,9 +1393,11 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     setSpectating(false);
     setCurrentId(t.id);
     setMessages([]);
+    setPendingMessages([]);
     setCancellationPending(false);
     setUsage(null);
     setError(null);
+    setNotice(null);
     setShowHistory(false);
     bindWorkspace(effectiveWorkspace(t));
     setMode(null); // 新会话未选模式 → 空状态里弹「全自动 / AI辅助」选择卡
@@ -1344,10 +1440,13 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     const t = await conversations.getThread(id);
     if (t) {
       if (id !== currentId) {
+        if (!auto && session?.isRunning(currentId)) triedFollowRef.current = currentId;
         setSpectating(heldElsewhere);
+        setNotice(null);
       }
       setCurrentId(t.id);
       setMessages(t.messages);
+      setPendingMessages(session?.getState(t.id)?.pendingMessages || []);
       setCancellationPending(t.cancellationPending === true);
       setUsage(t.usage || null);
       setError(null);
@@ -1364,6 +1463,31 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     return !!t;
   }
 
+  async function closeForkDialog(choice) {
+    const { threadId, messageIndex, workspace, trigger } = pendingFork;
+    setPendingFork(null);
+    if (choice !== "create" && choice !== "share") {
+      trigger.focus();
+      return;
+    }
+    setSavingHistory(true);
+    try {
+      const branch = await conversations.forkThread(threadId, messageIndex, choice === "share" ? workspace : null);
+      if (uiStateRef.current.currentId === threadId) {
+        atBottomRef.current = true;
+        if (await openThread(branch.id)) {
+          setNotice(`已打开「${branch.title}」。`);
+          inputRef.current?.focus();
+        }
+      }
+      await refreshThreads();
+    } catch (e) {
+      setError("创建会话分支失败：" + (e?.message || e));
+    } finally {
+      setSavingHistory(false);
+    }
+  }
+
   // 「在此窗口接管」：把这条会话的占用转到本窗口；原窗口下次心跳续约失败后自动转为只读查看。
   function takeOverThread() {
     if (session && session.takeOverThread && currentId) {
@@ -1374,7 +1498,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   }
 
   openThreadRef.current = openThread; // 每渲染更新，供「自动跟随」定时器调用最新闭包
-  uiStateRef.current = { msgs: messages.length, input, attachments: attachments.length }; // 每渲染更新，供自动跟随判定"面板是否真正空闲中性"
+  uiStateRef.current = { currentId, input, attachments: attachments.length, historyPending: savingHistory || !!pendingFork };
 
   function pickConversationFile(mode, title, defaultName, callback) {
     try {
@@ -1471,6 +1595,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       }
       session.stop(id);
     }
+    session?.clearQueuedMessages?.(id);
     await conversations.deleteThread(id);
     const list = await refreshThreads();
     if (id === currentId) {
@@ -1487,7 +1612,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   const imageBlocked = !!imageSupport && imageSupport.supported === false;
 
   function onKeyDown(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       send();
     }
@@ -1536,7 +1661,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
 
       {notice && (
         <div className="agent-panel__notice">
-          <span>{notice}</span>
+          <span role="status">{notice}</span>
           <button type="button" onClick={() => setNotice(null)} title="关闭">×</button>
         </div>
       )}
@@ -1686,6 +1811,16 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
                 {m.content}
               </div>
             )}
+            <button
+              type="button"
+              className="msg__fork"
+              disabled={savingHistory}
+              onClick={event => setPendingFork({ threadId: currentId, messageIndex: i, workspace: workspaceDir, trigger: event.currentTarget })}
+              title="从这里分支，在新会话中继续"
+              aria-label={`从这里分支（第 ${i + 1} 条消息）`}
+            >
+              {ICONS.fork}
+            </button>
           </div>
         ))}
         {busy && (
@@ -1703,6 +1838,10 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
           </div>
         )}
       </div>
+
+      {pendingFork && (
+        <ForkDialog messageIndex={pendingFork.messageIndex} workspace={pendingFork.workspace} onClose={closeForkDialog} />
+      )}
 
       {pendingConfirm && (
         <div className="agent-confirm">
@@ -1738,6 +1877,22 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {pendingMessages.length > 0 && (
+          <ol className="agent-queue" aria-label="待发送消息">
+            {pendingMessages.map(({ id, text, imageCount }) => (
+              <li key={id}>
+                {ICONS.queued}
+                <span className="agent-queue__text" title={text}>{text}{imageCount > 0 && ` [${imageCount} 张图片]`}</span>
+                <button type="button" disabled={spectating} onClick={() => actOnQueuedMessage(id, true)}
+                  title={busy ? "立即用这条消息引导当前回复" : "发送这条消息并继续队列"}>
+                  {ICONS.steer}{busy ? "引导" : "发送"}
+                </button>
+                <button type="button" disabled={spectating} onClick={() => actOnQueuedMessage(id, false)}
+                  aria-label="移除这条待发消息" title="移除这条待发消息">{ICONS.trash}</button>
+              </li>
+            ))}
+          </ol>
+        )}
         {(attachments.length > 0 || preparing > 0) && (
           <div className="agent-attach">
             {attachments.map(a => {
@@ -1775,26 +1930,38 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         })()}
         {attachNotice && <div className="agent-attach__note">{attachNotice}</div>}
         <div className="agent-panel__input">
-          <textarea
-            value={input}
-            placeholder={busy ? "执行中…可继续输入，停止后或本轮结束再发送" : "输入消息，Enter 发送，Shift+Enter 换行，可粘贴图片"}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-            rows={2}
-          />
-          {busy ? (
-            <button type="button" className="agent-panel__stop" onClick={stopRun} title="停止自主执行">
+          <div className="agent-panel__input-field">
+            <textarea
+              ref={inputRef}
+              value={input}
+              placeholder={busy && session?.queueMessage ? "输入补充，Enter 排队，Shift+Enter 换行" : "输入消息，Enter 发送，Shift+Enter 换行，可粘贴图片"}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={onKeyDown}
+              onPaste={onPaste}
+              rows={2}
+            />
+            {modelProfiles.length > 0 && (
+              <select className="agent-panel__model" aria-label="切换已保存的模型" title="选择下一条回复使用的模型"
+                value={activeProfileId} onFocus={refreshModels} onChange={event => switchModel(event.target.value)}>
+                {modelProfiles.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}{p.model && p.model !== p.name ? ` · ${p.model}` : ""}</option>
+                ))}
+              </select>
+            )}
+          </div>
+          {busy && (
+            <button type="button" className="agent-panel__stop" disabled={spectating} onClick={stopRun} title="停止当前回复">
               停止
             </button>
-          ) : (
+          )}
+          {(!busy || (session?.queueMessage && (!!input.trim() || attachments.length > 0))) && (
             <button
               type="button"
               onClick={send}
-              disabled={(!input.trim() && !attachments.length) || preparing > 0 || imageBlocked}
+              disabled={spectating || (!input.trim() && !attachments.length) || preparing > 0 || imageBlocked || savingHistory}
               title={imageBlocked ? "当前模型不支持看图：去掉图片，或换一个能看图的模型" : undefined}
             >
-              发送
+              {busy ? "排队" : "发送"}
             </button>
           )}
         </div>

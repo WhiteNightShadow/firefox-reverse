@@ -560,6 +560,7 @@ export class LlmClient {
     const maxAttempts = 3;
     let lastErr = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (opts.signal?.aborted) throw new LlmError("request aborted");
       // 空闲看门狗（idle watchdog）：只要还在进展就不超时——建连→响应头→每段流式数据都会 bump() 重置，
       // 仅当连续 idleMs 一个字节都不来（真·卡死/断流）才中止。于是慢/长响应（大上下文、推理模型边想边出）
       // 都不会再误报超时；正常出 token 时永不触发。stalled 标记区分"看门狗中止"与"用户停止/网络断"。

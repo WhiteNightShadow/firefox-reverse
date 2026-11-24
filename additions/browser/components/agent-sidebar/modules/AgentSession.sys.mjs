@@ -96,6 +96,8 @@ try {
       observe() {
         for (const s of sessions.values()) {
           try {
+            s.queue.length = 0;
+            s.guidance.length = 0;
             s.abort?.abort();
           } catch {
             /* ignore */
@@ -124,6 +126,10 @@ function newState() {
     error: null,
     aborted: false,
     abort: null,
+    queue: [],
+    guidance: [], // 已点「引导」的消息；当前请求收尾后一起交给模型。
+    nextMessageId: 0,
+    historyRev: 0, // 跨连续回复递增，侧栏据此重读新落盘的气泡。
     subs: new Set(),
     reservation: null, // 多窗口隔离：{ owner, ts } 或 null。owner=持有窗口 token；ts=最后心跳。
     //   只有「owner 不同 且 心跳新鲜(未过 TTL)」才算被别的活窗口占用；过期/同 owner/空 → 可认领。
@@ -194,6 +200,10 @@ function snapshot(s) {
     error: s.error,
     aborted: s.aborted,
     content: s.content,
+    pendingMessages: s.queue.map(({ id, message }) => ({
+      id, text: message.content, imageCount: message.images?.length || 0,
+    })),
+    historyRev: s.historyRev,
     checkpointSeq: s.checkpointSeq || 0,
     usage: { ...s.usage },
     lastUsage: s.lastUsage ? { ...s.lastUsage } : null,
@@ -201,6 +211,26 @@ function snapshot(s) {
     contextProjected: s.contextProjected === true,
     pendingConfirm: s.pendingConfirm ? { id: s.pendingConfirm.id, name: s.pendingConfirm.name, args: s.pendingConfirm.args } : null,
   };
+}
+
+function interruptReply(s) {
+  s.abort.abort();
+  // 等待工具确认时也要唤醒当前回合，才能收尾并交还输入。
+  if (s.pendingConfirm) {
+    const { resolve } = s.pendingConfirm;
+    s.pendingConfirm = null;
+    resolve(false);
+  }
+}
+
+function startNextReply(threadId, s) {
+  const guided = s.guidance.length > 0;
+  const entries = guided ? s.guidance.splice(0) : s.queue.splice(0, 1);
+  const systemPrompt = guided
+    ? "请结合上面的对话和已经写出的回复，按用户刚补充的要求继续回答。"
+    : "请结合上面的对话回答用户的新消息。";
+  // 连续发送的是聊天补充。使用当前模型直接回复，并沿用会话的历史、图片和流式显示。
+  void agentSession.run(threadId, { systemPrompt, followUps: entries });
 }
 
 // ── step reducer（从 UI 原样搬来：text / think 流式段 + tool 步骤）──
@@ -395,26 +425,58 @@ export const agentSession = {
       resolve(!!approved);
     }
   },
+  queueMessage(threadId, message) {
+    const s = getOrInit(threadId);
+    // 面板文档能随时销毁，队列只保存后台自己的文本与图片引用。
+    const queued = {
+      role: "user", content: message.content,
+      ...(message.images?.length ? { images: Array.from(message.images, image => ({ ...image })) } : {}),
+    };
+    s.queue.push({ id: ++s.nextMessageId, message: queued });
+    if (s.running) {
+      notify(s);
+    } else {
+      startNextReply(threadId, s);
+    }
+  },
+  removeQueuedMessage(threadId, id) {
+    const s = sessions.get(threadId);
+    const index = s?.queue.findIndex(item => item.id === id) ?? -1;
+    if (index < 0) return;
+    s.queue.splice(index, 1);
+    notify(s);
+  },
+  steerQueuedMessage(threadId, id) {
+    const s = sessions.get(threadId);
+    const index = s?.queue.findIndex(item => item.id === id) ?? -1;
+    if (index < 0) return; // 刚好已发出，或用户重复点击同一条。
+    const [entry] = s.queue.splice(index, 1);
+    if (s.running) {
+      s.guidance.push(entry);
+      interruptReply(s);
+      notify(s);
+    } else {
+      s.queue.unshift(entry);
+      startNextReply(threadId, s);
+    }
+  },
+  clearQueuedMessages(threadId) {
+    const s = sessions.get(threadId);
+    if (s) {
+      s.queue.length = 0;
+      s.guidance.length = 0;
+      notify(s);
+    }
+  },
   /** 停止本回合（轮次边界 + 进行中的 LLM 请求都会停）。 */
   stop(threadId) {
     const s = sessions.get(threadId);
     if (s && s.abort) {
-      try {
-        s.abort.abort();
-      } catch {
-        /* ignore */
+      if (s.guidance.length) {
+        s.queue.push(...s.guidance.splice(0));
+        s.queue.sort((a, b) => a.id - b.id);
       }
-      // 若正停在“等待用户确认工具”阶段，AbortSignal 本身不会释放 confirm Promise。
-      // 主动按拒绝收口，确保手动停止能立即越过确认点并进入统一的 cancelled 收尾。
-      if (s.pendingConfirm && typeof s.pendingConfirm.resolve === "function") {
-        const resolve = s.pendingConfirm.resolve;
-        s.pendingConfirm = null;
-        try {
-          resolve(false);
-        } catch {
-          /* ignore */
-        }
-      }
+      interruptReply(s);
       s.aborted = true;
       void conversationStore.setThreadTurnStatus(threadId, "cancelled").catch(() => {});
       notify(s);
@@ -428,7 +490,7 @@ export const agentSession = {
    *   assist — true=AI辅助逐阶段模式：不跨回合自动续（每个 turn 结束即交回用户），且 AgentLoop 里
    *            无工具的纯文字回复当正常收尾（停下给方向）而非 drift 逼它继续。false=全自动一条龙（默认）。
    */
-  async run(threadId, { systemPrompt, dynamicContext = "", convo, confirmMode = false, maxRounds = 120, maxPerTool = 40, workspaceRoot, win, assist = false } = {}) {
+  async run(threadId, { systemPrompt, dynamicContext = "", convo, confirmMode = false, maxRounds = 120, maxPerTool = 40, workspaceRoot, win, assist = false, followUps } = {}) {
     _runLog.push({ threadId, at: Date.now(), convoLen: Array.isArray(convo) ? convo.length : -1 });
     const s = getOrInit(threadId);
     if (s.running) {
@@ -463,6 +525,7 @@ export const agentSession = {
     notify(s);
 
     let vision = false;
+    let appendedFollowUps = 0;
     try {
       // 每次用户发起一轮时取最新设置；自动续跑沿用同一份 system，避免重复追加。
       const globalSystemPrompt = configStore.getGlobalSystemPrompt().trim();
@@ -521,6 +584,17 @@ export const agentSession = {
         vision = imageSupport === true;
       } catch {
         /* 取不到当不支持视觉 */
+      }
+      if (followUps) {
+        if (imageSupport === false && followUps.some(entry => entry.message.images?.length)) {
+          throw new Error("待发消息含有图片，请切换到支持图片的模型后再发送。");
+        }
+        for (const entry of followUps) {
+          await conversationStore.appendMessage(threadId, entry.message);
+          appendedFollowUps++;
+        }
+        s.historyRev++;
+        notify(s);
       }
       // 全自动续跑（用户选定）：turn 因 maxRounds/漂移结束但任务没完成 → 自动起下一轮
       // （per-turn 的 maxRounds/maxPerTool/重复熔断计数随之全部重置——这正是 80轮上限/40次工具上限
@@ -604,6 +678,17 @@ export const agentSession = {
       if (typeof conversationStore.materializeImages === "function") {
         turnMsgs = await conversationStore.materializeImages(turnMsgs, { allowImages: imageSupport !== false });
       }
+      const onDelta = chunk => { pushDelta(s, chunk); notifyThrottled(s); };
+      const onReasoning = chunk => { pushReasoning(s, chunk); notifyThrottled(s); };
+      if (followUps) {
+        const prompt = dynamicContext ? systemPrompt + "\n\n" + dynamicContext : systemPrompt;
+        const reply = await client.chat([{ role: "system", content: prompt }, ...turnMsgs], {
+          signal: ac.signal, cacheKey, onDelta, onReasoning,
+        });
+        recordUsage(reply.usage);
+        await this._finishReply(threadId, s, reply);
+        return;
+      }
       let autoRestarts = 0;
       let driftStreak = 0;
       let res;
@@ -654,14 +739,8 @@ export const agentSession = {
                 return { path: saved?.path || path };
               }
             : null,
-        onDelta: c => {
-          pushDelta(s, c);
-          notifyThrottled(s); // 高频→节流(~20/s)
-        },
-        onReasoning: c => {
-          pushReasoning(s, c);
-          notifyThrottled(s); // 高频→节流
-        },
+        onDelta,
+        onReasoning,
         // 上下文压缩点：把本段进展作为一条 checkpoint 回复落盘 + 重置实时步骤 + 自增 seq，
         // UI 据 checkpointSeq 变化重载历史(新气泡)、清空 live 区，于是"一个长任务"在界面上
         // 表现为"多条阶段回复"，且每条都已持久化(任意后续步骤失败也不丢已完成进展)。
@@ -696,6 +775,7 @@ export const agentSession = {
           s._curThink = -1;
           s.content = "";
           s.checkpointSeq = (s.checkpointSeq || 0) + 1;
+          s.historyRev++;
           notify(s);
         },
         onEvent: ev => {
@@ -704,8 +784,8 @@ export const agentSession = {
         },
         confirm: confirmMode
           ? call =>
-              s.approveAll
-                ? Promise.resolve(true) // 本轮已选"总是允许"→ 后续工具不再打断
+              ac.signal.aborted || s.approveAll
+                ? Promise.resolve(!ac.signal.aborted)
                 : new Promise(resolve => {
                     s.pendingConfirm = { id: call.id, name: call.name, args: call.args, resolve };
                     notify(s);
@@ -748,6 +828,7 @@ export const agentSession = {
       s._curThink = -1;
       s.content = "";
       s.checkpointSeq = (s.checkpointSeq || 0) + 1;
+      s.historyRev++;
       notify(s);
       // 喂回累积对话（剥掉 res.messages 前置的 system——runAgentTurn 会按 systemPrompt 重新前置，否则双份）
       // + 一条续跑指令（保证角色交替合法 + 给模型明确"接着干、别重来"的指示）。
@@ -760,35 +841,27 @@ export const agentSession = {
           "只有给出可独立实跑的产物、或真需要我提供你拿不到的东西（登录态/账号/验证码/纯业务决策）时才停。",
       });
       } // end for(;;) —— 全自动续跑
-      s.aborted = ac.signal.aborted || (res && res.stopReason === "aborted");
-      // 引擎加在回复后面的说明（检测到循环、连续只输出文字、到了续跑上限……为什么停下、接下来怎么办）不是模型
-      // 流式输出的，steps 里没有；而侧栏只要有步骤记录就只渲染步骤。补成一段正文，否则任务停了用户却看不到原因。
-      const notice = [res && res.notice, sessionNotice].filter(Boolean).join("\n\n");
-      if (notice && !s.aborted) {
-        pushDelta(s, (s._curText >= 0 ? "\n\n---\n" : "") + notice);
-      }
-      // res.content 为空时（工具结尾轮/被截断轮）从 steps 的 text 段兜底，
-      // 保证落盘的 assistant 消息一定带正文 → 下一轮历史里这轮不会是空白＝不失忆。
-      s.content = res.content || textFromSteps(s.steps) || "";
-      // 落盘最终消息（引擎自己存，UI 不在场也不丢）
-      await this._persist(threadId, s.content, s.steps);
-      try {
-        await conversationStore.setThreadTurnStatus(threadId, s.aborted ? "cancelled" : "completed");
-      } catch {
-        /* 状态元数据失败不影响已完成结果 */
-      }
+      await this._finishReply(threadId, s, res, sessionNotice);
     } catch (e) {
-      s.aborted = ac.signal.aborted;
-      const note = s.aborted
-        ? "（已手动停止）"
-        : "（本轮出错中断：" + (e && (e.message || String(e)) || "").slice(0, 160) + "）";
-      s.error = s.aborted ? null : (e && (e.message || String(e))) + (e && e.body ? "\n— " + String(e.body).slice(0, 600) : "");
-      s.content = note;
+      if (followUps && appendedFollowUps < followUps.length) {
+        s.queue.unshift(...followUps.slice(appendedFollowUps));
+      }
+      const guided = s.guidance.length > 0 && ac.signal.aborted;
+      s.aborted = !guided && ac.signal.aborted;
+      if (guided) {
+        s.content = textFromSteps(s.steps);
+      } else if (s.aborted) {
+        s.content = "（已手动停止）";
+      } else {
+        const message = e?.message || String(e);
+        s.error = message + (e?.body ? "\n— " + String(e.body).slice(0, 600) : "");
+        s.content = "（本轮出错中断：" + message.slice(0, 160) + "）";
+      }
       if (s.steps.length || s.aborted) {
-        await this._persist(threadId, note, s.steps);
+        await this._persist(threadId, s.content, s.steps);
       }
       try {
-        await conversationStore.setThreadTurnStatus(threadId, s.aborted ? "cancelled" : "failed");
+        await conversationStore.setThreadTurnStatus(threadId, guided ? "completed" : s.aborted ? "cancelled" : "failed");
       } catch {
         /* 状态元数据失败不影响中断收尾 */
       }
@@ -804,7 +877,34 @@ export const agentSession = {
       s.settled = true;
       s.abort = null;
       s.pendingConfirm = null;
-      notify(s);
+      s.historyRev++;
+      if (s.guidance.length || (s.queue.length && !ac.signal.aborted && !s.error)) {
+        startNextReply(threadId, s);
+      } else {
+        notify(s);
+      }
+    }
+  },
+
+  async _finishReply(threadId, s, result, sessionNotice = "") {
+    const interrupted = s.abort.signal.aborted || result.stopReason === "aborted";
+    const guided = interrupted && s.guidance.length > 0;
+    s.aborted = interrupted && !guided;
+    const notice = [result.notice, sessionNotice].filter(Boolean).join("\n\n");
+    if (notice && !interrupted) {
+      pushDelta(s, (s._curText >= 0 ? "\n\n---\n" : "") + notice);
+    }
+    // 引导只保留当前回复已经生成的正文和步骤，下一条是同一话题里的补充。
+    s.content = guided && result.stopReason === "aborted"
+      ? textFromSteps(s.steps)
+      : result.content || textFromSteps(s.steps);
+    if (!guided || s.content || s.steps.length) {
+      await this._persist(threadId, s.content, s.steps);
+    }
+    try {
+      await conversationStore.setThreadTurnStatus(threadId, s.aborted ? "cancelled" : "completed");
+    } catch {
+      /* 状态元数据失败不影响已完成结果 */
     }
   },
 
