@@ -150,10 +150,10 @@ export class WorkspaceBackend {
   getRoot(ctx) {
     return this._resolveRoot(ctx);
   }
-  /** ctx.workspaceRoot 优先于全局 this._root，实现多窗口/多会话隔离。 */
+  /** ctx.workspaceRoot（含显式 null）优先于全局 this._root，实现多窗口/多会话及未绑定目录分支隔离。 */
   _resolveRoot(ctx) {
-    const r = (ctx && ctx.workspaceRoot) || this._root;
-    return r ? this._normalizePath(r) : r;
+    const r = ctx && "workspaceRoot" in ctx ? ctx.workspaceRoot : this._root;
+    return r ? this._normalizePath(r) : null;
   }
 
   _assertRoot(ctx) {

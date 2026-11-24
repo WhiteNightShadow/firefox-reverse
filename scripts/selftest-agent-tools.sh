@@ -23,6 +23,7 @@ SELFTESTS=(
   selftest-markdown.mjs
   selftest-markdown-streaming.mjs
   selftest-panel-live.mjs
+  selftest-message-queue.mjs
   selftest-addons.mjs
   selftest-cookies.mjs
   selftest-config.mjs

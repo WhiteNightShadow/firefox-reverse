@@ -267,6 +267,12 @@ export class ConversationStore {
     this._path = opts.path || null;
     this._memoryOnly = opts.memoryOnly ?? !hasIO();
     this._images = new Map(); // 内存模式下的图片：id → Uint8Array
+    this._writeQueue = Promise.resolve();
+    this._externalImageRefs = null;
+  }
+
+  setExternalImageRefs(fn) {
+    this._externalImageRefs = typeof fn === "function" ? fn : null;
   }
 
   get isPersistent() {
@@ -307,7 +313,10 @@ export class ConversationStore {
       return;
     }
     const p = await this._filePath();
-    await IOUtils.writeJSON(p, this._mem, { tmpPath: p + ".tmp" });
+    const snapshot = JSON.parse(JSON.stringify(this._mem));
+    const write = () => IOUtils.writeJSON(p, snapshot, { tmpPath: p + ".tmp" });
+    this._writeQueue = this._writeQueue.catch(() => {}).then(write);
+    await this._writeQueue;
   }
 
   /** 线程摘要列表（按更新时间倒序），不含 messages。 */
@@ -353,27 +362,49 @@ export class ConversationStore {
       : projectMessages(messages, t.contextProjection);
   }
 
-  async createThread(title = NEW_TITLE, workspace = null, mode = null) {
+  createThread(title = NEW_TITLE, workspace = null, mode = null) {
+    return this._createThread({ title, workspace, mode });
+  }
+
+  /** 从指定消息（含）分出一条独立会话。图片文件按内容寻址，分支只需复制消息上的引用。 */
+  async forkThread(id, messageIndex, workspace = null) {
+    const source = await this.getThread(id);
+    if (!source) {
+      throw new Error("原会话已不存在");
+    }
+    if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex >= source.messages.length) {
+      throw new Error("找不到要分支的消息");
+    }
+    const prefix = source.messages.slice(0, messageIndex + 1);
+    return this._createThread({
+      title: `分支 · 第 ${prefix.length} 条 · ${source.title}`,
+      workspace,
+      mode: source.mode,
+      modelStrategy: source.modelStrategy,
+      messages: JSON.parse(JSON.stringify(prefix)),
+    });
+  }
+
+  async _createThread({ title, workspace, mode, modelStrategy, messages }) {
     const d = await this._load();
     const now = nextTs();
-    const t = {
+    const t = normalizeThread({
       id: newThreadId(),
       title: cleanTitle(title),
       createdAt: now,
       updatedAt: now,
-      workspace: workspace || null,
-      mode: mode || null, // "auto"=全自动一条龙 / "assist"=AI辅助逐阶段 / null=未选（用时默认 auto）
-      envId: null,
-      modelStrategy: "balanced",
-      lastTurnStatus: "idle",
-      cancellationPending: false,
-      cancelledAt: null,
-      contextProjection: null,
-      usage: emptyUsage(),
-      messages: [],
-    };
+      workspace,
+      mode,
+      modelStrategy,
+      messages,
+    });
     d.threads.push(t);
-    await this._save();
+    try {
+      await this._save();
+    } catch (error) {
+      d.threads = d.threads.filter(thread => thread !== t);
+      throw error;
+    }
     return t;
   }
 
@@ -469,19 +500,35 @@ export class ConversationStore {
       throw new Error("conversation thread not found: " + id);
     }
     const images = cleanImageRefs(msg.images);
-    t.messages.push({
+    const message = {
       role: msg.role,
       content: msg.content,
       ...(images.length ? { images } : {}),
       ...(msg.steps ? { steps: msg.steps } : {}),
-    });
-    t.updatedAt = nextTs();
+    };
+    const previousTitle = t.title;
+    const previousUpdate = t.updatedAt;
+    const updatedAt = nextTs();
+    t.messages.push(message);
+    t.updatedAt = updatedAt;
     if (t.title === NEW_TITLE && msg.role === "user" && msg.content) {
       t.title = msg.content.replace(/\s+/g, " ").trim().slice(0, 30) || NEW_TITLE;
     } else if (t.title === NEW_TITLE && msg.role === "user" && images.length) {
       t.title = "图片";
     }
-    await this._save();
+    try {
+      await this._save();
+    } catch (error) {
+      const idx = t.messages.indexOf(message);
+      if (idx >= 0) {
+        t.messages.splice(idx, 1);
+      }
+      if (t.updatedAt === updatedAt) {
+        t.updatedAt = previousUpdate;
+        t.title = previousTitle;
+      }
+      throw error;
+    }
     return t;
   }
 
@@ -875,6 +922,17 @@ export class ConversationStore {
             used.add(ref.id);
           }
         }
+      }
+    }
+    if (this._externalImageRefs) {
+      try {
+        for (const id of this._externalImageRefs() || []) {
+          if (id) {
+            used.add(id);
+          }
+        }
+      } catch {
+        /* 外部运行态引用查询失败不阻断清理 */
       }
     }
     if (this._memoryOnly) {

@@ -62,5 +62,16 @@ try {
 }
 ok(calls === 3 && /重试/.test(msg), `502 重试 3 次后抛、消息含「重试」（fetch ${calls} 次）`);
 
+const abort = new AbortController();
+const interrupted = mkClient();
+interrupted._delay = async () => abort.abort();
+calls = 0;
+try {
+  await interrupted.chat([{ role: "user", content: "x" }], { signal: abort.signal });
+} catch (e) {
+  msg = e.message;
+}
+ok(calls === 1 && /aborted/.test(msg), "等待重试时被引导或停止，旧请求不再发出");
+
 console.log(`\n重试自测：${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -299,6 +299,73 @@ body {
   gap: 3px;
 }
 
+.msg__fork {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--frx-radius-sm);
+  background: none;
+  color: var(--in-content-deemphasized-text, GrayText);
+  cursor: pointer;
+}
+.msg__fork:is(:hover, :focus-visible):enabled {
+  color: var(--in-content-page-color, FieldText);
+  background: var(--in-content-button-background-hover, rgba(128,128,128,0.18));
+}
+.msg__fork:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-fork-dialog {
+  box-sizing: border-box;
+  inline-size: min(24rem, calc(100% - 24px));
+  max-block-size: calc(100% - 24px);
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid var(--in-content-border-color, ThreeDShadow);
+  border-radius: var(--frx-radius-md);
+  background: var(--in-content-box-background, Field);
+  color: var(--in-content-page-color, FieldText);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  font: inherit;
+}
+.agent-fork-dialog::backdrop { background: rgba(0,0,0,0.25); }
+.agent-fork-dialog h2 { margin: 0; font-size: 1.12em; }
+.agent-fork-dialog p { margin: 10px 0 18px; line-height: 1.5; }
+.agent-fork-dialog code {
+  display: block;
+  margin-block-start: 8px;
+  padding: 6px 8px;
+  border-radius: var(--frx-radius-sm);
+  background: var(--in-content-button-background, rgba(128,128,128,0.12));
+  overflow-wrap: anywhere;
+}
+.agent-fork-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.agent-fork-dialog button {
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--frx-radius-sm);
+  background: var(--in-content-button-background, rgba(128,128,128,0.12));
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.agent-fork-dialog button:hover { background: var(--in-content-button-background-hover, rgba(128,128,128,0.22)); }
+.agent-fork-dialog .agent-fork-dialog__primary {
+  background: var(--in-content-primary-button-background, Highlight);
+  color: var(--in-content-primary-button-text-color, HighlightText);
+}
+.agent-fork-dialog .agent-fork-dialog__primary:hover { filter: brightness(1.08); }
+
 .msg__role {
   font-size: 0.70em;
   font-weight: 600;
@@ -732,6 +799,49 @@ body {
   outline: 2px dashed var(--in-content-primary-button-background, Highlight);
   outline-offset: -4px;
 }
+.agent-queue {
+  list-style: none;
+  margin: 8px 10px 0;
+  padding: 0;
+  max-height: min(22vh, 11rem);
+  overflow-y: auto;
+  border: 1px solid var(--in-content-border-color, ThreeDShadow);
+  border-radius: var(--frx-radius-md);
+}
+.agent-queue li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 10px;
+  color: var(--in-content-deemphasized-text, GrayText);
+}
+.agent-queue li + li { border-top: 1px solid var(--in-content-border-color, ThreeDShadow); }
+.agent-queue svg { flex-shrink: 0; width: 14px; height: 14px; }
+.agent-queue__text {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--in-content-page-color, FieldText);
+}
+.agent-queue button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 26px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: var(--frx-radius-sm);
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.agent-queue button:is(:hover, :focus-visible):enabled {
+  background: var(--in-content-button-background-hover, rgba(128,128,128,0.18));
+  color: var(--in-content-page-color, FieldText);
+}
+.agent-queue button:disabled { opacity: 0.5; cursor: default; }
 .agent-attach {
   display: flex;
   flex-wrap: wrap;
@@ -836,22 +946,49 @@ body {
   align-items: flex-end;
 }
 
-.agent-panel__input textarea {
+.agent-panel__input-field {
+  display: flex;
   flex: 1;
-  resize: none;
-  font: inherit;
-  padding: 9px 11px;
+  flex-direction: column;
+  min-width: 0;
   border-radius: var(--frx-radius-md);
   border: 1px solid var(--in-content-border-color, ThreeDShadow);
   background: var(--in-content-page-background, Field);
-  color: inherit;
-  line-height: 1.5;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.agent-panel__input textarea:focus {
-  outline: none;
+.agent-panel__input-field:focus-within {
   border-color: var(--in-content-primary-button-background, Highlight);
   box-shadow: 0 0 0 2px color-mix(in srgb, Highlight 22%, transparent);
+}
+.agent-panel__input textarea {
+  min-width: 0;
+  padding: 9px 11px;
+  resize: none;
+  border: none;
+  outline: none;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+}
+.agent-panel__model {
+  align-self: flex-end;
+  max-width: min(15rem, calc(100% - 12px));
+  margin: 0 6px 4px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--frx-radius-sm);
+  background-color: transparent;
+  color: var(--in-content-deemphasized-text, GrayText);
+  font: inherit;
+  font-size: .9em;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.agent-panel__model:is(:hover, :focus-visible) {
+  background-color: var(--in-content-button-background-hover, rgba(128,128,128,0.18));
+  color: var(--in-content-page-color, FieldText);
 }
 
 .agent-panel__input button {

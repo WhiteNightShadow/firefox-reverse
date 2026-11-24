@@ -176,5 +176,53 @@ ok((await s.getThread(t1.id)).title === "RC4 入口分析", "renameThread 生效
 await s.deleteThread(t2.id);
 ok((await s.listThreads()).length === 3, "deleteThread 仅删除目标线程，导入和长会话仍保留");
 
+{
+  const store = new ConversationStore({ memoryOnly: true });
+  const source = await store.createThread("读书会", "/books", "assist");
+  await store.setThreadEnvironment(source.id, "reading");
+  await store.setThreadModelStrategy(source.id, "premium");
+  const png = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13);
+  const image = await store.saveImage(png, { width: 1, height: 1 });
+  await store.appendMessage(source.id, { role: "user", content: "", images: [image] });
+  await store.appendMessage(source.id, { role: "assistant", content: "书单", steps: [{ kind: "text", text: "书单" }] });
+  await store.appendMessage(source.id, { role: "user", content: "我们接着聊第三本" });
+  await store.setContextProjection(source.id, { version: 1, cutoff: 2, summary: "原会话的压缩摘要" });
+  await store.setThreadTurnStatus(source.id, "cancelled");
+  await store.addThreadUsage(source.id, { requests: 1 });
+  const original = JSON.stringify(source);
+
+  const branch = await store.forkThread(source.id, 1);
+  ok(branch.id !== source.id && branch.title !== source.title, "分支是历史中可区分的新会话");
+  ok(JSON.stringify(branch.messages) === JSON.stringify(source.messages.slice(0, 2)), "保留到所选回复（含）的正文、图片引用和步骤");
+  ok(branch.messages[0].images[0] !== source.messages[0].images[0] && branch.messages[1].steps[0] !== source.messages[1].steps[0], "两边的嵌套消息记录独立");
+  ok(branch.mode === "assist" && branch.modelStrategy === "premium" && !branch.workspace && !branch.envId, "沿用对话模式和模型策略，目录和环境独立绑定");
+  ok(branch.lastTurnStatus === "idle" && !branch.cancellationPending && !branch.contextProjection && branch.usage.requests === 0, "分支以空闲状态开始，单独累计用量");
+  const conversation = await store.getModelMessages(branch.id);
+  ok(conversation.length === 2 && conversation[0].images[0].id === image.id && conversation[1].content === "书单", "下一轮模型上下文以截取的消息为准");
+  await store.appendMessage(branch.id, { role: "user", content: "从第一本开始聊" });
+  ok(JSON.stringify(source) === original, "创建分支和在分支续聊都不修改原会话");
+  const first = await store.forkThread(branch.id, 0);
+  ok(first.messages.length === 1 && first.messages[0].images[0].id === image.id, "可以从分支的第一条纯图片消息再分支");
+  const last = await store.forkThread(source.id, 2, source.workspace);
+  ok(last.messages.length === 3 && last.messages[2].content === "我们接着聊第三本", "最后一条用户消息也可作为分支点");
+  ok(last.workspace === "/books" && !last.envId, "选择共用时，分支只继承工作目录路径");
+  await store.setThreadWorkspace(last.id, "/reviews");
+  ok(source.workspace === "/books", "分支以后切换目录不影响原会话的绑定");
+
+  const before = (await store.listThreads()).length;
+  for (const [id, index] of [[source.id, -1], [source.id, 3], [source.id, 0.5], ["deleted", 0]]) {
+    let rejected = false;
+    try { await store.forkThread(id, index); } catch { rejected = true; }
+    ok(rejected, `拒绝无效分支点 ${id === source.id ? "source" : id}[${index}]`);
+  }
+  store._save = async () => { throw new Error("disk full"); };
+  let saveError;
+  try { await store.forkThread(source.id, 0); } catch (e) { saveError = e.message; }
+  delete store._save;
+  ok(saveError === "disk full" && (await store.listThreads()).length === before, "创建失败时不留下空分支");
+  await store.deleteThread(source.id);
+  ok((await store.readImage(branch.messages[0].images[0]))?.length === png.length, "删除原会话后分支里的图片仍可读取");
+}
+
 console.log(`\nConversationStore 自测：${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

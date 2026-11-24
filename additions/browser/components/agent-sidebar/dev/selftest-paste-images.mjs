@@ -110,6 +110,12 @@ try {
     for (const [k, v] of Object.entries(props || {})) Object.defineProperty(event, k, { value: v });
     el.dispatchEvent(event);
     await sleep(80);
+    // 多图逐张处理，等界面完成后再检查缩略图和张数提示。
+    const deadline = Date.now() + 2000;
+    while (document.querySelector(".agent-attach__item.is-loading")) {
+      assert(Date.now() < deadline, "图片处理应在时限内完成");
+      await sleep(20);
+    }
     return event;
   };
   const paste = (data) => fire(textarea(), "paste", { clipboardData: clipboard(data) });
