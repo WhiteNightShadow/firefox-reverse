@@ -584,120 +584,153 @@ export class LlmClient {
         }
       };
       bump(); // 覆盖建连 + 首字节
+      const onSignalAbort = () => ac.abort();
       if (opts.signal) {
-        opts.signal.addEventListener("abort", () => ac.abort(), { once: true });
+        opts.signal.addEventListener("abort", onSignalAbort, { once: true });
       }
       let resp;
       try {
-        resp = await fetch(built.url, { ...built.init, signal: ac.signal });
-        bump(); // 收到响应头 → 重置看门狗
-      } catch (e) {
-        stopWatch();
-        if (opts.signal && opts.signal.aborted) {
-          throw new LlmError("request aborted", { cause: e }); // 用户「停止」→ 不重试
-        }
-        if (stalled) {
-          // 连续 idleMs 服务端一字未回（建连/首字节彻底卡死，罕见）→ 报清楚、不空转重试
-          throw new LlmError(
-            `连接超时：${Math.round(idleMs / 1000)}s 内服务端无任何响应，可直接重发。`,
-            { cause: e }
-          );
-        }
-        // 真·网络错误（连接重置/DNS 等）→ 退避重试
-        lastErr = new LlmError(`network error calling ${built.url}: ${e.message}`, { cause: e });
-        if (attempt < maxAttempts) {
-          await this._delay(500 * attempt);
-          continue;
-        }
-        throw lastErr;
-      }
-
-      if (!resp.ok) {
-        stopWatch();
-        const errText = await resp.text().catch(() => "");
-        const optional = built.features || [];
-        if (optional.length && !optionalFieldFallbackUsed && [400, 404, 422].includes(resp.status)) {
-          // Gateways and models reject optional fields they do not know: prompt_cache_key,
-          // stream_options, reasoning summaries, Gemini thought summaries. Drop every optional
-          // feature of this request and retry it once. The rejection sticks only if the retry
-          // goes through; a 4xx caused by something else must not blacklist the features for
-          // the rest of the browser run.
-          this._rememberFeatures(optional, true);
-          droppedFeatures = optional;
-          optionalFieldFallbackUsed = true;
-          built = this.buildRequest(messages, {
-            ...requestOpts,
-            disablePromptCache: true,
-            disableStreamUsage: true,
-            disableFeatures: new Set(optional),
-          });
-          attempt--;
-          continue;
-        }
-        if (droppedFeatures) {
-          this._rememberFeatures(droppedFeatures, false);
-          droppedFeatures = null;
-        }
-        // 5xx / 网关·上游错误属瞬时（中转站后端抖动）→ 可重试；4xx 是请求/鉴权问题 → 不重试。
-        const transient =
-          [429, 500, 502, 503, 504].includes(resp.status) ||
-          /upstream|gateway|timeout|temporar|overload/i.test(errText);
-        if (transient && attempt < maxAttempts) {
-          lastErr = new LlmError(`LLM API ${resp.status} ${resp.statusText}`, { status: resp.status, body: errText.slice(0, 2000) });
-          await this._delay(700 * attempt);
-          continue;
-        }
-        const suffix = transient ? `（网关/上游暂时不可用，已自动重试 ${maxAttempts} 次；可稍后再试或换模型）` : "";
-        throw new LlmError(`LLM API ${resp.status} ${resp.statusText}${suffix}`, {
-          status: resp.status,
-          body: errText.slice(0, 2000),
-        });
-      }
-
-      if (streaming) {
-        // 流式读取期间，每段数据都 bump() 重置看门狗（见 _readStream 的 onActivity）。
         try {
-          if (this.protocol === PROTOCOLS.ANTHROPIC) {
-            return await this._readStreamAnthropic(resp, opts.onDelta, bump);
-          }
-          if (this.protocol === PROTOCOLS.OPENAI_RESPONSES) {
-            return await this._readStreamResponses(resp, opts.onDelta, opts.onReasoning, bump);
-          }
-          if (this.protocol === PROTOCOLS.GEMINI) {
-            return await this._readStreamGemini(resp, opts.onDelta, opts.onReasoning, bump);
-          }
-          return await this._readStream(resp, opts.onDelta, opts.onReasoning, bump);
+          resp = await fetch(built.url, { ...built.init, signal: ac.signal });
+          bump(); // 收到响应头 → 重置看门狗
         } catch (e) {
+          stopWatch();
           if (opts.signal && opts.signal.aborted) {
-            throw new LlmError("request aborted", { cause: e }); // 用户「停止」
+            throw new LlmError("request aborted", { cause: e }); // 用户「停止」→ 不重试
           }
           if (stalled) {
+            // 连续 idleMs 服务端一字未回（建连/首字节彻底卡死，罕见）→ 报清楚、不空转重试
             throw new LlmError(
-              `流式响应中断：连续 ${Math.round(idleMs / 1000)}s 无数据（服务端疑似断流），可直接重发。`,
+              `连接超时：${Math.round(idleMs / 1000)}s 内服务端无任何响应，可直接重发。`,
               { cause: e }
             );
+          }
+          // 真·网络错误（连接重置/DNS 等）→ 退避重试
+          lastErr = new LlmError(`network error calling ${built.url}: ${e.message}`, { cause: e });
+          if (attempt < maxAttempts) {
+            await this._delay(500 * attempt, opts.signal);
+            continue;
+          }
+          throw lastErr;
+        }
+
+        if (!resp.ok) {
+          stopWatch();
+          const errText = await resp.text().catch(() => "");
+          const optional = built.features || [];
+          if (optional.length && !optionalFieldFallbackUsed && [400, 404, 422].includes(resp.status)) {
+            // Gateways and models reject optional fields they do not know: prompt_cache_key,
+            // stream_options, reasoning summaries, Gemini thought summaries. Drop every optional
+            // feature of this request and retry it once. The rejection sticks only if the retry
+            // goes through; a 4xx caused by something else must not blacklist the features for
+            // the rest of the browser run.
+            this._rememberFeatures(optional, true);
+            droppedFeatures = optional;
+            optionalFieldFallbackUsed = true;
+            built = this.buildRequest(messages, {
+              ...requestOpts,
+              disablePromptCache: true,
+              disableStreamUsage: true,
+              disableFeatures: new Set(optional),
+            });
+            attempt--;
+            continue;
+          }
+          if (droppedFeatures) {
+            this._rememberFeatures(droppedFeatures, false);
+            droppedFeatures = null;
+          }
+          // 5xx / 网关·上游错误属瞬时（中转站后端抖动）→ 可重试；4xx 是请求/鉴权问题 → 不重试。
+          const transient =
+            [429, 500, 502, 503, 504].includes(resp.status) ||
+            /upstream|gateway|timeout|temporar|overload/i.test(errText);
+          if (transient && attempt < maxAttempts) {
+            lastErr = new LlmError(`LLM API ${resp.status} ${resp.statusText}`, { status: resp.status, body: errText.slice(0, 2000) });
+            await this._delay(700 * attempt, opts.signal);
+            continue;
+          }
+          const suffix = transient ? `（网关/上游暂时不可用，已自动重试 ${maxAttempts} 次；可稍后再试或换模型）` : "";
+          throw new LlmError(`LLM API ${resp.status} ${resp.statusText}${suffix}`, {
+            status: resp.status,
+            body: errText.slice(0, 2000),
+          });
+        }
+
+        if (streaming) {
+          // 流式读取期间，每段数据都 bump() 重置看门狗（见 _readStream 的 onActivity）。
+          try {
+            if (this.protocol === PROTOCOLS.ANTHROPIC) {
+              return await this._readStreamAnthropic(resp, opts.onDelta, bump);
+            }
+            if (this.protocol === PROTOCOLS.OPENAI_RESPONSES) {
+              return await this._readStreamResponses(resp, opts.onDelta, opts.onReasoning, bump);
+            }
+            if (this.protocol === PROTOCOLS.GEMINI) {
+              return await this._readStreamGemini(resp, opts.onDelta, opts.onReasoning, bump);
+            }
+            return await this._readStream(resp, opts.onDelta, opts.onReasoning, bump);
+          } catch (e) {
+            if (opts.signal && opts.signal.aborted) {
+              throw new LlmError("request aborted", { cause: e }); // 用户「停止」
+            }
+            if (stalled) {
+              throw new LlmError(
+                `流式响应中断：连续 ${Math.round(idleMs / 1000)}s 无数据（服务端疑似断流），可直接重发。`,
+                { cause: e }
+              );
+            }
+            throw e;
+          } finally {
+            stopWatch();
+          }
+        }
+        let text;
+        try {
+          text = await resp.text();
+        } catch (e) {
+          if (opts.signal && opts.signal.aborted) {
+            throw new LlmError("request aborted", { cause: e });
           }
           throw e;
         } finally {
           stopWatch();
         }
+        let json;
+        try {
+          json = JSON.parse(text);
+        } catch (e) {
+          throw new LlmError(`invalid JSON from ${built.url}`, { body: text.slice(0, 500), cause: e });
+        }
+        return this.parseResponse(json);
+      } finally {
+        if (opts.signal) {
+          opts.signal.removeEventListener("abort", onSignalAbort);
+        }
       }
-      const text = await resp.text();
-      stopWatch();
-      let json;
-      try {
-        json = JSON.parse(text);
-      } catch (e) {
-        throw new LlmError(`invalid JSON from ${built.url}`, { body: text.slice(0, 500), cause: e });
-      }
-      return this.parseResponse(json);
     }
     throw lastErr;
   }
 
-  /** 重试退避用的小延时（用 Timer 解析器，system ESM 也能用）。 */
-  _delay(ms) {
-    return new Promise(r => _setTimeout(r, ms));
+  /** 重试退避用的小延时（用 Timer 解析器，system ESM 也能用；signal 中止时立即唤醒）。 */
+  _delay(ms, signal) {
+    if (signal?.aborted) {
+      return Promise.resolve();
+    }
+    return new Promise(r => {
+      const onAbort = () => {
+        _clearTimeout(timer);
+        r();
+      };
+      const timer = _setTimeout(() => {
+        if (signal) {
+          signal.removeEventListener("abort", onAbort);
+        }
+        r();
+      }, ms);
+      if (signal) {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
   }
 
   /**
@@ -1307,7 +1340,19 @@ export function toGeminiRequest(messages) {
       if (call?.id) callNames.set(String(call.id), { name, id: null });
       parts.push({ functionCall: { name, args: geminiFunctionArgs(fn.arguments) } });
     }
-    if (parts.length) contents.push({ role, parts });
+    if (parts.length) {
+      const prev = contents.at(-1);
+      if (
+        role === "user" &&
+        prev &&
+        prev.role === "user" &&
+        !prev.parts.some(p => p && p.functionResponse)
+      ) {
+        prev.parts.push(...parts);
+      } else {
+        contents.push({ role, parts });
+      }
+    }
   }
   return {
     systemInstruction: systemParts.length ? { parts: [{ text: systemParts.join("\n\n") }] } : null,

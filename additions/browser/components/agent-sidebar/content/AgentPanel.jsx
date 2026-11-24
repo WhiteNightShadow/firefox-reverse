@@ -321,7 +321,9 @@ export function AssistantBody({ steps, content }) {
 function ForkDialog({ messageIndex, workspace, onClose }) {
   const dialogRef = useRef(null);
   useEffect(() => {
-    dialogRef.current.showModal();
+    if (dialogRef.current && !dialogRef.current.open) {
+      dialogRef.current.showModal();
+    }
   }, []);
 
   function choose(event) {
@@ -525,7 +527,26 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
     if (!hidden) {
       refreshModels();
       window.addEventListener("focus", refreshModels);
-      return () => window.removeEventListener("focus", refreshModels);
+      const obs = () => refreshModels();
+      let watchingPrefs = false;
+      try {
+        if (_SVC?.prefs?.addObserver) {
+          _SVC.prefs.addObserver("extensions.firefox-reverse.agent.", obs);
+          watchingPrefs = true;
+        }
+      } catch {
+        /* 非 Firefox 环境无 prefs observer */
+      }
+      return () => {
+        window.removeEventListener("focus", refreshModels);
+        if (watchingPrefs) {
+          try {
+            _SVC.prefs.removeObserver("extensions.firefox-reverse.agent.", obs);
+          } catch {
+            /* ignore */
+          }
+        }
+      };
     }
   }, [hidden, refreshModels]);
 
@@ -683,6 +704,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         timer = setTimeout(tick, 80);
         return;
       }
+      let latest = snap;
       if (snap) {
         setPendingMessages(snap.pendingMessages || []);
         const historyRev = snap.historyRev ?? snap.checkpointSeq;
@@ -695,17 +717,19 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
             setCancellationPending(thread.cancellationPending === true);
             setUsage(thread.usage || null);
           }
+          latest = session.getState(currentId) || snap;
+          setPendingMessages(latest.pendingMessages || []);
         }
       }
-      if (snap && snap.running) {
-        liveRevRef.current = snap.rev;
-        setLiveSteps(snap.steps);
-        setUsage(snap.usage || null);
-        stepsRef.current = snap.steps;
-        const rt = [...snap.steps].reverse().find(x => x.kind === "tool" && x.status === "running");
+      if (latest && latest.running) {
+        liveRevRef.current = latest.rev;
+        setLiveSteps(latest.steps);
+        setUsage(latest.usage || null);
+        stepsRef.current = latest.steps;
+        const rt = [...latest.steps].reverse().find(x => x.kind === "tool" && x.status === "running");
         setActiveTool(rt ? rt.name : null);
-        if (snap.pendingConfirm) {
-          const pc = snap.pendingConfirm;
+        if (latest.pendingConfirm) {
+          const pc = latest.pendingConfirm;
           setPendingConfirm(prev =>
             prev && prev.call && prev.call.id === pc.id
               ? prev
@@ -714,14 +738,14 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
         } else {
           setPendingConfirm(prev => (prev ? null : prev));
         }
-      } else if (snap && snap.settled) {
+      } else if (latest && latest.settled) {
         // 回合结束：引擎已把最终/中断消息落盘 → 重载历史 + 收尾。
         if (session.isRunning(currentId)) {
           timer = setTimeout(tick, 0);
           return;
         }
-        if (snap.error) {
-          setError(snap.error);
+        if (latest.error) {
+          setError(latest.error);
         }
         setLiveSteps([]);
         stepsRef.current = [];
@@ -1209,13 +1233,26 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       }
     }
     const userMsg = { role: "user", content: text, ...(images.length ? { images } : {}) };
+    const baseSystemPrompt = SYSTEM +
+      "\n\n【浏览器环境】环境隔离、指纹配置和 MCP 指定环境由 env_* 工具链处理；Agent 对话页不做环境选择。";
+    const modePrompts = { auto: AUTO_BLOCK, assist: ASSIST_BLOCK };
+    const chromeWin = (typeof window !== "undefined" && window.browsingContext && window.browsingContext.topChromeWindow) || null;
     try {
       const tid = await ensureThread();
+      const stillCurrent = () => uiStateRef.current.currentId === tid;
       const queue = session?.queueMessage && (busy || pendingMessages.length || session.isRunning(tid));
       if (queue) {
-        session.queueMessage(tid, userMsg);
-        if (uiStateRef.current.currentId === tid) {
-          setPendingMessages(session.getState(tid).pendingMessages);
+        session.queueMessage(tid, userMsg, {
+          baseSystemPrompt,
+          modePrompts,
+          maxRounds: 80,
+          maxPerTool: 40,
+          workspaceRoot: workspaceDir || null,
+          win: chromeWin,
+          assist: (mode || "auto") === "assist",
+        });
+        if (stillCurrent()) {
+          setPendingMessages(session.getState(tid)?.pendingMessages || []);
           setBusy(true);
         }
       } else {
@@ -1224,10 +1261,12 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       setInput(draft => draft.trim() === text ? "" : draft);
       clearSentAttachments(pendingImages);
       if (queue) return;
-      setMessages([...messages, userMsg]);
-      resetSteps();
-      atBottomRef.current = true;
-      autoApproveRef.current = false;
+      if (stillCurrent()) {
+        setMessages([...messages, userMsg]);
+        resetSteps();
+        atBottomRef.current = true;
+        autoApproveRef.current = false;
+      }
       // 发给模型的会话历史从**持久化 store** 读（不靠 React messages state——settle 重载有竞态、
       // 切栏重挂载也会让它陈旧 → 之前"同一会话里回一轮就失忆"的根因）。store 是权威、含全部已落盘轮次。
       let convo = [...messages, userMsg];
@@ -1242,8 +1281,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       // Stable provider-cache prefix: only invariant policy stays in system.
       // Workspace, notes, and Skill catalog are attached to the current user
       // message by AgentLoop as dynamic context.
-      let sys = SYSTEM +
-        "\n\n【浏览器环境】环境隔离、指纹配置和 MCP 指定环境由 env_* 工具链处理；Agent 对话页不做环境选择。";
+      let sys = baseSystemPrompt;
       const dynamicParts = [
         workspaceDir
           ? `【当前工作目录】${workspaceDir}\n用 fs_list/fs_read/fs_write 读写其中文件、run_node/run_python 在此目录执行脚本验证；jsvmp trace 自动镜像到其 jsvmp/ 子目录。把抓取的脚本、还原出的实现、笔记都存到这里。`
@@ -1254,7 +1292,9 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       // 而此刻 setCurrentId 还没 flush（异步），会再建一条空线程并切走 currentId（run 却跑在原线程上）。
       const effMode = mode || "auto";
       if (mode == null) {
-        setMode("auto");
+        if (stillCurrent()) {
+          setMode("auto");
+        }
         try {
           if (conversations.setThreadMode) {
             await conversations.setThreadMode(tid, "auto");
@@ -1265,7 +1305,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       }
       sys += effMode === "assist" ? ASSIST_BLOCK : AUTO_BLOCK;
       try {
-        const dg = notes && notes.digest ? await notes.digest({}) : "";
+        const dg = notes && notes.digest ? await notes.digest({}, { workspaceRoot: workspaceDir || null }) : "";
         if (dg) {
           dynamicParts.push(dg);
         }
@@ -1286,20 +1326,26 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       }
       if (session && router) {
         const confirmMode = !!(store && store.getConfirmTools && store.getConfirmTools());
-        setBusy(true); // → 触发轮询 useEffect 流式刷 UI
+        if (stillCurrent()) {
+          setBusy(true); // → 触发轮询 useEffect 流式刷 UI
+        }
         // 引擎在常驻模块跑：切侧栏面板重载也不中断；UI 由轮询驱动(见上面 useEffect)，
         // done/error 由引擎自己落盘，故这里**不 await、不 finalize**。
         // assist=AI辅助逐阶段：引擎不跨回合自动续（每个 turn 结束交回用户等其选方向）。
         // run() 返回 Promise；同步启动后由常驻 session 自己收尾。catch 防止启动前异常成为未处理 rejection。
-        void session.run(tid, { systemPrompt: sys, dynamicContext: dynamicParts.join("\n\n"), convo, confirmMode, assist: effMode === "assist", maxRounds: 80, maxPerTool: 40,
+        void session.run(tid, { systemPrompt: sys, baseSystemPrompt, modePrompts, dynamicContext: dynamicParts.join("\n\n"), convo, confirmMode, assist: effMode === "assist", maxRounds: 80, maxPerTool: 40,
           // 工作目录随会话注入到每条工具调用的 ctx，WorkspaceBackend 优先使用 ctx.workspaceRoot，
           // 实现多窗口/多会话并发时各自操作各自的目录、互不干扰。
           workspaceRoot: workspaceDir || null,
           // 把**本侧栏所在的 chrome 窗口**注入 ctx.win——所有定位标签页的工具(page_eval/导航/点击/
           // webapi/jsvmp trace/signer_trace/whitebox)优先打**本窗口**的当前 tab，而非"全局聚焦窗口"，
           // 两个浏览器窗口并发跑各自的 Agent 时互不打错 tab。topChromeWindow 不随焦点变。
-          win: (typeof window !== "undefined" && window.browsingContext && window.browsingContext.topChromeWindow) || null,
-        }).catch(e => setError((e && e.message) || String(e)));
+          win: chromeWin,
+        }).catch(e => {
+          if (stillCurrent()) {
+            setError((e && e.message) || String(e));
+          }
+        });
       } else {
         // 无 session 兜底（不跨重载）：直接 chat。
         setBusy(true);
@@ -1358,6 +1404,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   }
 
   function actOnQueuedMessage(id, steer) {
+    if (!session || !currentId) return;
     if (steer) {
       session.steerQueuedMessage(currentId, id);
       setError(null);
@@ -1365,8 +1412,14 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       session.removeQueuedMessage(currentId, id);
     }
     const snap = session.getState(currentId);
-    setPendingMessages(snap.pendingMessages);
-    setBusy(snap.running);
+    setPendingMessages(snap?.pendingMessages || []);
+    if (steer) {
+      if (snap?.running) {
+        setBusy(true);
+      } else if (snap?.error) {
+        setError(snap.error);
+      }
+    }
   }
 
   // 「停止」按钮：让常驻引擎中断本回合（轮次边界 + 进行中的 LLM 请求都会停）。
@@ -1385,6 +1438,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   }
 
   async function newChat() {
+    setPendingFork(null);
     if (session?.isRunning(currentId)) triedFollowRef.current = currentId;
     const t = await conversations.createThread(); // 新会话不绑定目录（默认为空，需用户手动「打开目录」）
     if (session && session.acquireThread) {
@@ -1446,10 +1500,12 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       }
       setCurrentId(t.id);
       setMessages(t.messages);
-      setPendingMessages(session?.getState(t.id)?.pendingMessages || []);
+      const snap = session?.getState?.(t.id);
+      setPendingMessages(snap?.pendingMessages || []);
       setCancellationPending(t.cancellationPending === true);
       setUsage(t.usage || null);
-      setError(null);
+      setError(!snap?.running && snap?.error ? snap.error : null);
+      setPendingFork(null);
       bindWorkspace(effectiveWorkspace(t));
       setMode((t && t.mode) || null);
       // 切线程：先清掉上一条会话的实时显示，再按**目标线程**是否在后台跑同步 busy——
@@ -1464,10 +1520,13 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
   }
 
   async function closeForkDialog(choice) {
+    if (!pendingFork) return;
     const { threadId, messageIndex, workspace, trigger } = pendingFork;
     setPendingFork(null);
     if (choice !== "create" && choice !== "share") {
-      trigger.focus();
+      if (trigger?.isConnected) {
+        trigger.focus();
+      }
       return;
     }
     setSavingHistory(true);
@@ -1596,6 +1655,9 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       session.stop(id);
     }
     session?.clearQueuedMessages?.(id);
+    if (pendingFork?.threadId === id) {
+      setPendingFork(null);
+    }
     await conversations.deleteThread(id);
     const list = await refreshThreads();
     if (id === currentId) {
@@ -1814,7 +1876,7 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
             <button
               type="button"
               className="msg__fork"
-              disabled={savingHistory}
+              disabled={savingHistory || !currentId}
               onClick={event => setPendingFork({ threadId: currentId, messageIndex: i, workspace: workspaceDir, trigger: event.currentTarget })}
               title="从这里分支，在新会话中继续"
               aria-label={`从这里分支（第 ${i + 1} 条消息）`}
@@ -1879,15 +1941,15 @@ export default function AgentPanel({ buildClient, conversations, store, router, 
       >
         {pendingMessages.length > 0 && (
           <ol className="agent-queue" aria-label="待发送消息">
-            {pendingMessages.map(({ id, text, imageCount }) => (
+            {pendingMessages.map(({ id, text, imageCount, steering }) => (
               <li key={id}>
                 {ICONS.queued}
                 <span className="agent-queue__text" title={text}>{text}{imageCount > 0 && ` [${imageCount} 张图片]`}</span>
-                <button type="button" disabled={spectating} onClick={() => actOnQueuedMessage(id, true)}
-                  title={busy ? "立即用这条消息引导当前回复" : "发送这条消息并继续队列"}>
-                  {ICONS.steer}{busy ? "引导" : "发送"}
+                <button type="button" disabled={spectating || steering} onClick={() => actOnQueuedMessage(id, true)}
+                  title={steering ? "正在等待当前步骤收尾并转向" : busy ? "立即用这条消息引导当前回复" : "发送这条消息并继续队列"}>
+                  {ICONS.steer}{steering ? "引导中…" : busy ? "引导" : "发送"}
                 </button>
-                <button type="button" disabled={spectating} onClick={() => actOnQueuedMessage(id, false)}
+                <button type="button" disabled={spectating || steering} onClick={() => actOnQueuedMessage(id, false)}
                   aria-label="移除这条待发消息" title="移除这条待发消息">{ICONS.trash}</button>
               </li>
             ))}

@@ -51,6 +51,19 @@ function textFromSteps(steps) {
     .trim();
 }
 
+function interruptedContentFromSteps(steps) {
+  const text = textFromSteps(steps);
+  if (text) {
+    return text;
+  }
+  const tools = (steps || []).filter(x => x && x.kind === "tool" && x.name);
+  if (tools.length) {
+    const names = tools.map(t => `${t.name}(${t.status || "stopped"})`).join("、");
+    return `（已执行工具：${names}；已按用户新补充转向）`;
+  }
+  return "";
+}
+
 /** 持久化前给 steps 瘦身（去截图大数据、截断长思考），与 UI 旧逻辑一致。 */
 function slimifySteps(steps) {
   return steps.map(s => {
@@ -82,6 +95,22 @@ function summarizeEnv(env) {
 }
 
 const sessions = new Map(); // threadId -> state
+
+if (typeof conversationStore.setExternalImageRefs === "function") {
+  conversationStore.setExternalImageRefs(() => {
+    const ids = new Set();
+    for (const s of sessions.values()) {
+      for (const entry of [...s.queue, ...s.guidance]) {
+        for (const img of entry.message?.images || []) {
+          if (img?.id) {
+            ids.add(img.id);
+          }
+        }
+      }
+    }
+    return ids;
+  });
+}
 
 // 多窗口预留的心跳过期：持有窗口活着时每隔几秒续约 ts；超过此时长没续约 = 持有者已销毁
 // （切栏/关窗时文档被异常拆除、releaseThread 没跑成）→ 预留视为可回收。比心跳间隔(3s)宽裕。
@@ -128,6 +157,7 @@ function newState() {
     abort: null,
     queue: [],
     guidance: [], // 已点「引导」的消息；当前请求收尾后一起交给模型。
+    lastRunOpts: null,
     nextMessageId: 0,
     historyRev: 0, // 跨连续回复递增，侧栏据此重读新落盘的气泡。
     subs: new Set(),
@@ -200,9 +230,20 @@ function snapshot(s) {
     error: s.error,
     aborted: s.aborted,
     content: s.content,
-    pendingMessages: s.queue.map(({ id, message }) => ({
-      id, text: message.content, imageCount: message.images?.length || 0,
-    })),
+    pendingMessages: [
+      ...s.guidance.map(({ id, message }) => ({
+        id,
+        text: message.content,
+        imageCount: message.images?.length || 0,
+        steering: true,
+      })),
+      ...s.queue.map(({ id, message }) => ({
+        id,
+        text: message.content,
+        imageCount: message.images?.length || 0,
+        steering: false,
+      })),
+    ],
     historyRev: s.historyRev,
     checkpointSeq: s.checkpointSeq || 0,
     usage: { ...s.usage },
@@ -226,11 +267,16 @@ function interruptReply(s) {
 function startNextReply(threadId, s) {
   const guided = s.guidance.length > 0;
   const entries = guided ? s.guidance.splice(0) : s.queue.splice(0, 1);
-  const systemPrompt = guided
+  const saved = s.lastRunOpts || {};
+  const fallbackPrompt = guided
     ? "请结合上面的对话和已经写出的回复，按用户刚补充的要求继续回答。"
     : "请结合上面的对话回答用户的新消息。";
-  // 连续发送的是聊天补充。使用当前模型直接回复，并沿用会话的历史、图片和流式显示。
-  void agentSession.run(threadId, { systemPrompt, followUps: entries });
+  void agentSession.run(threadId, {
+    ...saved,
+    systemPrompt: saved.systemPrompt || fallbackPrompt,
+    followUps: entries,
+    guidedFollowUp: guided,
+  });
 }
 
 // ── step reducer（从 UI 原样搬来：text / think 流式段 + tool 步骤）──
@@ -425,8 +471,11 @@ export const agentSession = {
       resolve(!!approved);
     }
   },
-  queueMessage(threadId, message) {
+  queueMessage(threadId, message, runOpts) {
     const s = getOrInit(threadId);
+    if (runOpts && typeof runOpts === "object") {
+      s.lastRunOpts = { ...(s.lastRunOpts || {}), ...runOpts };
+    }
     // 面板文档能随时销毁，队列只保存后台自己的文本与图片引用。
     const queued = {
       role: "user", content: message.content,
@@ -490,11 +539,42 @@ export const agentSession = {
    *   assist — true=AI辅助逐阶段模式：不跨回合自动续（每个 turn 结束即交回用户），且 AgentLoop 里
    *            无工具的纯文字回复当正常收尾（停下给方向）而非 drift 逼它继续。false=全自动一条龙（默认）。
    */
-  async run(threadId, { systemPrompt, dynamicContext = "", convo, confirmMode = false, maxRounds = 120, maxPerTool = 40, workspaceRoot, win, assist = false, followUps } = {}) {
+  async run(
+    threadId,
+    {
+      systemPrompt,
+      baseSystemPrompt,
+      modePrompts,
+      dynamicContext = "",
+      convo,
+      confirmMode = false,
+      maxRounds = 120,
+      maxPerTool = 40,
+      workspaceRoot,
+      win,
+      assist = false,
+      followUps,
+      guidedFollowUp = false,
+    } = {}
+  ) {
     _runLog.push({ threadId, at: Date.now(), convoLen: Array.isArray(convo) ? convo.length : -1 });
     const s = getOrInit(threadId);
     if (s.running) {
       return; // 已在跑，避免重入
+    }
+    if (!followUps) {
+      s.lastRunOpts = {
+        systemPrompt,
+        baseSystemPrompt,
+        modePrompts,
+        dynamicContext,
+        confirmMode,
+        maxRounds,
+        maxPerTool,
+        workspaceRoot,
+        win,
+        assist,
+      };
     }
     // 重置本轮态
     s.running = true;
@@ -527,6 +607,61 @@ export const agentSession = {
     let vision = false;
     let appendedFollowUps = 0;
     try {
+      if (followUps) {
+        let threadSnapshot = null;
+        try {
+          threadSnapshot = await conversationStore.getThread(threadId);
+        } catch {
+          threadSnapshot = null;
+        }
+        if (threadSnapshot && "workspace" in threadSnapshot) {
+          workspaceRoot = threadSnapshot.workspace || null;
+        }
+        if (threadSnapshot && (threadSnapshot.mode === "assist" || threadSnapshot.mode === "auto")) {
+          assist = threadSnapshot.mode === "assist";
+        }
+        if (typeof configStore.getConfirmTools === "function") {
+          confirmMode = !!configStore.getConfirmTools();
+        }
+        if (baseSystemPrompt) {
+          const effMode = assist ? "assist" : "auto";
+          systemPrompt = baseSystemPrompt + ((effMode === "assist" ? modePrompts?.assist : modePrompts?.auto) || "");
+          const dynamicParts = [
+            workspaceRoot
+              ? `【当前工作目录】${workspaceRoot}\n用 fs_list/fs_read/fs_write 读写其中文件、run_node/run_python 在此目录执行脚本验证；jsvmp trace 自动镜像到其 jsvmp/ 子目录。把抓取的脚本、还原出的实现、笔记都存到这里。`
+              : "【当前工作目录】未设置。若任务需要读写文件或执行脚本，请提示用户点击侧边栏顶部「打开目录」选择一个本地目录。",
+          ];
+          try {
+            const backends = getBackends() || {};
+            const dg = backends.notes && backends.notes.digest
+              ? await backends.notes.digest({}, { workspaceRoot: workspaceRoot || null })
+              : "";
+            if (dg) {
+              dynamicParts.push(dg);
+            }
+          } catch {
+            /* 笔记可选 */
+          }
+          try {
+            const backends = getBackends() || {};
+            const catalog = backends.skill && backends.skill.list
+              ? await backends.skill.list({}, { workspaceRoot: workspaceRoot || null })
+              : null;
+            if (catalog && catalog.ok && Array.isArray(catalog.skills) && catalog.skills.length) {
+              const lines = catalog.skills.slice(0, 30).map(sk => `- ${sk.name}: ${sk.description || "无描述"}`);
+              dynamicParts.push(`【当前可用 Skills】\n${lines.join("\n")}\n用户指定 Skill 时先 skill_get 读取正文。`);
+            }
+          } catch {
+            /* Skill 目录可选 */
+          }
+          dynamicContext = dynamicParts.join("\n\n");
+        }
+        if (guidedFollowUp) {
+          const steerNote =
+            "【用户引导补充】上一轮执行已在用户补充处转向收尾；请结合上方已完成的步骤与部分回复，按本条补充要求继续推进。";
+          dynamicContext = dynamicContext ? dynamicContext + "\n\n" + steerNote : steerNote;
+        }
+      }
       // 每次用户发起一轮时取最新设置；自动续跑沿用同一份 system，避免重复追加。
       const globalSystemPrompt = configStore.getGlobalSystemPrompt().trim();
       if (globalSystemPrompt) {
@@ -680,15 +815,6 @@ export const agentSession = {
       }
       const onDelta = chunk => { pushDelta(s, chunk); notifyThrottled(s); };
       const onReasoning = chunk => { pushReasoning(s, chunk); notifyThrottled(s); };
-      if (followUps) {
-        const prompt = dynamicContext ? systemPrompt + "\n\n" + dynamicContext : systemPrompt;
-        const reply = await client.chat([{ role: "system", content: prompt }, ...turnMsgs], {
-          signal: ac.signal, cacheKey, onDelta, onReasoning,
-        });
-        recordUsage(reply.usage);
-        await this._finishReply(threadId, s, reply);
-        return;
-      }
       let autoRestarts = 0;
       let driftStreak = 0;
       let res;
@@ -849,7 +975,7 @@ export const agentSession = {
       const guided = s.guidance.length > 0 && ac.signal.aborted;
       s.aborted = !guided && ac.signal.aborted;
       if (guided) {
-        s.content = textFromSteps(s.steps);
+        s.content = interruptedContentFromSteps(s.steps);
       } else if (s.aborted) {
         s.content = "（已手动停止）";
       } else {
@@ -857,7 +983,7 @@ export const agentSession = {
         s.error = message + (e?.body ? "\n— " + String(e.body).slice(0, 600) : "");
         s.content = "（本轮出错中断：" + message.slice(0, 160) + "）";
       }
-      if (s.steps.length || s.aborted) {
+      if (s.content || (!guided && (s.steps.length || s.aborted))) {
         await this._persist(threadId, s.content, s.steps);
       }
       try {
@@ -896,9 +1022,9 @@ export const agentSession = {
     }
     // 引导只保留当前回复已经生成的正文和步骤，下一条是同一话题里的补充。
     s.content = guided && result.stopReason === "aborted"
-      ? textFromSteps(s.steps)
+      ? interruptedContentFromSteps(s.steps)
       : result.content || textFromSteps(s.steps);
-    if (!guided || s.content || s.steps.length) {
+    if (s.content || (!guided && (s.steps.length || !interrupted))) {
       await this._persist(threadId, s.content, s.steps);
     }
     try {

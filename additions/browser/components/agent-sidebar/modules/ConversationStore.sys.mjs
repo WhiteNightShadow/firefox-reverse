@@ -267,6 +267,12 @@ export class ConversationStore {
     this._path = opts.path || null;
     this._memoryOnly = opts.memoryOnly ?? !hasIO();
     this._images = new Map(); // 内存模式下的图片：id → Uint8Array
+    this._writeQueue = Promise.resolve();
+    this._externalImageRefs = null;
+  }
+
+  setExternalImageRefs(fn) {
+    this._externalImageRefs = typeof fn === "function" ? fn : null;
   }
 
   get isPersistent() {
@@ -307,7 +313,10 @@ export class ConversationStore {
       return;
     }
     const p = await this._filePath();
-    await IOUtils.writeJSON(p, this._mem, { tmpPath: p + ".tmp" });
+    const snapshot = JSON.parse(JSON.stringify(this._mem));
+    const write = () => IOUtils.writeJSON(p, snapshot, { tmpPath: p + ".tmp" });
+    this._writeQueue = this._writeQueue.catch(() => {}).then(write);
+    await this._writeQueue;
   }
 
   /** 线程摘要列表（按更新时间倒序），不含 messages。 */
@@ -510,7 +519,10 @@ export class ConversationStore {
     try {
       await this._save();
     } catch (error) {
-      t.messages.splice(t.messages.indexOf(message), 1);
+      const idx = t.messages.indexOf(message);
+      if (idx >= 0) {
+        t.messages.splice(idx, 1);
+      }
       if (t.updatedAt === updatedAt) {
         t.updatedAt = previousUpdate;
         t.title = previousTitle;
@@ -910,6 +922,17 @@ export class ConversationStore {
             used.add(ref.id);
           }
         }
+      }
+    }
+    if (this._externalImageRefs) {
+      try {
+        for (const id of this._externalImageRefs() || []) {
+          if (id) {
+            used.add(id);
+          }
+        }
+      } catch {
+        /* 外部运行态引用查询失败不阻断清理 */
       }
     }
     if (this._memoryOnly) {

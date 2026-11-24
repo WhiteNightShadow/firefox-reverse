@@ -841,6 +841,7 @@ body {
   background: var(--in-content-button-background-hover, rgba(128,128,128,0.18));
   color: var(--in-content-page-color, FieldText);
 }
+.agent-queue button:disabled { opacity: 0.5; cursor: default; }
 .agent-attach {
   display: flex;
   flex-wrap: wrap;
